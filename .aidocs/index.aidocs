@@ -1,0 +1,16 @@
+# .aidocs/index.aidocs - Documentation Index
+
+This file routes to the shared documentation that applies across projects.
+
+Router policy: this file is a link/list router only. Do not treat it as a forced full-load import list.
+
+## Shared Docs
+- `.aidocs/global-instructions.aidocs`
+- `.aidocs/coding-standards.aidocs`
+- `.aidocs/memory-system.aidocs`
+- `.aidocs/research-safety.aidocs`
+- `.aidocs/project-init.aidocs`
+
+## Project-Specific Docs
+Each project should add its own documentation index and link it here as it is created.
+Use the `/project` command to generate or update project-specific routing.

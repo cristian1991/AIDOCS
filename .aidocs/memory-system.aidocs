@@ -1,0 +1,46 @@
+# .aidocs/memory-system.aidocs - Global Memory Protocol
+
+Purpose
+- Keep reusable project knowledge in files, not transient chat context.
+
+Location
+- Runtime memory lives in project-root `/.MEMORY/`.
+- Entry files (`AGENTS.md`, `CLAUDE.md`) are routers, not memory stores.
+
+Structure
+- `/.MEMORY/NOW.md`
+- `/.MEMORY/rules/standards.md`
+- `/.MEMORY/rules/security.md`
+- `/.MEMORY/system/architecture.md`
+- `/.MEMORY/system/caveats.md`
+- `/.MEMORY/system/decisions.md`
+- `/.MEMORY/daily/YYYY-MM-DD.md`
+- `/.MEMORY/daily/archive/`
+
+Runtime
+- Not init-only.
+- On material state changes, update `/.MEMORY/NOW.md`.
+- Log notable outcomes in today's daily file.
+- Before final coding response, checkpoint `Goal | State | Next`.
+
+Capture
+- If user states a durable fact/rule/lesson/preference, persist immediately to the right categorized file and log daily.
+
+Archive
+- `/archive` promotes durable signal from active daily logs into categorized files.
+- Merge/edit existing entries (no duplicate append-only content).
+- Use `Supersedes:` when replacing prior guidance.
+- Move processed logs to `/.MEMORY/daily/archive/`.
+
+Template-first
+- Initialize memory from `.aidocs/templates/memory/**` (copy missing files), then merge extracted guidance.
+
+Retrieval order
+1) `/.MEMORY/NOW.md`
+2) relevant categorized files (`rules/*`, `system/*`)
+3) targeted daily snippets only when needed
+
+Guardrails
+- Never store secrets/sensitive data.
+- Do not promote speculation or one-off noise.
+- If memory conflicts with code/docs, record conflict and propose resolution.

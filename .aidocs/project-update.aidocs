@@ -1,0 +1,22 @@
+# .aidocs/project-update.aidocs - /project-update Contract
+
+Purpose
+- Sync project-local AI system files to latest canonical versions without re-running full initialization.
+
+When to use
+- Use `/project-update` for projects that already ran `/project` and only need system/runtime refresh.
+
+Contract
+- Validate project is already initialized (`/.MEMORY/` + router present).
+- Copy/sync project-local system artifacts:
+  - `AIDOCS.md`
+  - `.aidocs/index.aidocs`
+  - linked shared docs
+  - OpenCode/Claude project command files (`project`, `archive`, `project-update`)
+- Refresh project `AGENTS.md` and `CLAUDE.md` with project-local relative routes.
+- Copy only missing memory template files; never overwrite existing `/.MEMORY/*`.
+- Do not run ingestion/restructuring/topic-map rebuild unless explicitly requested.
+
+Safety
+- Re-read `/.MEMORY/NOW.md` before planning and after compaction/session resume.
+- Log update outcome to today's daily file.

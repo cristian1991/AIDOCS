@@ -37,5 +37,5 @@ All agents must read this file before starting any task in any project.
 Use the `/project` command to initialize a project session. It will:
 - Read root docs and project docs.
 - Scan the codebase and DB artifacts.
-- Propose doc-vs-code restructure options.
+- Restructure internal documentation into categorized project memory.
 - Create or refresh `AGENTS.md` in the project root.

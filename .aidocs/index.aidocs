@@ -10,7 +10,9 @@ Router policy: this file is a link/list router only. Do not treat it as a forced
 - `.aidocs/memory-system.aidocs`
 - `.aidocs/research-safety.aidocs`
 - `.aidocs/project-init.aidocs`
+- `.aidocs/project-update.aidocs`
 
 ## Project-Specific Docs
 Each project should add its own documentation index and link it here as it is created.
 Use the `/project` command to generate or update project-specific routing.
+Use `/project-update` to sync system files in already initialized projects without re-running full init.

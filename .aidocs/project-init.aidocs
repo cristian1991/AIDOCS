@@ -1,42 +1,69 @@
 # .aidocs/project-init.aidocs - /project Contract
 
-## Read Order (always)
+Read order
 1) `AIDOCS.md`
 2) `.aidocs/index.aidocs`
 3) linked shared docs
 
-## Pre-edit checks
+Pre-edit checks
 - Resolve project root.
 - If no git repo: init + initial commit.
-- Ensure remote exists. If missing, try `gh repo create <name> --private --source . --remote origin --push`.
-- If remote creation fails (no gh/auth/error), STOP and ask for remote/repo target.
+- Ensure remote exists; if missing, try `gh repo create <name> --private --source . --remote origin --push`.
+- If remote creation fails, STOP and ask for remote/repo target.
 - Verify upstream tracking; STOP on failure.
 
-## Analysis
+Portable system deployment (default)
+- `/project` must vendor a self-contained runtime system into the target project so it works on another machine without root installer files.
+- Copy into project root (create if missing):
+  - `AIDOCS.md`
+  - `.aidocs/index.aidocs`
+  - linked shared docs required by the index (including memory protocol + project-init contract)
+  - `.opencode/command/project.md` and `.opencode/command/archive.md`
+  - `.claude/commands/project.md` and `.claude/commands/archive.md`
+- Generate/refresh project `AGENTS.md` and `CLAUDE.md` with project-local relative routing (no absolute host-specific paths).
+- If any required source artifact is missing, STOP and ask before partial deployment.
+- For already initialized projects, prefer `/project-update` to refresh system artifacts without rerunning full init.
+
+Analysis
 - Discover project docs/router + relevant README/spec docs.
 - Analyze build/runtime/db artifacts (read-only DB interrogation proposals only).
-- Output Option A (docs->code) and Option B (code->docs) with recommendation.
+- Skip docs->code vs code->docs decision tree for now.
 
-## Memory bootstrap (template-first)
-- Create `/.MEMORY/` from root templates at `.aidocs/templates/memory/**` (copy missing files/directories).
-- Required files after bootstrap:
+Memory bootstrap (template-first)
+- Copy missing files/dirs from `.aidocs/templates/memory/**` to `/.MEMORY/**`.
+- Required canonical files/dirs:
   - `/.MEMORY/NOW.md`
-  - `/.MEMORY/rules/standards.md`
-  - `/.MEMORY/rules/security.md`
-  - `/.MEMORY/system/architecture.md`
-  - `/.MEMORY/system/caveats.md`
-  - `/.MEMORY/system/decisions.md`
+  - `/.MEMORY/INDEX.md`
+  - `/.MEMORY/policy/*`
+  - `/.MEMORY/architecture/*`
+  - `/.MEMORY/decisions/DECISIONS_LOG.md`
+  - `/.MEMORY/operations/*`
+  - `/.MEMORY/domains/`
   - `/.MEMORY/daily/YYYY-MM-DD.md`
   - `/.MEMORY/daily/archive/`
 
-## First-init extraction
+First-init extraction
 - Sources (order): root shared docs -> project entry files -> project docs/router -> relevant README/spec docs.
-- Merge/edit durable signal into categorized memory files (no duplicate append-only entries).
+- Ingest and restructure internal docs into canonical memory categories.
+- Build topic map and create/update `/.MEMORY/domains/<topic>.md`.
+- Merge/edit only (no duplicate append-only content).
+- Output ingestion coverage: read files, skipped files, reasons, mapping.
 
-## Routing update
-- Ensure project `AGENTS.md`/`CLAUDE.md` route to `/.MEMORY/*` as canonical operational memory.
+Routing update
+- Ensure project `AGENTS.md`/`CLAUDE.md` route to `/.MEMORY/*`.
 - Keep entry files short.
+- Routers must point to project-local `AIDOCS.md` + `.aidocs/index.aidocs`.
 
-## Archive behavior
-- `/archive` promotes from `/.MEMORY/daily/*` into categorized files with merge semantics.
+Archive behavior
+- `/archive` promotes from `/.MEMORY/daily/*` into canonical categories with merge semantics.
 - Processed logs move to `/.MEMORY/daily/archive/`.
+
+NOW.md initialization contract
+- Initialize `/.MEMORY/NOW.md` with queue-oriented sections:
+  - `Mission`
+  - `Active`
+  - `Upcoming (ordered)`
+  - `Blockers/Risks`
+  - `Resume Steps`
+  - `Done/Recent`
+- If task plan is multi-step, prefill `Upcoming` with at least 3 items when available.

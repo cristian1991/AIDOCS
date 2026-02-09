@@ -7,27 +7,60 @@ Location
 - Runtime memory lives in project-root `/.MEMORY/`.
 - Entry files (`AGENTS.md`, `CLAUDE.md`) are routers, not memory stores.
 
-Structure
+Canonical structure
 - `/.MEMORY/NOW.md`
-- `/.MEMORY/rules/standards.md`
-- `/.MEMORY/rules/security.md`
-- `/.MEMORY/system/architecture.md`
-- `/.MEMORY/system/caveats.md`
-- `/.MEMORY/system/decisions.md`
+- `/.MEMORY/INDEX.md`
+- `/.MEMORY/policy/engineering.md`
+- `/.MEMORY/policy/security.md`
+- `/.MEMORY/policy/workflow.md`
+- `/.MEMORY/architecture/system-overview.md`
+- `/.MEMORY/architecture/integration-boundaries.md`
+- `/.MEMORY/architecture/data-invariants.md`
+- `/.MEMORY/decisions/DECISIONS_LOG.md`
+- `/.MEMORY/operations/testing.md`
+- `/.MEMORY/operations/runbooks.md`
+- `/.MEMORY/operations/troubleshooting.md`
+- `/.MEMORY/domains/<topic>.md`
 - `/.MEMORY/daily/YYYY-MM-DD.md`
 - `/.MEMORY/daily/archive/`
 
-Runtime
+Semantic contracts
+- policy/*: normative rules only (must/should/must-not).
+- architecture/*: current-state system facts/invariants/interfaces.
+- decisions/*: historical decision records (Decision, Context, Alternatives, Chosen, Consequences, Supersedes, Date).
+- operations/*: procedures/checklists/commands/troubleshooting.
+- domains/*: topic/feature-specific constraints and caveats.
+- INDEX.md: router only (links + short summaries), no duplicated content.
+
+Runtime write policy
 - Not init-only.
 - On material state changes, update `/.MEMORY/NOW.md`.
+- Maintain a task queue in `NOW.md`, not a single next step.
+- Keep `Active` + ordered `Upcoming` tasks/phases so multi-step automation can continue without user interaction.
 - Log notable outcomes in today's daily file.
-- Before final coding response, checkpoint `Goal | State | Next`.
+- Before final coding response, checkpoint: `Current State`, `Next Action`, and refreshed `Upcoming` queue.
 
-Capture
-- If user states a durable fact/rule/lesson/preference, persist immediately to the right categorized file and log daily.
+Immediate capture
+- If user states a durable fact/rule/lesson/preference, persist immediately to the correct canonical file and log daily.
 
-Archive
-- `/archive` promotes durable signal from active daily logs into categorized files.
+Priority-aware capture
+- Respect user priority markers `!`..`!!!!!` exactly as defined in global instructions.
+- `!!!` and above: immediate canonical write + daily trace (no deferral).
+- `!!!!` and `!!!!!`: also pin/refresh in `/.MEMORY/NOW.md` (`Active` or top of `Upcoming`).
+- `!!!!!`: treat as blocking directive; suspend unrelated tasks until addressed.
+
+NOW.md queue policy
+- `NOW.md` should include at minimum:
+  - Mission/Goal
+  - Active task
+  - Upcoming tasks/phases (ordered list)
+  - Blockers/Risks
+  - Crash-safe resume steps
+- For multi-step tasks, keep at least 3 upcoming items when available.
+- On completion, move finished items to a Done/Recent section and promote durable lessons to canonical memory files.
+
+Archive policy
+- `/archive` promotes durable signal from active daily logs.
 - Merge/edit existing entries (no duplicate append-only content).
 - Use `Supersedes:` when replacing prior guidance.
 - Move processed logs to `/.MEMORY/daily/archive/`.
@@ -37,8 +70,13 @@ Template-first
 
 Retrieval order
 1) `/.MEMORY/NOW.md`
-2) relevant categorized files (`rules/*`, `system/*`)
-3) targeted daily snippets only when needed
+2) `/.MEMORY/INDEX.md`
+3) only relevant canonical files
+4) targeted daily snippets only when needed
+
+Compaction/resume gate
+- After context compaction or session resume, re-read `/.MEMORY/NOW.md` before any new planning or execution.
+- Do not continue prior momentum until `NOW.md` has been revalidated against the current user message.
 
 Guardrails
 - Never store secrets/sensitive data.

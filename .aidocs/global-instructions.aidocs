@@ -5,7 +5,16 @@ Scope: do not read/write/run commands/reference anything outside Root unless exp
 
 Operating checklist (per task): (1) find Root (walk upward to `AIDOCS.md`); (2) read `AIDOCS.md` + `.aidocs/index.aidocs`; (3) read project `AGENTS.md` (if present) before edits; (4) KISS + minimal changes; (5) if you need info, use STOP.
 
+Session-resume safety (anti-rogue):
+- On any fresh session, context compaction return, or crash-recovery resume, read `/.MEMORY/NOW.md` before planning or taking action.
+- Treat `NOW.md` as the current mission/constraint authority for in-progress work.
+- If `NOW.md` conflicts with newly provided user instructions, follow the user and update `NOW.md` immediately.
+
 Router policy: global/router files must list/link docs only; do not force-load/import large doc sets by default.
+
+Project portability rule:
+- `/project` must leave a self-contained project runtime (project-local routers, command files, and required docs) so the project works on another machine without relying on root installer artifacts.
+- Avoid absolute machine-specific paths in project router files.
 
 Context policy: if context is insufficient for a task, read only necessary related docs and memory files, then proceed; if still unclear, STOP and ask the user.
 
@@ -13,7 +22,16 @@ Error handling: when the user provides an error, explain WHY it happened first; 
 
 Instruction normalization: rewrite human-like rules into a short checklist (logic 100% intact; no broadening/reinterpretation). Examples in docs are examples; adapt to the real project; if the choice matters, STOP and ask.
 
-Priority: the user may signal importance with exclamation marks; more `!` = higher priority (spend more time/attention/compute on that instruction).
+Priority model (deterministic):
+- `!` = low-priority note. Log in daily; promote only if repeated/useful.
+- `!!` = task-priority. Add to `/.MEMORY/NOW.md` (`Upcoming`) + daily.
+- `!!!` = durable rule/lesson/preference. Persist immediately to canonical memory file + daily.
+- `!!!!` = high-impact invariant/security/process rule. Persist immediately, pin in `NOW.md` (`Active`), and prioritize execution.
+- `!!!!!` = critical/blocking directive. STOP unrelated work, acknowledge, persist immediately, and treat as top-priority constraint.
+
+Priority authority:
+- User priority markers override agent importance judgment.
+- If user marks `!!!` or higher, do not defer capture to `/archive`.
 
 Communication: match message size to complexity (simple fix -> short; complex/risky -> more explanation + constraints + verification). If an alternative approach is important (correctness/security/maintainability/perf/UX), say so explicitly; otherwise don’t bikeshed.
 

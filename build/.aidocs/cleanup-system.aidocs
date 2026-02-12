@@ -1,0 +1,61 @@
+# .aidocs/cleanup-system.aidocs - Cleanup Chain System
+
+## Purpose
+Provide an escalating chain of project cleanup commands, from simple file-level housekeeping to full structural analysis and refactoring. Each level includes everything from the previous level plus additional scope.
+
+## Command Chain
+
+```
+/clean → /uber-clean → /refactor → /uber-refactor
+  │          │            │              │
+  │          │            │              └─ + structural analysis & file splitting
+  │          │            └─ + duplicate logic consolidation
+  │          └─ + dead code removal inside files
+  └─ file-level cleanup only (orphans, temp files, artifacts)
+```
+
+### `/clean` — File cleanup
+- Scope: orphaned files, temp files, debug artifacts, empty placeholders, completed plan files
+- Does NOT touch code inside files
+- Does NOT delete user-created files, source code, config, docs, or active memory
+
+### `/uber-clean` — File cleanup + dead code
+- Includes everything `/clean` does
+- Plus: unused functions/methods/variables, dead imports, commented-out code blocks, unused CSS
+- Does NOT remove dynamically-referenced code (reflection, string-based lookups)
+- Does NOT remove `// TODO`, `// HACK`, or similar intent markers
+
+### `/refactor` — File cleanup + dead code + deduplication
+- Includes everything `/uber-clean` does
+- Plus: merge duplicate/near-duplicate functions, consolidate repeated queries, deduplicate DTOs/models, extract repeated inline logic
+- Does NOT split files or change architecture — consolidates within existing structure
+- Prefers extracting to existing utility/helper files over creating new ones
+
+### `/uber-refactor` — Full treatment + structural analysis
+- Includes everything `/refactor` does
+- Plus: excessive file size analysis, single-responsibility violations, god-classes, deep inheritance, mixed concerns
+- Proposes file splits with specific cut points, target names, impact analysis
+- Does NOT auto-apply structural changes — requires per-item approval
+- Creates backups in `/.BACKUP/uber-refactor/` before splitting
+
+## Safety rules (!!!)
+
+### Stop gates
+- `/clean`: STOP before deleting any files
+- `/uber-clean`: STOP before editing code (file deletion + code removal)
+- `/refactor`: STOP before refactoring (all above + consolidation)
+- `/uber-refactor`: STOP before EACH structural change individually (all above + per-split approval)
+
+### General
+- When uncertain if something is dead/orphaned, ask — don't remove
+- Verify "unused" claims by searching for all references before flagging
+- Never auto-remove without user confirmation at any level
+- Log all actions to today's daily file
+- Ensure merged functions preserve all edge cases from originals
+- Do not change public API contracts without explicit approval
+- Do not introduce new patterns/frameworks — work within existing architecture
+
+## Scope boundaries
+- All commands require `/.MEMORY/` to exist (run `/project-init` first if missing)
+- Work across the entire project (project root + all subdirectories)
+- Each command accepts `$ARGUMENTS` for extra constraints (e.g., scope to specific dirs/files)

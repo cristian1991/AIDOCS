@@ -1,0 +1,13 @@
+# Session-specific daily logs
+/.MEMORY/daily/*.md
+!/.MEMORY/daily/.gitkeep
+/.MEMORY/archive/
+!/.MEMORY/archive/.gitkeep
+
+# OpenCode runtime
+.opencode/node_modules/
+.opencode/bun.lock
+.opencode/package.json
+
+# Claude Code local settings
+.claude/settings.local.json

@@ -2,12 +2,10 @@
 description: Initialize project context and memory
 agent: build
 ---
-Run `/project` with minimal noise.
+Run `/project-init` with minimal noise.
 
 Rules
-- Root = directory containing `AIDOCS.md`.
-- Read in order: `AIDOCS.md` -> `.aidocs/index.aidocs` -> linked docs.
-- Work only inside Root unless explicitly instructed.
+- Work only inside the target project unless explicitly instructed.
 
 Flow
 1) Resolve target dir (`$ARGUMENTS` or current dir) and project root.
@@ -17,21 +15,16 @@ Flow
    - if missing, try `gh repo create <name> --private --source . --remote origin --push`
    - if GH CLI create fails, STOP and ask for remote URL/repo target
 4) Verify upstream tracking; STOP on failure.
-5) Deploy portable system into project root (self-contained, machine-portable):
-   - copy `AIDOCS.md` + `.aidocs/index.aidocs` + linked shared docs required by the index
-   - copy `.opencode/command/project.md` + `.opencode/command/archive.md`
-   - copy `.claude/commands/project.md` + `.claude/commands/archive.md`
+5) Copy portable system into project root (self-contained, machine-portable):
+   - copy `.aidocs/index.aidocs` + linked shared docs required by the index
+   - copy `.opencode/command/project-init.md` + `.opencode/command/project-update.md` + `.opencode/command/archive.md` + `.opencode/command/personality.md` + `.opencode/command/memory-update.md` + `.opencode/command/clean.md` + `.opencode/command/uber-clean.md` + `.opencode/command/refactor.md` + `.opencode/command/uber-refactor.md`
+   - copy `.claude/commands/project-init.md` + `.claude/commands/project-update.md` + `.claude/commands/archive.md` + `.claude/commands/personality.md` + `.claude/commands/memory-update.md` + `.claude/commands/clean.md` + `.claude/commands/uber-clean.md` + `.claude/commands/refactor.md` + `.claude/commands/uber-refactor.md`
+   - copy `.aidocs/personalities/` directory (all personality definition files)
    - refresh project `AGENTS.md`/`CLAUDE.md` with project-local relative routing (no absolute paths)
    - if any required source artifact is missing, STOP and ask
-6) Discover project docs/router + relevant README/spec docs.
-7) Ensure memory by template copy: copy missing files from `.aidocs/templates/memory/**` to `/.MEMORY/**`.
-8) First-init extraction sources:
-    - root shared docs
-    - project entry files
-    - project docs/router + relevant README/spec docs
-9) Build topic map and create/update `/.MEMORY/domains/<topic>.md`.
-10) Ingest/restructure docs into canonical memory categories (merge/edit; no append duplicates).
-11) Output concise report: checklist + portable artifacts synced + memory files updated + ingestion coverage (read/skipped/reasons + mapping).
+6) Ensure memory structure by template copy: copy missing files from `.aidocs/templates/memory/**` to `/.MEMORY/**`.
+7) Output concise report: checklist + portable artifacts synced + memory structure created.
+8) Instruct user: "Run `/memory-update` to populate memory from project docs."
 
 Runtime memory
 - read `/.MEMORY/NOW.md` at task start before planning/actions
@@ -46,7 +39,7 @@ Runtime memory
 - before final coding response, checkpoint `Current State`, `Next Action`, and refreshed `Upcoming`
 
 DB safety
-- non-secret details only, read-only interrogation suggestions, no destructive DB ops.
+- non-secret details only, read-only DB command suggestions, no destructive DB ops
 
 Extra constraints:
 $ARGUMENTS

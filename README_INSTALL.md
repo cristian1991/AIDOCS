@@ -25,5 +25,5 @@ Installer will create/update:
 - Runtime memory path is project-root `/.MEMORY/`.
 - Use `/project-init` to initialize a new project.
 - Use `/project-update` to sync existing projects to latest.
-- Use `/memory-update` to populate memory from project docs.
+- Use `/reingest` and choose `full-reingest` to populate memory from project docs.
 - The installer reads from `build/` — run `scripts/sync-build.cmd` after editing root files to keep build current.

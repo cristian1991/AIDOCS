@@ -12,7 +12,8 @@ Session-resume safety (anti-rogue):
 Router policy: global/router files must list/link docs only; do not force-load/import large doc sets by default.
 
 Project portability rule:
-- `/project-init` copies a self-contained runtime (command files and docs) into the target project so it works on another machine.
+- `/project-init` copies project-local routing/docs/memory scaffolding into the target project.
+- Commands are installed and executed from global command packs (`~/.config/opencode/commands/*`, `~/.claude/commands/*`).
 - Avoid absolute machine-specific paths in project files.
 
 Context policy: if context is insufficient for a task, read only necessary related docs and memory files, then proceed; if still unclear, STOP and ask the user.
@@ -34,6 +35,10 @@ Priority authority:
 
 Communication: match message size to complexity (simple fix -> short; complex/risky -> more explanation + constraints + verification). If an alternative approach is important (correctness/security/maintainability/perf/UX), say so explicitly; otherwise don’t bikeshed.
 
+Task batching policy:
+- Prefer completing multiple related tasks in one pass when context allows, instead of artificially limiting execution to single micro-tasks.
+- Use available context budget deliberately so fewer user round-trips are required for routine multi-step work.
+
 Pre-action alignment: before making changes, briefly state what you think the issue/request is and what you are about to do. Keep it short for simple tasks and longer for risky/complex tasks.
 
 Team contract: the user is the architect; you are the engineer. Collaborate: propose safe defaults, ask clarifying questions when needed, and strive for the best while staying KISS.
@@ -48,10 +53,17 @@ Plans (!!!):
 Operational memory writes (not init-only):
 - **Pre-action write (!!!)**: On receiving a new task, BEFORE executing: (1) analyse the task, (2) write `/.MEMORY/NOW.md` with Goal + Active + State + Upcoming, (3) only then begin execution. Reading files to understand the task is analysis, not execution.
 - During execution, on material state changes, update `/.MEMORY/NOW.md`.
-- Log notable events/outcomes in today's `/.MEMORY/daily/YYYY-MM-DD.md`.
-- Before final response on a coding task, checkpoint `Goal | State | Next` in `NOW.md`.
+- Investigating/research-only agents must not finalize task memory closure.
+- The editing agent that actually applies edits is responsible for task closure memory writes after edits complete:
+  - append outcome to today's `/.MEMORY/daily/YYYY-MM-DD.md`
+  - clean/reset `/.MEMORY/NOW.md` active task state for the completed task
 
 Durable instruction capture: when the user states a durable fact/rule/lesson/preference to remember, persist it immediately to the appropriate categorized memory file and log the event in today's daily file (do not wait for `/archive`).
+
+Related-project collaboration memory (!!!):
+- When a fix in the current project is caused by another related project's behavior/contract, append a concise issue record to `/.MEMORY/related-projects/FIXES_BY_OTHER_AGENTS.md`.
+- Record format (one item): `Date | Related Project | Issue (root cause) | Fix Applied Here | Upstream Follow-up Needed`.
+- If project root `FIXES_BY_OTHER_AGENTS.md` exists, mirror the same entry there for compatibility.
 
 Repository bootstrap: if the target project is not a git repository, before editing files do this sequence: initialize git repo, create initial commit, verify remote exists, push, verify upstream tracking. If any step fails (including missing remote), STOP and ask the user for the smallest missing detail; if all steps succeed, continue with the requested task.
 
@@ -71,8 +83,8 @@ Generalization: in shared/general code, don’t hardcode tenant/customer rules/f
 
 Triggers that REQUIRE STOP before proceeding: unclear/ambiguous instruction; conflicting instructions; impossible instruction (state constraint + closest safe alternative); unexpected architecture you don’t understand; user asks for a task that’s already implemented; multiple plausible roots/paths and the choice changes the result.
 
-STOP protocol (mandatory whenever you ask the user for more info): print this exact header line (no emoji spam; it renders slowly):
-=================== 🛑 S T O P 🛑 ===================
+STOP protocol (mandatory whenever you ask the user for more info): print a blank line, then this exact header line:
+STOP
 
 STOP template (always keep it short; use Simple vs Full depending on risk):
 

@@ -34,10 +34,10 @@ This will:
 Then run:
 
 ```
-/memory-update
+/reingest
 ```
 
-This reads your project's documentation and ingests it into structured memory categories the agent can reference later.
+Choose `full-reingest`. This reads your project's documentation and ingests it into structured memory categories the agent can reference later.
 
 ### Update an existing project
 
@@ -57,7 +57,7 @@ Syncs system files without re-running full initialization. Your memory and proje
 |---------|-------------|
 | `/project-init` | Initialize a new project: git bootstrap, copy system files, create memory structure |
 | `/project-update` | Sync system files to latest version without full re-init |
-| `/memory-update` | Read project docs and ingest into structured `/.MEMORY/` categories |
+| `/reingest` | Ask for ingestion mode (full/git/date) and refresh memory |
 | `/archive` | Distill daily session logs into canonical memory categories |
 
 ### Cleanup Chain
@@ -120,7 +120,6 @@ Each project gets a structured memory directory:
   memory-system.*          # Memory protocol
   project-init.*           # /project-init contract
   project-update.*         # /project-update contract
-  memory-update.*          # /memory-update contract
   cleanup-system.*         # Cleanup chain contract
   personality-system.*     # Personality framework
   research-safety.*        # Safety guardrails

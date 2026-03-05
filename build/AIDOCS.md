@@ -14,7 +14,6 @@ This file is internal project documentation — agents do not need to read it. A
   memory-system.*          → Memory protocol
   project-init.*           → /project-init contract
   project-update.*         → /project-update contract
-  memory-update.*          → /memory-update contract
   cleanup-system.*         → Cleanup chain contract
   personality-system.*     → Personality framework
   research-safety.*        → Safety guardrails
@@ -39,6 +38,7 @@ build/                     → Distributable kit (synced from root via scripts/s
   rules/                   → Normative rules (standards, security, workflow)
   system/                  → System facts (architecture, caveats, testing)
   config/                  → Agent settings (personality, future plugins)
+  related-projects/        → Cross-project issue/fix handoff log
   domains/                 → Topic-specific knowledge + decisions
   plans/                   → Implementation plans
   daily/                   → Session logs
@@ -50,7 +50,7 @@ build/                     → Distributable kit (synced from root via scripts/s
 1. Clone or copy the `AIDOCS` folder anywhere.
 2. Double-click `build/scripts/install-agent-routing.cmd`.
 
-The installer wires the AIDOCS source path into the user's global agent config so `/project-init` and `/project-update` know where to copy files from.
+The installer wires the AIDOCS source path into the user's global agent config and installs the global command pack. Projects then consume AIDOCS through global commands plus project-local `.aidocs` and `/.MEMORY/` state.
 
 ## Development
 
@@ -68,7 +68,7 @@ This copies the distributable manifest from root to `build/`.
 |---------|-------------|
 | `/project-init` | Initialize a project: git bootstrap, copy system files, create memory structure |
 | `/project-update` | Sync system files to latest without full re-init |
-| `/memory-update` | Read project docs and ingest into `/.MEMORY/` categories |
+| `/reingest` | Primary ingestion command: ask user for full/git/date scope, then refresh memory accordingly |
 | `/archive` | Distill daily logs into canonical memory categories |
 | `/personality` | Pick an agent communication personality |
 | `/clean` | Remove orphaned/temp files from project |

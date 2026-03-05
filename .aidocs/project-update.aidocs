@@ -15,17 +15,24 @@ Contract
 - Copy/sync project-local system artifacts from AIDOCS source:
   - `.aidocs/index.aidocs`
   - linked shared docs
-  - OpenCode/Claude project command files (`project-init`, `archive`, `project-update`, `personality`, `memory-update`, `clean`, `uber-clean`, `refactor`, `uber-refactor`)
   - `.aidocs/personalities/` directory (all personality definition files)
 - Refresh project `AGENTS.md` and `CLAUDE.md` with project-local relative routes.
 - Copy only missing memory template files; never overwrite existing `/.MEMORY/*`.
 - Regenerate Claude Code auto-memory file:
-  - Compute path: take project root absolute path, replace `:` with empty and all `\` or `/` with `-`. Target: `~/.claude/projects/<encoded>/memory/MEMORY.md`. Create directory if missing.
+  - Resolve Claude projects directory: `~/.claude/projects/`.
+  - Prefer updating existing project folders whose normalized name matches the current project root.
+  - If no existing folder is found, create deterministic candidate folders from the current project root using both drive-letter variants (for example `e--Projects-Tools-AutoDeployBase` and `E--Projects-Tools-AutoDeployBase`) and use the first candidate.
+  - Target file: `~/.claude/projects/<resolved>/memory/MEMORY.md` (create parent directories if missing).
   - This file is auto-loaded into every Claude Code session's system prompt.
-  - Must contain: memory system bootstrap instructions (how to use `/.MEMORY/`), canonical structure reference, and condensed critical learnings (`!!!`+) from `/.MEMORY/domains/*.md` and `/.MEMORY/rules/*.md`.
+  - Must contain a managed AIDOCS block: memory system bootstrap instructions (how to use `/.MEMORY/`), canonical structure reference, and condensed critical learnings (`!!!`+) from `/.MEMORY/domains/*.md` and `/.MEMORY/rules/*.md`.
   - Keep under 200 lines. Full details stay in `/.MEMORY/` files.
-  - MEMORY.md is READ-ONLY during normal sessions — only `/project-update` writes to it.
+  - Preserve non-managed user content if present; replace only the managed AIDOCS block between explicit start/end markers.
+  - MEMORY.md is READ-ONLY during normal sessions — only `/project-update` writes managed content.
 - Do not run ingestion/restructuring/topic-map rebuild unless explicitly requested.
+- Include command pack version from `.aidocs/command-pack.version` in the sync report when available.
+- Commands are global-only; do not sync `.opencode/command/*` or `.claude/commands/*` into projects.
+- Include global command-pack health in report (source path + expected global command presence).
+- Include related-project memory status in report (`/.MEMORY/related-projects/FIXES_BY_OTHER_AGENTS.md` present).
 - Hard gate after sync: re-read updated project routing/instructions before continuing any other task:
   1) `AGENTS.md` and/or `CLAUDE.md`
   2) `.aidocs/index.aidocs`

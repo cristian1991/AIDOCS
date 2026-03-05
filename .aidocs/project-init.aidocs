@@ -12,16 +12,19 @@ Source resolution (!!!):
 - Never compute, search, or guess the source path. The installer `.cmd` is the sole authority that sets this path.
 
 Portable system copy
-- `/project-init` copies a self-contained runtime into the target project so it works on another machine.
+- `/project-init` copies project-local routing/docs/memory scaffolding. Command execution remains global.
 - Copy into project root (create if missing):
   - `.aidocs/index.aidocs`
   - linked shared docs required by the index
-  - `.opencode/command/project-init.md`, `.opencode/command/project-update.md`, `.opencode/command/archive.md`, `.opencode/command/personality.md`, `.opencode/command/memory-update.md`, `.opencode/command/clean.md`, `.opencode/command/uber-clean.md`, `.opencode/command/refactor.md`, `.opencode/command/uber-refactor.md`
-  - `.claude/commands/project-init.md`, `.claude/commands/project-update.md`, `.claude/commands/archive.md`, `.claude/commands/personality.md`, `.claude/commands/memory-update.md`, `.claude/commands/clean.md`, `.claude/commands/uber-clean.md`, `.claude/commands/refactor.md`, `.claude/commands/uber-refactor.md`
   - `.aidocs/personalities/` directory (all personality definition files)
 - Generate/refresh project `AGENTS.md` and `CLAUDE.md` with project-local relative routing (no absolute host-specific paths).
 - If any required source artifact is missing, STOP and ask before partial copy.
 - For already initialized projects, prefer `/project-update` to refresh system artifacts without rerunning full init.
+
+Global command model
+- Command files are global-only (`~/.config/opencode/commands/*`, `~/.claude/commands/*`).
+- `/project-init` MUST NOT copy `.opencode/command/*` or `.claude/commands/*` into target projects.
+- If global command pack is missing/stale, run `scripts/install-agent-routing.cmd` from AIDOCS source.
 
 Memory bootstrap (template-first)
 - Copy missing files/dirs from `.aidocs/templates/memory/**` to `/.MEMORY/**`.
@@ -31,11 +34,13 @@ Memory bootstrap (template-first)
   - `/.MEMORY/rules/*`
   - `/.MEMORY/system/*`
   - `/.MEMORY/config/*`
+  - `/.MEMORY/related-projects/`
+  - `/.MEMORY/related-projects/FIXES_BY_OTHER_AGENTS.md`
   - `/.MEMORY/domains/`
   - `/.MEMORY/plans/`
   - `/.MEMORY/daily/`
   - `/.MEMORY/archive/`
-- This creates the empty memory structure only. Run `/memory-update` separately to populate memory from project docs.
+- This creates the empty memory structure only. Run `/reingest` and choose `full-reingest` to populate memory from project docs.
 
 Routing update
 - Ensure project `AGENTS.md`/`CLAUDE.md` route to `/.MEMORY/*` and `.aidocs/index.aidocs`.
@@ -63,5 +68,6 @@ NOW.md task-lifecycle contract (!!!)
   3. **Write NOW.md**: Agent writes Goal + Active + State + Upcoming to NOW.md. This is the FIRST write of the task.
   4. **Execute**: Agent performs the task (code changes, edits, tool calls).
   5. **Update**: On material state changes during execution, update NOW.md.
-  6. **Checkpoint**: Before final response, write current `Goal | State | Next` to NOW.md.
+  6. **Checkpoint**: After edits are actually applied, the editing agent writes daily outcome and cleans NOW active-task state.
 - Skipping step 3 is a protocol violation. NOW.md must reflect the current task BEFORE work begins.
+- Investigating/research-only agents must not perform step 6.

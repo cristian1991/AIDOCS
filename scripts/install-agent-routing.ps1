@@ -15,6 +15,15 @@ if (-not (Test-Path $indexFile)) {
   throw ".aidocs/index.aidocs not found at: $root"
 }
 
+$versionFile = Join-Path $root ".aidocs\command-pack.version"
+$commandPackVersion = "unknown"
+if (Test-Path $versionFile) {
+  $rawVersion = (Get-Content -Path $versionFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+  if ($rawVersion) {
+    $commandPackVersion = $rawVersion.Trim()
+  }
+}
+
 $opencodeDir = Join-Path $env:USERPROFILE ".config\opencode"
 $opencodeCommandsDir = Join-Path $opencodeDir "commands"
 $claudeDir = Join-Path $env:USERPROFILE ".claude"
@@ -25,7 +34,7 @@ New-Item -ItemType Directory -Force -Path $opencodeCommandsDir | Out-Null
 New-Item -ItemType Directory -Force -Path $claudeDir | Out-Null
 New-Item -ItemType Directory -Force -Path $claudeCommandsDir | Out-Null
 
-$header = "=================== 🛑 S T O P 🛑 ==================="
+$header = "STOP"
 
 $globalAgents = @"
 # Global AGENTS.md - Cross-Agent Bootstrap
@@ -36,7 +45,7 @@ Non-negotiables:
 - Do not operate outside the current project unless explicitly instructed.
 - Before acting, briefly state what you think the task is and what you will do.
 - If user provides an error, explain WHY first; if clear, fix; if unclear, STOP and ask.
-- When clarification is needed, print: $header
+- When clarification is needed, print a blank line, then: $header
 - Read only files relevant to the task (do not scan full repo by default).
 - If user states a durable fact/rule/lesson/preference to remember, persist it immediately to categorized project memory and log it in today's daily file.
 - Router files list/link docs only; do not force-load full documentation by default.
@@ -56,7 +65,7 @@ Non-negotiables:
 - Do not operate outside the current project unless explicitly instructed.
 - Before acting, briefly state what you think the task is and what you will do.
 - If user provides an error, explain WHY first; if clear, fix; if unclear, STOP and ask.
-- When clarification is needed, print: $header
+- When clarification is needed, print a blank line, then: $header
 - Read only files relevant to the task (do not scan full repo by default).
 - If user states a durable fact/rule/lesson/preference to remember, persist it immediately to categorized project memory and log it in today's daily file.
 - Router files list/link docs only; do not force-load full documentation by default.
@@ -75,6 +84,8 @@ $commandsDirs = @(
   (Join-Path $root ".opencode\command")
 )
 
+$skipGlobalCommands = @("doctor.md")
+
 # Clean target command dirs before copying (removes stale/renamed commands)
 Get-ChildItem -Path $opencodeCommandsDir -Filter "*.md" -File -ErrorAction SilentlyContinue | Remove-Item -Force
 Get-ChildItem -Path $claudeCommandsDir -Filter "*.md" -File -ErrorAction SilentlyContinue | Remove-Item -Force
@@ -83,9 +94,11 @@ $copied = @{}
 foreach ($srcDir in $commandsDirs) {
   if (Test-Path $srcDir) {
     Get-ChildItem -Path $srcDir -Filter "*.md" -File | ForEach-Object {
-      $dst = Join-Path $opencodeCommandsDir $_.Name
-      Copy-Item -Force $_.FullName $dst
-      $copied[$dst] = $true
+      if (-not ($skipGlobalCommands -contains $_.Name)) {
+        $dst = Join-Path $opencodeCommandsDir $_.Name
+        Copy-Item -Force $_.FullName $dst
+        $copied[$dst] = $true
+      }
     }
   }
 }
@@ -94,9 +107,11 @@ $claudeCommandSrcDir = Join-Path $root ".claude\commands"
 $claudeCopied = @{}
 if (Test-Path $claudeCommandSrcDir) {
   Get-ChildItem -Path $claudeCommandSrcDir -Filter "*.md" -File | ForEach-Object {
-    $dst = Join-Path $claudeCommandsDir $_.Name
-    Copy-Item -Force $_.FullName $dst
-    $claudeCopied[$dst] = $true
+    if (-not ($skipGlobalCommands -contains $_.Name)) {
+      $dst = Join-Path $claudeCommandsDir $_.Name
+      Copy-Item -Force $_.FullName $dst
+      $claudeCopied[$dst] = $true
+    }
   }
 }
 
@@ -110,3 +125,28 @@ foreach ($k in $claudeCopied.Keys) {
   Write-Host "-" $k
 }
 Write-Host "AIDOCS source wired to:" $root
+Write-Host "Command pack version:" $commandPackVersion
+
+$requiredCommandFiles = @(
+  "project-init.md",
+  "project-update.md",
+  "reingest.md",
+  "archive.md",
+  "personality.md",
+  "clean.md",
+  "uber-clean.md",
+  "refactor.md",
+  "uber-refactor.md"
+)
+
+foreach ($commandName in $requiredCommandFiles) {
+  $openCodeTarget = Join-Path $opencodeCommandsDir $commandName
+  if (-not (Test-Path $openCodeTarget)) {
+    throw "Missing installed OpenCode command: $openCodeTarget"
+  }
+
+  $claudeTarget = Join-Path $claudeCommandsDir $commandName
+  if (-not (Test-Path $claudeTarget)) {
+    throw "Missing installed Claude command: $claudeTarget"
+  }
+}

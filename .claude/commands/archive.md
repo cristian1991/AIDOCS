@@ -1,31 +1,22 @@
 ---
 description: Distill daily logs into canonical memory categories
 ---
-Run `/archive` with strict merge semantics.
+Archive recent daily notes into canonical memory.
 
-Scope
-- Work only in project `/.MEMORY/`.
+Flow
+1) Read selected `/.MEMORY/daily/*` files (default: last 7 days unless `$ARGUMENTS`).
+2) Promote durable signal to canonical targets (`rules/*`, `system/*`, `config/*`, `domains/*`, `plans/*`).
+3) Merge/edit only (no duplicate append-only growth); use `Supersedes:` when replacing guidance.
+4) Move processed daily files to `/.MEMORY/archive/`.
 
-Process
-1) Read selected files from `/.MEMORY/daily/` (default recent 7 days unless `$ARGUMENTS` says otherwise).
-2) Promote durable signal to canonical files:
-   - policy -> `/.MEMORY/policy/*`
-   - architecture -> `/.MEMORY/architecture/*`
-   - decisions -> `/.MEMORY/decisions/DECISIONS_LOG.md`
-   - operations -> `/.MEMORY/operations/*`
-   - domain-specific -> `/.MEMORY/domains/<topic>.md`
-3) Merge/edit existing entries; no duplicate append-only content.
-4) Use `Supersedes:` when replacing prior guidance.
-5) Move processed logs to `/.MEMORY/daily/archive/`.
+Compatibility
+- If legacy folders exist (`policy`, `architecture`, `operations`, `decisions`), merge forward and leave legacy files untouched unless user asks cleanup.
 
 Output
-- concise per-file promotion summary
-- skipped noise summary
-- moved file list
+- promoted items, skipped noise, moved files.
 
 Guardrails
-- never store secrets
-- ignore spam, one-off noise, unverified claims
+- no secrets; ignore spam/one-offs/unverified claims.
 
 Extra constraints:
 $ARGUMENTS

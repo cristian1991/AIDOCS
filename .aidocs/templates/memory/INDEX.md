@@ -15,6 +15,9 @@ Router for /.MEMORY/ contents. Links and short summaries only.
 ## Config
 - [personality.md](config/personality.md) — active personality config
 
+## Related Projects
+- [FIXES_BY_OTHER_AGENTS.md](related-projects/FIXES_BY_OTHER_AGENTS.md) — cross-project issue/fix handoff log
+
 ## Domains
 (none yet — topic-specific knowledge + decisions go here)
 

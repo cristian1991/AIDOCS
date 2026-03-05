@@ -12,7 +12,7 @@ Router policy: this file is a link/list router only. Do not treat it as a forced
 - `.aidocs/project-init.aidocs`
 - `.aidocs/project-update.aidocs`
 - `.aidocs/personality-system.aidocs`
-- `.aidocs/memory-update.aidocs`
+- `.aidocs/reingest-system.aidocs`
 - `.aidocs/cleanup-system.aidocs`
 
 ## Project-Specific Docs

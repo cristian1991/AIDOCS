@@ -17,6 +17,7 @@ Canonical structure
 - `/.MEMORY/system/caveats.md`
 - `/.MEMORY/system/testing.md`
 - `/.MEMORY/config/personality.md`
+- `/.MEMORY/related-projects/FIXES_BY_OTHER_AGENTS.md`
 - `/.MEMORY/domains/<topic>.md`
 - `/.MEMORY/plans/<descriptive-name>.md`
 - `/.MEMORY/daily/YYYY-MM-DD.md`
@@ -26,6 +27,7 @@ Semantic contracts
 - rules/*: normative rules only (must/should/must-not).
 - system/*: current-state system facts, invariants, procedures.
 - config/*: agent/plugin configuration (personality, future settings).
+- related-projects/*: cross-project issue and fix handoff logs for dependent/connected projects.
 - domains/*: topic/feature-specific constraints, caveats, and decisions (Decision | Why | Impact | Supersedes).
 - plans/*: implementation plans for non-trivial tasks. Written before execution, cleaned up after verification.
 - INDEX.md: router only (links + short summaries), no duplicated content.
@@ -40,8 +42,11 @@ Runtime write policy
 - On material state changes during execution, update `/.MEMORY/NOW.md` again.
 - Maintain a task queue in `NOW.md`, not a single next step.
 - Keep `Active` + ordered `Upcoming` tasks/phases so multi-step automation can continue without user interaction.
-- Log notable outcomes in today's daily file.
-- Before final coding response, checkpoint: `Current State`, `Next Action`, and refreshed `Upcoming` queue.
+- Investigating/research-only agents must not perform final task-closure writes.
+- The editing agent that actually applies edits must perform final task-closure writes after edits are completed:
+  - append notable outcomes in today's daily file
+  - clean/reset NOW active-task fields for the completed task
+- If a local fix is caused by another related project, append a handoff item to `/.MEMORY/related-projects/FIXES_BY_OTHER_AGENTS.md` with: `Date | Related Project | Issue | Fix Applied Here | Upstream Follow-up Needed`.
 
 Immediate capture
 - If user states a durable fact/rule/lesson/preference, persist immediately to the correct canonical file and log daily.

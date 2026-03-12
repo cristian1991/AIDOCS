@@ -13,16 +13,23 @@ Flow
 4) Resolve AIDOCS source from global routing; sync project-local docs only:
    - `.aidocs/index.aidocs` + linked `.aidocs/*.aidocs`
    - `.aidocs/personalities/`
-   - refresh project `AGENTS.md` and `CLAUDE.md` routers (relative paths)
+   - refresh project `AGENTS.md` and `CLAUDE.md` routers in this order: `/.MEMORY/INDEX.md`, `/.MEMORY/NOW.md`, `.aidocs/index.aidocs`
+   - create project-root `/agents/` for spawned-agent plans/investigations (`YYYY-MM-DD-<topic>-plan.md` or `YYYY-MM-DD-<topic>-investigation.md`)
 5) Command model is global-only:
    - do not copy `.opencode/command/*` or `.claude/commands/*` into project
    - if global command pack is stale/missing, instruct `scripts/install-agent-routing.cmd` from AIDOCS source
 6) Create memory skeleton by copying missing files from `.aidocs/templates/memory/**` to `/.MEMORY/**`.
-7) Report created/updated items.
-8) Next action: run `/reingest` and pick `full-reingest`.
+7) Also create/update Claude redirect bootstrap `~/.claude/projects/<resolved>/memory/MEMORY.md`:
+   - resolve existing match first, else deterministic candidate
+   - rewrite as redirect-only bootstrap content
+   - point to project `/.MEMORY/INDEX.md` first and `/.MEMORY/NOW.md` second
+   - forbid storing memory, plans, summaries, or task output there
+   - direct spawned-agent plans/investigations to project `/agents/` with dated logical filenames
+8) Report created/updated items.
+9) Next action: run `/reingest` and pick `full-reingest`.
 
 Memory discipline
-- Read `/.MEMORY/NOW.md` before work and after resume.
+- Read `/.MEMORY/INDEX.md` first, then `/.MEMORY/NOW.md`, before work and after resume.
 - Update NOW on material state changes.
 - Write daily outcomes; respect priority markers from global instructions.
 

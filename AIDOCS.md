@@ -2,13 +2,13 @@
 
 A portable toolkit for AI coding agents. Provides persistent memory, structured commands, and consistent behavior across projects.
 
-This file is internal project documentation — agents do not need to read it. Agent entry points are `AGENTS.md` and `CLAUDE.md`, which route to `.aidocs/index.aidocs`.
+This file is internal project documentation — agents do not need to read it. Agent entry points are `AGENTS.md` and `CLAUDE.md`, which route to `/.MEMORY/INDEX.md`, `/.MEMORY/NOW.md`, and `.aidocs/index.aidocs`.
 
 ## Architecture
 
 ```
 .aidocs/
-  index.aidocs             → Documentation router (agent entry point)
+  index.aidocs             → Shared documentation router
   global-instructions.*    → Agent behavior rules
   coding-standards.*       → Code quality rules
   memory-system.*          → Memory protocol
@@ -19,10 +19,11 @@ This file is internal project documentation — agents do not need to read it. A
   research-safety.*        → Safety guardrails
   personalities/           → Personality definitions
   templates/memory/        → Memory structure templates
+  templates/agents/        → Spawned-agent workspace templates
 
 .claude/commands/          → Claude Code command files
 .opencode/command/         → OpenCode command files
-scripts/                   → Installer + build sync scripts
+scripts/                   → Installer, drift checker, and build sync scripts
 
 build/                     → Distributable kit (synced from root via scripts/sync-build)
   .aidocs/                 → Copy of system docs
@@ -32,9 +33,11 @@ build/                     → Distributable kit (synced from root via scripts/s
   AGENTS.md, CLAUDE.md     → Template routers
   opencode.jsonc           → OpenCode config
 
+ /agents/                  → Spawned-agent plans and investigations (dated task artifacts)
+
 /.MEMORY/                  → Project memory (initialized for AIDOCS itself)
   NOW.md                   → Current task state
-  INDEX.md                 → Memory router
+  INDEX.md                 → Main memory router / session entry
   rules/                   → Normative rules (standards, security, workflow)
   system/                  → System facts (architecture, caveats, testing)
   config/                  → Agent settings (personality, future plugins)

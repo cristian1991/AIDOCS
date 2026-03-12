@@ -1,6 +1,15 @@
 # Memory Index
 
-Router for /.MEMORY/ contents. Links and short summaries only.
+Main project memory entry point. Router only.
+
+Use:
+1. Read `NOW.md` for active runtime state.
+2. Open only relevant linked files below.
+3. Write durable memory only inside `/.MEMORY/**`.
+
+## Runtime
+- [NOW.md](NOW.md) — active task state
+- [DONE.md](DONE.md) — archived NOW snapshots (completion ledger)
 
 ## Rules
 - [standards.md](rules/standards.md) — coding conventions, engineering rules
@@ -19,7 +28,15 @@ Router for /.MEMORY/ contents. Links and short summaries only.
 - [FIXES_BY_OTHER_AGENTS.md](related-projects/FIXES_BY_OTHER_AGENTS.md) — cross-project issue/fix handoff log
 
 ## Domains
-(none yet — topic-specific knowledge + decisions go here)
+- [memory-system.md](domains/memory-system.md) — canonical memory entry/routing decisions and Claude enforcement rules
 
 ## Plans
 (none yet — implementation plans go here)
+
+## Daily
+- [2026-03-05.md](daily/2026-03-05.md) — session log
+- [2026-03-08.md](daily/2026-03-08.md) — session log
+- [2026-03-12.md](daily/2026-03-12.md) — session log
+
+## Archive
+(none yet — archived daily logs go here)

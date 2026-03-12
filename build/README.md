@@ -106,15 +106,22 @@ Each project gets a structured memory directory:
   archive/             # Archived daily logs
 ```
 
-- **NOW.md** is the agent's working memory — it writes current task state here before starting work and updates it as it goes. This is how agents survive context compaction and session restarts.
+- **INDEX.md** is the main memory entry point — agents read it first, then follow only relevant links.
+- **NOW.md** is the agent's working memory — it holds current task state and is read via `INDEX.md` on session start/resume.
 - **Daily logs** capture session-by-session progress. `/archive` promotes them into canonical categories.
 - **Rules files** store durable user preferences and coding standards that persist across sessions.
+
+### Spawned-Agent Workspace (`/agents/`)
+
+- Spawned agents write plans and investigations to project-root `/agents/`.
+- Naming pattern: `YYYY-MM-DD-<topic>-plan.md` or `YYYY-MM-DD-<topic>-investigation.md`.
+- `/agents/` is a task-artifact workspace, not canonical memory; durable findings still promote into `/.MEMORY/**`.
 
 ### Documentation System (`.aidocs/`)
 
 ```
 .aidocs/
-  index.aidocs             # Documentation router (agent entry point)
+  index.aidocs             # Shared documentation router
   global-instructions.*    # Agent behavior rules
   coding-standards.*       # Code quality rules
   memory-system.*          # Memory protocol
@@ -125,6 +132,7 @@ Each project gets a structured memory directory:
   research-safety.*        # Safety guardrails
   personalities/           # Personality definitions
   templates/memory/        # Memory structure templates
+  templates/agents/        # Spawned-agent workspace templates
 ```
 
 ### Agent Compatibility
@@ -149,9 +157,10 @@ AIDOCS/
     install-agent-routing.*    # Global installer
     sync-build.*               # Sync root -> build/
   build/                       # Distributable kit (synced from root)
+  agents/                      # Spawned-agent plans and investigations
   /.MEMORY/                    # Project memory (AIDOCS eats its own dogfood)
-  AGENTS.md                    # OpenCode entry point
-  CLAUDE.md                    # Claude Code entry point
+  AGENTS.md                    # OpenCode project router
+  CLAUDE.md                    # Claude Code project router
   AIDOCS.md                    # Internal documentation
   README.md                    # This file (human-facing)
 ```
@@ -165,6 +174,20 @@ scripts/sync-build.cmd
 ```
 
 The `build/` directory is the distributable artifact. The installer runs from `build/scripts/`.
+
+### Check memory drift
+
+Use the bundled drift checker to scan any folder tree for AIDOCS memory routing/index drift:
+
+```bash
+scripts/check-memory-drift.cmd
+scripts/check-memory-drift.cmd D:\Projects
+```
+
+- With no argument, it launches an interactive folder selector in the console.
+- With a path argument, it scans that root directly.
+- Common generated folders are skipped automatically (`.git`, `node_modules`, `bin`, `obj`, `.builder/workspaces`, `coverage`, `dist`).
+- Exit code `0` means no drift, `1` means drift found, `2` means no projects found or the check failed.
 
 ## Requirements
 

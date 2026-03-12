@@ -1,6 +1,15 @@
 # Memory Index
 
-Router for /.MEMORY/ contents. Links and short summaries only.
+Main project memory entry point. Router only.
+
+Use:
+1. Read `NOW.md` for active runtime state.
+2. Open only relevant linked files below.
+3. Write durable memory only inside `/.MEMORY/**`.
+
+## Runtime
+- [NOW.md](NOW.md) — active task state
+- [DONE.md](DONE.md) — archived NOW snapshots (completion ledger)
 
 ## Rules
 - [standards.md](rules/standards.md) — coding conventions, engineering rules

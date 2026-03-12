@@ -48,7 +48,9 @@ $fileCopies = @(
 # Manifest: scripts directory
 $scriptCopies = @(
   "scripts\install-agent-routing.ps1",
-  "scripts\install-agent-routing.cmd"
+  "scripts\install-agent-routing.cmd",
+  "scripts\check-memory-drift.ps1",
+  "scripts\check-memory-drift.cmd"
 )
 
 $synced = @()

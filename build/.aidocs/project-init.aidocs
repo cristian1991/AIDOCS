@@ -17,7 +17,11 @@ Portable system copy
   - `.aidocs/index.aidocs`
   - linked shared docs required by the index
   - `.aidocs/personalities/` directory (all personality definition files)
-- Generate/refresh project `AGENTS.md` and `CLAUDE.md` with project-local relative routing (no absolute host-specific paths).
+  - `/agents/` task-artifact workspace
+- Generate/refresh project `AGENTS.md` and `CLAUDE.md` with project-local relative routing in this order:
+  1. `/.MEMORY/INDEX.md`
+  2. `/.MEMORY/NOW.md`
+  3. `.aidocs/index.aidocs`
 - If any required source artifact is missing, STOP and ask before partial copy.
 - For already initialized projects, prefer `/project-update` to refresh system artifacts without rerunning full init.
 
@@ -26,10 +30,25 @@ Global command model
 - `/project-init` MUST NOT copy `.opencode/command/*` or `.claude/commands/*` into target projects.
 - If global command pack is missing/stale, run `scripts/install-agent-routing.cmd` from AIDOCS source.
 
+Claude redirect bootstrap
+- Resolve Claude projects directory: `~/.claude/projects/`.
+- Prefer updating existing project folders whose normalized name matches the current project root.
+- If no existing folder is found, create deterministic candidate folders from the current project root using both drive-letter variants and use the first candidate.
+- Target file: `~/.claude/projects/<resolved>/memory/MEMORY.md` (create parent directories if needed).
+- Rewrite the file as redirect-only content:
+  - do not store memory, plans, summaries, or task output there
+  - read `<project>/.MEMORY/INDEX.md` first
+  - read `<project>/.MEMORY/NOW.md` for runtime state
+  - write durable memory only inside `<project>/.MEMORY/**`
+  - write spawned-agent plans/investigations only inside `<project>/agents/` using `YYYY-MM-DD-<topic>-plan.md` or `YYYY-MM-DD-<topic>-investigation.md`
+- This file is a bootstrap shim, not a durable memory store.
+
 Memory bootstrap (template-first)
 - Copy missing files/dirs from `.aidocs/templates/memory/**` to `/.MEMORY/**`.
+- Copy missing files/dirs from `.aidocs/templates/agents/**` to `/agents/**`.
 - Required canonical files/dirs:
   - `/.MEMORY/NOW.md`
+  - `/.MEMORY/DONE.md`
   - `/.MEMORY/INDEX.md`
   - `/.MEMORY/rules/*`
   - `/.MEMORY/system/*`
@@ -43,11 +62,12 @@ Memory bootstrap (template-first)
 - This creates the empty memory structure only. Run `/reingest` and choose `full-reingest` to populate memory from project docs.
 
 Routing update
-- Ensure project `AGENTS.md`/`CLAUDE.md` route to `/.MEMORY/*` and `.aidocs/index.aidocs`.
+- Ensure project `AGENTS.md`/`CLAUDE.md` route to `/.MEMORY/INDEX.md`, `/.MEMORY/NOW.md`, then `.aidocs/index.aidocs`.
 - Keep entry files short.
 
 Archive behavior
 - `/archive` promotes from `/.MEMORY/daily/*` into canonical categories with merge semantics.
+- `/archive` snapshots `NOW.md` into `DONE.md` and then resets `NOW.md`.
 - Processed logs move to `/.MEMORY/archive/`.
 
 NOW.md initialization contract

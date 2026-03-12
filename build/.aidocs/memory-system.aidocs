@@ -5,10 +5,16 @@ Purpose
 
 Location
 - Runtime memory lives in project-root `/.MEMORY/`.
-- Entry files (`AGENTS.md`, `CLAUDE.md`) are routers, not memory stores.
+- Main memory entry point is `/.MEMORY/INDEX.md`.
+- `/.MEMORY/NOW.md` holds live task state and is reached from `INDEX.md`.
+- Entry files (`AGENTS.md`, `CLAUDE.md`) are routers, not memory stores; they must point to `/.MEMORY/INDEX.md`, not bare `/.MEMORY/`.
+- Claude external `~/.claude/projects/<resolved>/memory/MEMORY.md` is a redirect/bootstrap shim into project-local `/.MEMORY/`; it is not a durable memory store.
+- Spawned-agent task artifacts live in project-root `/agents/`.
+- Multi-repo/monorepo rule: use the active target project's `/.MEMORY/` for all reads/writes; do not cross-write memory between projects unless explicitly requested.
 
 Canonical structure
 - `/.MEMORY/NOW.md`
+- `/.MEMORY/DONE.md`
 - `/.MEMORY/INDEX.md`
 - `/.MEMORY/rules/standards.md`
 - `/.MEMORY/rules/security.md`
@@ -23,6 +29,10 @@ Canonical structure
 - `/.MEMORY/daily/YYYY-MM-DD.md`
 - `/.MEMORY/archive/`
 
+Adjacent task-artifact structure
+- `/agents/YYYY-MM-DD-<topic>-plan.md`
+- `/agents/YYYY-MM-DD-<topic>-investigation.md`
+
 Semantic contracts
 - rules/*: normative rules only (must/should/must-not).
 - system/*: current-state system facts, invariants, procedures.
@@ -30,7 +40,9 @@ Semantic contracts
 - related-projects/*: cross-project issue and fix handoff logs for dependent/connected projects.
 - domains/*: topic/feature-specific constraints, caveats, and decisions (Decision | Why | Impact | Supersedes).
 - plans/*: implementation plans for non-trivial tasks. Written before execution, cleaned up after verification.
-- INDEX.md: router only (links + short summaries), no duplicated content.
+- `/agents/*`: spawned-agent working artifacts only; not canonical memory. Promote durable findings into `/.MEMORY/**`.
+- INDEX.md: main memory router only (links + short summaries), no duplicated content; list `NOW.md` first under Runtime.
+- DONE.md: append-only completion ledger created by `/archive` from NOW snapshots.
 
 Runtime write policy
 - Not init-only.
@@ -72,21 +84,23 @@ Archive policy
 - Merge/edit existing entries (no duplicate append-only content).
 - Use `Supersedes:` when replacing prior guidance.
 - Move processed logs to `/.MEMORY/archive/`.
+- `/archive` must snapshot current `NOW.md` into `DONE.md` (timestamped entry), then reset `NOW.md` to template state.
 
 Template-first
 - Initialize memory from `.aidocs/templates/memory/**` (copy missing files), then merge extracted guidance.
 
 Retrieval order
-1) `/.MEMORY/NOW.md`
-2) `/.MEMORY/INDEX.md`
+1) `/.MEMORY/INDEX.md`
+2) `/.MEMORY/NOW.md`
 3) only relevant canonical files
 4) targeted daily snippets only when needed
 
 Compaction/resume gate
-- After context compaction or session resume, re-read `/.MEMORY/NOW.md` before any new planning or execution.
+- After context compaction or session resume, re-read `/.MEMORY/INDEX.md` first, then `/.MEMORY/NOW.md`, before any new planning or execution.
 - Do not continue prior momentum until `NOW.md` has been revalidated against the current user message.
 
 Guardrails
 - Never store secrets/sensitive data.
 - Do not promote speculation or one-off noise.
 - If memory conflicts with code/docs, record conflict and propose resolution.
+- Memory entries must be token-lean while preserving exact user intent (no loss of constraints/qualifiers/priority markers).

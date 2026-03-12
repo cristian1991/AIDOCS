@@ -16,17 +16,20 @@ Contract
   - `.aidocs/index.aidocs`
   - linked shared docs
   - `.aidocs/personalities/` directory (all personality definition files)
-- Refresh project `AGENTS.md` and `CLAUDE.md` with project-local relative routes.
-- Copy only missing memory template files; never overwrite existing `/.MEMORY/*`.
+- Refresh project `AGENTS.md` and `CLAUDE.md` with project-local relative routes in this order: `/.MEMORY/INDEX.md`, `/.MEMORY/NOW.md`, `.aidocs/index.aidocs`.
+- Copy missing memory template files; for routing-critical memory files, normalize managed routing text without overwriting project-specific facts.
+- Copy missing `/agents/` template files from `.aidocs/templates/agents/**`.
 - Regenerate Claude Code auto-memory file:
   - Resolve Claude projects directory: `~/.claude/projects/`.
   - Prefer updating existing project folders whose normalized name matches the current project root.
   - If no existing folder is found, create deterministic candidate folders from the current project root using both drive-letter variants (for example `e--Projects-Tools-AutoDeployBase` and `E--Projects-Tools-AutoDeployBase`) and use the first candidate.
   - Target file: `~/.claude/projects/<resolved>/memory/MEMORY.md` (create parent directories if missing).
   - This file is auto-loaded into every Claude Code session's system prompt.
-  - Must contain a managed AIDOCS block: memory system bootstrap instructions (how to use `/.MEMORY/`), canonical structure reference, and condensed critical learnings (`!!!`+) from `/.MEMORY/domains/*.md` and `/.MEMORY/rules/*.md`.
-  - Keep under 200 lines. Full details stay in `/.MEMORY/` files.
-  - Preserve non-managed user content if present; replace only the managed AIDOCS block between explicit start/end markers.
+  - Rewrite the file as redirect-only bootstrap content.
+  - It must point to `<project>/.MEMORY/INDEX.md` first and `<project>/.MEMORY/NOW.md` second.
+  - It must explicitly forbid storing memory, plans, summaries, or task output there.
+  - It must direct spawned-agent plans/investigations to `<project>/agents/` using `YYYY-MM-DD-<topic>-plan.md` or `YYYY-MM-DD-<topic>-investigation.md`.
+  - Do not preserve side content; the file is not a secondary memory surface.
   - MEMORY.md is READ-ONLY during normal sessions — only `/project-update` writes managed content.
 - Do not run ingestion/restructuring/topic-map rebuild unless explicitly requested.
 - Include command pack version from `.aidocs/command-pack.version` in the sync report when available.
@@ -35,10 +38,12 @@ Contract
 - Include related-project memory status in report (`/.MEMORY/related-projects/FIXES_BY_OTHER_AGENTS.md` present).
 - Hard gate after sync: re-read updated project routing/instructions before continuing any other task:
   1) `AGENTS.md` and/or `CLAUDE.md`
-  2) `.aidocs/index.aidocs`
-  3) linked shared docs from the index
+  2) `/.MEMORY/INDEX.md`
+  3) `/.MEMORY/NOW.md`
+  4) `.aidocs/index.aidocs`
+  5) linked shared docs from the index
   This applies in the same session (no restart required).
 
 Safety
-- Re-read `/.MEMORY/NOW.md` before planning and after compaction/session resume.
+- Re-read `/.MEMORY/INDEX.md` first, then `/.MEMORY/NOW.md`, before planning and after compaction/session resume.
 - Log update outcome to today's daily file.

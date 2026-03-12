@@ -9,6 +9,7 @@ Version: `AIDOCS-kit-v0.7.0` (2026-02-11)
 - OpenCode commands: `.opencode/command/*.md`
 - Claude commands: `.claude/commands/*.md`
 - Installer: `scripts/install-agent-routing.cmd` + `scripts/install-agent-routing.ps1`
+- Utilities: `scripts/check-memory-drift.cmd` + `scripts/check-memory-drift.ps1`
 
 ## Install on another PC
 1) Copy the `build/` folder (or the whole AIDOCS repo) anywhere.
@@ -22,7 +23,10 @@ Installer will create/update:
 
 ## Notes
 - Default remote creation visibility is private.
-- Runtime memory path is project-root `/.MEMORY/`.
+- Main memory entry point is project-root `/.MEMORY/INDEX.md`.
+- Runtime task state is project-root `/.MEMORY/NOW.md`.
+- Spawned-agent plans/investigations go in project-root `/agents/` with dated logical filenames.
+- Use `scripts/check-memory-drift.cmd [path]` to scan a folder tree for memory routing/index drift.
 - Use `/project-init` to initialize a new project.
 - Use `/project-update` to sync existing projects to latest.
 - Use `/reingest` and choose `full-reingest` to populate memory from project docs.

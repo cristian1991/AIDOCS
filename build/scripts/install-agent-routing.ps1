@@ -34,7 +34,7 @@ New-Item -ItemType Directory -Force -Path $opencodeCommandsDir | Out-Null
 New-Item -ItemType Directory -Force -Path $claudeDir | Out-Null
 New-Item -ItemType Directory -Force -Path $claudeCommandsDir | Out-Null
 
-$header = "STOP"
+$header = [System.Char]::ConvertFromUtf32(0x1F6D1) + " STOP"
 
 $globalAgents = @"
 # Global AGENTS.md - Cross-Agent Bootstrap
@@ -47,13 +47,18 @@ Non-negotiables:
 - If user provides an error, explain WHY first; if clear, fix; if unclear, STOP and ask.
 - When clarification is needed, print a blank line, then: $header
 - Read only files relevant to the task (do not scan full repo by default).
+- After entering a project, read project `AGENTS.md`/`CLAUDE.md`, then `/.MEMORY/INDEX.md`, then `/.MEMORY/NOW.md`.
+- Durable memory, plans, and task output belong only in project-local `/.MEMORY/**`.
+- Spawned-agent plans/investigations belong in project-root `/agents/YYYY-MM-DD-<topic>-plan.md` or `/agents/YYYY-MM-DD-<topic>-investigation.md`.
 - If user states a durable fact/rule/lesson/preference to remember, persist it immediately to categorized project memory and log it in today's daily file.
 - Router files list/link docs only; do not force-load full documentation by default.
 - If context is insufficient, read necessary related docs + memory files; if still unclear, STOP and ask.
+- If a STOP condition appears during a multi-step script/command sequence, halt immediately and issue STOP (do not run remaining steps).
 
 Routing order:
-1) $root\.aidocs\index.aidocs
-2) Project-local docs linked by the project router
+1) Project `AGENTS.md` or `CLAUDE.md` if present
+2) $root\.aidocs\index.aidocs
+3) Project-local docs linked by the project router
 "@
 
 $globalClaude = @"
@@ -67,17 +72,24 @@ Non-negotiables:
 - If user provides an error, explain WHY first; if clear, fix; if unclear, STOP and ask.
 - When clarification is needed, print a blank line, then: $header
 - Read only files relevant to the task (do not scan full repo by default).
+- After entering a project, read project `AGENTS.md`/`CLAUDE.md`, then `/.MEMORY/INDEX.md`, then `/.MEMORY/NOW.md`.
+- Durable memory, plans, and task output belong only in project-local `/.MEMORY/**`.
+- Claude auto-memory `~/.claude/projects/<resolved>/memory/MEMORY.md` is bootstrap-only; never store memory, plans, or task output there.
+- Spawned-agent plans/investigations belong in project-root `/agents/YYYY-MM-DD-<topic>-plan.md` or `/agents/YYYY-MM-DD-<topic>-investigation.md`.
 - If user states a durable fact/rule/lesson/preference to remember, persist it immediately to categorized project memory and log it in today's daily file.
 - Router files list/link docs only; do not force-load full documentation by default.
 - If context is insufficient, read necessary related docs + memory files; if still unclear, STOP and ask.
+- If a STOP condition appears during a multi-step script/command sequence, halt immediately and issue STOP (do not run remaining steps).
 
 Routing order:
-1) $root\.aidocs\index.aidocs
-2) Project-local docs linked by the project router
+1) Project `AGENTS.md` or `CLAUDE.md` if present
+2) $root\.aidocs\index.aidocs
+3) Project-local docs linked by the project router
 "@
 
-Set-Content -Path (Join-Path $opencodeDir "AGENTS.md") -Value $globalAgents -Encoding UTF8
-Set-Content -Path (Join-Path $claudeDir "CLAUDE.md") -Value $globalClaude -Encoding UTF8
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText((Join-Path $opencodeDir "AGENTS.md"), $globalAgents, $utf8NoBom)
+[System.IO.File]::WriteAllText((Join-Path $claudeDir "CLAUDE.md"), $globalClaude, $utf8NoBom)
 
 $commandsDirs = @(
   (Join-Path $root ".opencode\commands"),

@@ -11,11 +11,13 @@ Works with **Claude Code** and **OpenCode**. Drop it into any project and your a
 1. Clone or copy the `AIDOCS` folder anywhere on your machine.
 2. Double-click `build/scripts/install-agent-routing.cmd`.
 
-That's it. The installer wires up global routing files so every new agent session knows where AIDOCS lives:
+That's it. The installer wires up global routing files so every new agent session knows where the AIDOCS runtime root lives.
 
 - `%USERPROFILE%\.claude\CLAUDE.md` — Claude Code global config
 - `%USERPROFILE%\.config\opencode\AGENTS.md` — OpenCode global config
 - Copies all commands to both agent profiles
+
+The runtime/public root is `build/`, even when you edit the source repo at root.
 
 ### Initialize a project
 
@@ -39,6 +41,19 @@ Then run:
 
 Choose `full-reingest`. This reads your project's documentation and ingests it into structured memory categories the agent can reference later.
 
+At session start, restart, or resume-after-compaction, you can also run:
+
+```
+/memstart
+```
+
+This intentionally warms the agent by reading the local `.aidocs` core setup docs and project memory entry files before deeper work.
+
+Read order is:
+- local `.aidocs/index.aidocs`
+- `/.MEMORY/NOW.md`
+- `/.MEMORY/INDEX.md`
+
 ### Update an existing project
 
 When AIDOCS gets new commands or updated docs:
@@ -55,6 +70,7 @@ Syncs system files without re-running full initialization. Your memory and proje
 
 | Command | What it does |
 |---------|-------------|
+| `/memstart` | Warm startup context: read local `.aidocs` core setup docs plus project memory routers/indexes |
 | `/project-init` | Initialize a new project: git bootstrap, copy system files, create memory structure |
 | `/project-update` | Sync system files to latest version without full re-init |
 | `/reingest` | Ask for ingestion mode (full/git/date) and refresh memory |
@@ -185,6 +201,7 @@ scripts/check-memory-drift.cmd D:\Projects
 ```
 
 - With no argument, it launches an interactive folder selector in the console.
+- Interactive controls: Up/Down move through the visible tree, Right enters the selected drive/folder, Left goes up/back out, Enter starts the scan in the current folder, Esc cancels, and `P` pastes a full path.
 - With a path argument, it scans that root directly.
 - Common generated folders are skipped automatically (`.git`, `node_modules`, `bin`, `obj`, `.builder/workspaces`, `coverage`, `dist`).
 - Exit code `0` means no drift, `1` means drift found, `2` means no projects found or the check failed.

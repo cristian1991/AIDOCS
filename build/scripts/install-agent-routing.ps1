@@ -10,12 +10,18 @@ if (-not $RootPath -or $RootPath.Trim() -eq "") {
 }
 
 $root = (Resolve-Path $RootPath).Path
-$indexFile = Join-Path $root ".aidocs\index.aidocs"
-if (-not (Test-Path $indexFile)) {
-  throw ".aidocs/index.aidocs not found at: $root"
+$sourceRoot = $root
+$buildCandidate = Join-Path $root "build"
+if (Test-Path (Join-Path $buildCandidate ".aidocs\index.aidocs")) {
+  $sourceRoot = (Resolve-Path $buildCandidate).Path
 }
 
-$versionFile = Join-Path $root ".aidocs\command-pack.version"
+$indexFile = Join-Path $sourceRoot ".aidocs\index.aidocs"
+if (-not (Test-Path $indexFile)) {
+  throw ".aidocs/index.aidocs not found at runtime root: $sourceRoot"
+}
+
+$versionFile = Join-Path $sourceRoot ".aidocs\command-pack.version"
 $commandPackVersion = "unknown"
 if (Test-Path $versionFile) {
   $rawVersion = (Get-Content -Path $versionFile -ErrorAction SilentlyContinue | Select-Object -First 1)
@@ -39,7 +45,7 @@ $header = [System.Char]::ConvertFromUtf32(0x1F6D1) + " STOP"
 $globalAgents = @"
 # Global AGENTS.md - Cross-Agent Bootstrap
 
-AIDOCS source: $root
+AIDOCS source: $sourceRoot
 
 Non-negotiables:
 - Do not operate outside the current project unless explicitly instructed.
@@ -47,7 +53,7 @@ Non-negotiables:
 - If user provides an error, explain WHY first; if clear, fix; if unclear, STOP and ask.
 - When clarification is needed, print a blank line, then: $header
 - Read only files relevant to the task (do not scan full repo by default).
-- After entering a project, read project `AGENTS.md`/`CLAUDE.md`, then `/.MEMORY/INDEX.md`, then `/.MEMORY/NOW.md`.
+- After entering a project, read project `AGENTS.md`/`CLAUDE.md`, then `.aidocs/index.aidocs`, then `/.MEMORY/NOW.md`, then `/.MEMORY/INDEX.md`.
 - Durable memory, plans, and task output belong only in project-local `/.MEMORY/**`.
 - Spawned-agent plans/investigations belong in project-root `/agents/YYYY-MM-DD-<topic>-plan.md` or `/agents/YYYY-MM-DD-<topic>-investigation.md`.
 - If user states a durable fact/rule/lesson/preference to remember, persist it immediately to categorized project memory and log it in today's daily file.
@@ -57,14 +63,14 @@ Non-negotiables:
 
 Routing order:
 1) Project `AGENTS.md` or `CLAUDE.md` if present
-2) $root\.aidocs\index.aidocs
-3) Project-local docs linked by the project router
+2) Follow the project router (`.aidocs/index.aidocs` -> `/.MEMORY/NOW.md` -> `/.MEMORY/INDEX.md`)
+3) If project setup is missing, fall back to $sourceRoot\.aidocs\index.aidocs
 "@
 
 $globalClaude = @"
 # Global CLAUDE.md - Cross-Agent Bootstrap
 
-AIDOCS source: $root
+AIDOCS source: $sourceRoot
 
 Non-negotiables:
 - Do not operate outside the current project unless explicitly instructed.
@@ -72,7 +78,7 @@ Non-negotiables:
 - If user provides an error, explain WHY first; if clear, fix; if unclear, STOP and ask.
 - When clarification is needed, print a blank line, then: $header
 - Read only files relevant to the task (do not scan full repo by default).
-- After entering a project, read project `AGENTS.md`/`CLAUDE.md`, then `/.MEMORY/INDEX.md`, then `/.MEMORY/NOW.md`.
+- After entering a project, read project `AGENTS.md`/`CLAUDE.md`, then `.aidocs/index.aidocs`, then `/.MEMORY/NOW.md`, then `/.MEMORY/INDEX.md`.
 - Durable memory, plans, and task output belong only in project-local `/.MEMORY/**`.
 - Claude auto-memory `~/.claude/projects/<resolved>/memory/MEMORY.md` is bootstrap-only; never store memory, plans, or task output there.
 - Spawned-agent plans/investigations belong in project-root `/agents/YYYY-MM-DD-<topic>-plan.md` or `/agents/YYYY-MM-DD-<topic>-investigation.md`.
@@ -83,8 +89,8 @@ Non-negotiables:
 
 Routing order:
 1) Project `AGENTS.md` or `CLAUDE.md` if present
-2) $root\.aidocs\index.aidocs
-3) Project-local docs linked by the project router
+2) Follow the project router (`.aidocs/index.aidocs` -> `/.MEMORY/NOW.md` -> `/.MEMORY/INDEX.md`)
+3) If project setup is missing, fall back to $sourceRoot\.aidocs\index.aidocs
 "@
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -92,8 +98,8 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText((Join-Path $claudeDir "CLAUDE.md"), $globalClaude, $utf8NoBom)
 
 $commandsDirs = @(
-  (Join-Path $root ".opencode\commands"),
-  (Join-Path $root ".opencode\command")
+  (Join-Path $sourceRoot ".opencode\commands"),
+  (Join-Path $sourceRoot ".opencode\command")
 )
 
 $skipGlobalCommands = @("doctor.md")
@@ -115,7 +121,7 @@ foreach ($srcDir in $commandsDirs) {
   }
 }
 
-$claudeCommandSrcDir = Join-Path $root ".claude\commands"
+$claudeCommandSrcDir = Join-Path $sourceRoot ".claude\commands"
 $claudeCopied = @{}
 if (Test-Path $claudeCommandSrcDir) {
   Get-ChildItem -Path $claudeCommandSrcDir -Filter "*.md" -File | ForEach-Object {
@@ -136,10 +142,11 @@ foreach ($k in $copied.Keys) {
 foreach ($k in $claudeCopied.Keys) {
   Write-Host "-" $k
 }
-Write-Host "AIDOCS source wired to:" $root
+Write-Host "AIDOCS source wired to:" $sourceRoot
 Write-Host "Command pack version:" $commandPackVersion
 
 $requiredCommandFiles = @(
+  "memstart.md",
   "project-init.md",
   "project-update.md",
   "reingest.md",

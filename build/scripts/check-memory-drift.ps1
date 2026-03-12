@@ -36,36 +36,40 @@ function Select-DriveRoot {
     throw "No filesystem drives found."
   }
 
+  $selectedIndex = 0
   while ($true) {
+    Clear-Host
+    Write-Host "Memory Drift Check"
+    Write-Host "Controls: Up/Down = move  Right = enter selected drive  Enter = scan selected drive  Esc = cancel"
     Write-Host ""
-    Write-Host "Select a drive:" 
+    Write-Host "Select a drive:"
     for ($i = 0; $i -lt $drives.Count; $i++) {
-      Write-Host ("[{0}] {1}: {2}" -f ($i + 1), $drives[$i].Name, $drives[$i].Root)
+      $prefix = if ($i -eq $selectedIndex) { ">" } else { " " }
+      Write-Host ("{0} {1}: {2}" -f $prefix, $drives[$i].Name, $drives[$i].Root)
     }
 
-    $choice = (Read-Host "Enter number, drive letter, or q to cancel").Trim()
-    if ($choice -match '^[Qq]$') {
-      throw "Selection cancelled."
-    }
-
-    if ($choice -match '^\d+$') {
-      $index = [int]$choice - 1
-      if ($index -ge 0 -and $index -lt $drives.Count) {
-        return $drives[$index].Root
+    $key = [Console]::ReadKey($true).Key
+    switch ($key) {
+      'UpArrow' {
+        if ($selectedIndex -gt 0) {
+          $selectedIndex--
+        }
       }
+      'DownArrow' {
+        if ($selectedIndex -lt ($drives.Count - 1)) {
+          $selectedIndex++
+        }
+      }
+      'RightArrow' { return $drives[$selectedIndex].Root }
+      'Enter' { return $drives[$selectedIndex].Root }
+      'Escape' { throw "Selection cancelled." }
     }
-
-    $driveMatch = $drives | Where-Object { $_.Name -ieq $choice.TrimEnd(':') } | Select-Object -First 1
-    if ($driveMatch) {
-      return $driveMatch.Root
-    }
-
-    Write-Host "Invalid selection. Try again."
   }
 }
 
 function Select-ScanRoot {
   $current = Select-DriveRoot
+  $selectedIndex = 0
 
   while ($true) {
     $children = @()
@@ -73,62 +77,88 @@ function Select-ScanRoot {
       $children = Get-ChildItem -LiteralPath $current -Directory -Force -ErrorAction SilentlyContinue | Sort-Object Name
     }
 
+    if ($selectedIndex -ge $children.Count) {
+      $selectedIndex = [Math]::Max(0, $children.Count - 1)
+    }
+
+    Clear-Host
+    Write-Host "Memory Drift Check"
+    Write-Host "Controls: Up/Down = move  Right = enter selected folder  Left = go up/back  Enter = scan current folder  Esc = cancel  P = paste full path"
     Write-Host ""
     Write-Host ("Current folder: {0}" -f $current)
-    Write-Host "[Enter] Start scan here"
-    Write-Host "[..]    Go up one level"
-    Write-Host "[d]     Change drive"
-    Write-Host "[p]     Paste a full folder path"
-    Write-Host "[q]     Cancel"
+    Write-Host "Press Enter to start the scan in the current folder."
     if ($children.Count -gt 0) {
       Write-Host ""
       for ($i = 0; $i -lt $children.Count; $i++) {
-        Write-Host ("[{0}] {1}" -f ($i + 1), $children[$i].Name)
+        $prefix = if ($i -eq $selectedIndex) { ">" } else { " " }
+        Write-Host ("{0} {1}" -f $prefix, $children[$i].Name)
       }
     } else {
       Write-Host ""
       Write-Host "(No child directories)"
     }
 
-    $choice = (Read-Host "Choose an option").Trim()
-    if ($choice -eq "") {
-      return $current
-    }
-
-    if ($choice -eq "..") {
-      $parent = Split-Path -Parent $current
-      if ($parent -and (Test-Path -LiteralPath $parent -PathType Container)) {
-        $current = $parent
-      }
-      continue
-    }
-
-    switch -Regex ($choice) {
-      '^[Qq]$' { throw "Selection cancelled." }
-      '^[Dd]$' { $current = Select-DriveRoot; continue }
-      '^[Pp]$' {
-        $manualPath = (Read-Host "Enter folder path").Trim()
-        if (Test-Path -LiteralPath $manualPath -PathType Container) {
-          $current = (Resolve-Path -LiteralPath $manualPath).Path
-        } else {
-          Write-Host "Path not found."
+    $key = [Console]::ReadKey($true)
+    switch ($key.Key) {
+      'UpArrow' {
+        if ($selectedIndex -gt 0) {
+          $selectedIndex--
         }
         continue
       }
-      '^\d+$' {
-        $index = [int]$choice - 1
-        if ($index -ge 0 -and $index -lt $children.Count) {
-          $current = $children[$index].FullName
-        } else {
-          Write-Host "Invalid selection."
+      'DownArrow' {
+        if ($selectedIndex -lt ($children.Count - 1)) {
+          $selectedIndex++
         }
         continue
       }
+      'RightArrow' {
+        if ($children.Count -gt 0) {
+          $current = $children[$selectedIndex].FullName
+          $selectedIndex = 0
+        }
+        continue
+      }
+      'LeftArrow' {
+        $parent = Split-Path -Parent $current
+        if (-not $parent) {
+          $current = Select-DriveRoot
+          $selectedIndex = 0
+          continue
+        }
+
+        $resolvedCurrent = (Resolve-Path -LiteralPath $current).Path
+        $isDriveRoot = ($resolvedCurrent.TrimEnd('\') + '\') -eq $resolvedCurrent
+        if ($isDriveRoot) {
+          $current = Select-DriveRoot
+          $selectedIndex = 0
+        } elseif (Test-Path -LiteralPath $parent -PathType Container) {
+          $childName = Split-Path -Leaf $current
+          $current = $parent
+          $siblings = Get-ChildItem -LiteralPath $current -Directory -Force -ErrorAction SilentlyContinue | Sort-Object Name
+          $matchIndex = 0
+          for ($i = 0; $i -lt $siblings.Count; $i++) {
+            if ($siblings[$i].Name -eq $childName) {
+              $matchIndex = $i
+              break
+            }
+          }
+          $selectedIndex = $matchIndex
+        }
+        continue
+      }
+      'Enter' { return $current }
+      'Escape' { throw "Selection cancelled." }
       default {
-        if (Test-Path -LiteralPath $choice -PathType Container) {
-          $current = (Resolve-Path -LiteralPath $choice).Path
-        } else {
-          Write-Host "Invalid selection."
+        if ($key.KeyChar -in @('p', 'P')) {
+          $manualPath = (Read-Host "Enter folder path").Trim()
+          if (Test-Path -LiteralPath $manualPath -PathType Container) {
+            $current = (Resolve-Path -LiteralPath $manualPath).Path
+            $selectedIndex = 0
+          } else {
+            Write-Host "Path not found."
+            Start-Sleep -Milliseconds 700
+          }
         }
       }
     }
@@ -154,8 +184,8 @@ function Test-RouterFile {
   if ($indexPos -lt 0) { $issues += 'missing /.MEMORY/INDEX.md' }
   if ($nowPos -lt 0) { $issues += 'missing /.MEMORY/NOW.md' }
   if ($aidocsPos -lt 0) { $issues += 'missing .aidocs/index.aidocs' }
-  if ($issues.Count -eq 0 -and -not ($indexPos -lt $nowPos -and $nowPos -lt $aidocsPos)) {
-    $issues += 'router order is not INDEX -> NOW -> .aidocs/index'
+  if ($issues.Count -eq 0 -and -not ($aidocsPos -lt $nowPos -and $nowPos -lt $indexPos)) {
+    $issues += 'router order is not .aidocs/index -> NOW -> INDEX'
   }
 
   return @{ Exists = $true; Ok = ($issues.Count -eq 0); Issues = $issues }

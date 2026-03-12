@@ -8,7 +8,7 @@ This file is internal project documentation — agents do not need to read it. A
 
 ```
 .aidocs/
-  index.aidocs             → Shared documentation router
+  index.aidocs             → Shared documentation router / session-start entry
   global-instructions.*    → Agent behavior rules
   coding-standards.*       → Code quality rules
   memory-system.*          → Memory protocol
@@ -25,7 +25,7 @@ This file is internal project documentation — agents do not need to read it. A
 .opencode/command/         → OpenCode command files
 scripts/                   → Installer, drift checker, and build sync scripts
 
-build/                     → Distributable kit (synced from root via scripts/sync-build)
+build/                     → Distributable kit and runtime/public root (synced from root via scripts/sync-build)
   .aidocs/                 → Copy of system docs
   .claude/commands/        → Copy of Claude commands
   .opencode/command/       → Copy of OpenCode commands
@@ -69,6 +69,7 @@ This copies the distributable manifest from root to `build/`.
 
 | Command | Description |
 |---------|-------------|
+| `/memstart` | Warm startup context from local `.aidocs` core setup docs plus project memory entry files |
 | `/project-init` | Initialize a project: git bootstrap, copy system files, create memory structure |
 | `/project-update` | Sync system files to latest without full re-init |
 | `/reingest` | Primary ingestion command: ask user for full/git/date scope, then refresh memory accordingly |

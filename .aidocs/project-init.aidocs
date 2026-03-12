@@ -9,19 +9,23 @@ Pre-edit checks
 
 Source resolution (!!!):
 - AIDOCS source path MUST be read from the global routing file (`~/.claude/CLAUDE.md` or `~/.config/opencode/AGENTS.md`), which contains `AIDOCS source: <path>`.
+- That source path is the runtime/public AIDOCS root; in normal installs it is the `build/` directory.
 - Never compute, search, or guess the source path. The installer `.cmd` is the sole authority that sets this path.
 
 Portable system copy
 - `/project-init` copies project-local routing/docs/memory scaffolding. Command execution remains global.
 - Copy into project root (create if missing):
   - `.aidocs/index.aidocs`
-  - linked shared docs required by the index
+  - `.aidocs/global-instructions.aidocs`
+  - `.aidocs/coding-standards.aidocs`
+  - `.aidocs/memory-system.aidocs`
+  - other shared docs linked by the shipped `.aidocs/index.aidocs`
   - `.aidocs/personalities/` directory (all personality definition files)
   - `/agents/` task-artifact workspace
 - Generate/refresh project `AGENTS.md` and `CLAUDE.md` with project-local relative routing in this order:
-  1. `/.MEMORY/INDEX.md`
+  1. `.aidocs/index.aidocs`
   2. `/.MEMORY/NOW.md`
-  3. `.aidocs/index.aidocs`
+  3. `/.MEMORY/INDEX.md`
 - If any required source artifact is missing, STOP and ask before partial copy.
 - For already initialized projects, prefer `/project-update` to refresh system artifacts without rerunning full init.
 
@@ -37,8 +41,9 @@ Claude redirect bootstrap
 - Target file: `~/.claude/projects/<resolved>/memory/MEMORY.md` (create parent directories if needed).
 - Rewrite the file as redirect-only content:
   - do not store memory, plans, summaries, or task output there
-  - read `<project>/.MEMORY/INDEX.md` first
+  - read `<project>/.aidocs/index.aidocs` first
   - read `<project>/.MEMORY/NOW.md` for runtime state
+  - read `<project>/.MEMORY/INDEX.md` as the memory router
   - write durable memory only inside `<project>/.MEMORY/**`
   - write spawned-agent plans/investigations only inside `<project>/agents/` using `YYYY-MM-DD-<topic>-plan.md` or `YYYY-MM-DD-<topic>-investigation.md`
 - This file is a bootstrap shim, not a durable memory store.
@@ -62,7 +67,7 @@ Memory bootstrap (template-first)
 - This creates the empty memory structure only. Run `/reingest` and choose `full-reingest` to populate memory from project docs.
 
 Routing update
-- Ensure project `AGENTS.md`/`CLAUDE.md` route to `/.MEMORY/INDEX.md`, `/.MEMORY/NOW.md`, then `.aidocs/index.aidocs`.
+- Ensure project `AGENTS.md`/`CLAUDE.md` route to `.aidocs/index.aidocs`, then `/.MEMORY/NOW.md`, then `/.MEMORY/INDEX.md`.
 - Keep entry files short.
 
 Archive behavior
@@ -81,13 +86,16 @@ NOW.md initialization contract
 - If task plan is multi-step, prefill `Upcoming` with at least 3 items when available.
 
 NOW.md task-lifecycle contract (!!!)
-- The agent task lifecycle for NOW.md is: Receive → Analyse → Write NOW.md → Execute → Update NOW.md → Checkpoint.
+- The agent task lifecycle for NOW.md is: Receive → Analyse → Write NOW.md → Read memory/code if needed → Execute → Update NOW.md → Write Done → Report.
 - Specifically:
   1. **Receive**: User provides a task.
   2. **Analyse**: Agent reads files, understands scope, plans approach. This is NOT execution.
-  3. **Write NOW.md**: Agent writes Goal + Active + State + Upcoming to NOW.md. This is the FIRST write of the task.
-  4. **Execute**: Agent performs the task (code changes, edits, tool calls).
-  5. **Update**: On material state changes during execution, update NOW.md.
-  6. **Checkpoint**: After edits are actually applied, the editing agent writes daily outcome and cleans NOW active-task state.
+  3. **Write NOW.md**: Agent writes Goal + Active + State + Upcoming to NOW.md and clears stale previous-task items from `Done`. This is the FIRST write of the task.
+  4. **Read Context**: Agent reads memory indexes/files and code/docs as needed for full understanding.
+  5. **Execute**: Agent performs the task (code changes, edits, tool calls).
+  6. **Update**: On material state changes during execution, update NOW.md.
+  7. **Write Done**: After edits are actually applied, the editing agent writes the completed task/result into `Done`.
+  8. **Report**: The editing agent writes daily outcome and reports to the user.
 - Skipping step 3 is a protocol violation. NOW.md must reflect the current task BEFORE work begins.
 - Investigating/research-only agents must not perform step 6.
+- If anything is unclear at any step, STOP.

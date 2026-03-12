@@ -2,7 +2,17 @@
 
 This file routes to the shared documentation that applies across projects.
 
+Inside initialized projects, this is the session-start documentation entry point.
+
 Router policy: this file is a link/list router only. Do not treat it as a forced full-load import list.
+
+## Core Setup Docs
+- `.aidocs/index.aidocs`
+- `.aidocs/global-instructions.aidocs`
+- `.aidocs/coding-standards.aidocs`
+- `.aidocs/memory-system.aidocs`
+
+These files must exist in initialized projects. `/project-update` rewrites them from the AIDOCS source root.
 
 ## Shared Docs
 - `.aidocs/global-instructions.aidocs`

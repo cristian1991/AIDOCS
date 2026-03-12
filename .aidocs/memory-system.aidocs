@@ -4,10 +4,11 @@ Purpose
 - Keep reusable project knowledge in files, not transient chat context.
 
 Location
+- Session-start entry point is project-local `.aidocs/index.aidocs`.
 - Runtime memory lives in project-root `/.MEMORY/`.
 - Main memory entry point is `/.MEMORY/INDEX.md`.
 - `/.MEMORY/NOW.md` holds live task state and is reached from `INDEX.md`.
-- Entry files (`AGENTS.md`, `CLAUDE.md`) are routers, not memory stores; they must point to `/.MEMORY/INDEX.md`, not bare `/.MEMORY/`.
+- Entry files (`AGENTS.md`, `CLAUDE.md`) are routers, not memory stores; they must point to `.aidocs/index.aidocs`, then `/.MEMORY/NOW.md`, then `/.MEMORY/INDEX.md`.
 - Claude external `~/.claude/projects/<resolved>/memory/MEMORY.md` is a redirect/bootstrap shim into project-local `/.MEMORY/`; it is not a durable memory store.
 - Spawned-agent task artifacts live in project-root `/agents/`.
 - Multi-repo/monorepo rule: use the active target project's `/.MEMORY/` for all reads/writes; do not cross-write memory between projects unless explicitly requested.
@@ -48,16 +49,19 @@ Runtime write policy
 - Not init-only.
 - **Pre-action NOW.md write (!!!)**: When the agent receives a new task from the user, BEFORE executing any part of the task, the agent MUST:
   1. Analyse the task (understand scope, identify files, plan approach).
-  2. Write `/.MEMORY/NOW.md` with the new Goal, Active task, State, and Upcoming queue.
-  3. Only THEN begin executing the task.
+  2. Rewrite `/.MEMORY/NOW.md` with the new Goal, Active task, State, and Upcoming queue, and clear prior completed-task items from `Done`.
+  3. Read memory indexes/files if needed for task context.
+  4. Only THEN begin executing the task.
   This ensures NOW.md is always current before any code changes, file edits, or tool calls related to the task itself. Reading files to understand the task counts as analysis, not execution.
 - On material state changes during execution, update `/.MEMORY/NOW.md` again.
 - Maintain a task queue in `NOW.md`, not a single next step.
 - Keep `Active` + ordered `Upcoming` tasks/phases so multi-step automation can continue without user interaction.
 - Investigating/research-only agents must not perform final task-closure writes.
 - The editing agent that actually applies edits must perform final task-closure writes after edits are completed:
+  - write the completed task/result into the `Done/Recent` area of `NOW.md`
   - append notable outcomes in today's daily file
   - clean/reset NOW active-task fields for the completed task
+  - STOP immediately if anything is unclear at any step
 - If a local fix is caused by another related project, append a handoff item to `/.MEMORY/related-projects/FIXES_BY_OTHER_AGENTS.md` with: `Date | Related Project | Issue | Fix Applied Here | Upstream Follow-up Needed`.
 
 Immediate capture
@@ -90,13 +94,14 @@ Template-first
 - Initialize memory from `.aidocs/templates/memory/**` (copy missing files), then merge extracted guidance.
 
 Retrieval order
-1) `/.MEMORY/INDEX.md`
+1) `.aidocs/index.aidocs`
 2) `/.MEMORY/NOW.md`
-3) only relevant canonical files
-4) targeted daily snippets only when needed
+3) `/.MEMORY/INDEX.md`
+4) only relevant canonical files
+5) targeted daily snippets only when needed
 
 Compaction/resume gate
-- After context compaction or session resume, re-read `/.MEMORY/INDEX.md` first, then `/.MEMORY/NOW.md`, before any new planning or execution.
+- After context compaction or session resume, re-read `.aidocs/index.aidocs` first, then `/.MEMORY/NOW.md`, then `/.MEMORY/INDEX.md`, before any new planning or execution.
 - Do not continue prior momentum until `NOW.md` has been revalidated against the current user message.
 
 Guardrails

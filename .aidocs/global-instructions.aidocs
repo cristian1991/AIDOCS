@@ -6,11 +6,11 @@ Per-project memory isolation (!!!):
 - In multi-repo or monorepo work, always read/write the memory system of the active target project only.
 - Do not read/write another project's `/.MEMORY/` unless the user explicitly asks for cross-project memory operations.
 
-Operating checklist (per task): (1) read project router (`AGENTS.md` or `CLAUDE.md`) if present; (2) read `/.MEMORY/INDEX.md`; (3) read `/.MEMORY/NOW.md`; (4) open only task-relevant linked files; (5) analyse the task + write `NOW.md` BEFORE executing; (6) KISS + minimal changes; (7) if you need info, use STOP.
+Operating checklist (per task): (1) read project router (`AGENTS.md` or `CLAUDE.md`) if present; (2) read project `.aidocs/index.aidocs`; (3) read the core local `.aidocs` setup files needed for startup (`global-instructions`, `coding-standards`, `memory-system`); (4) read `/.MEMORY/NOW.md`; (5) read `/.MEMORY/INDEX.md`; (6) open only task-relevant linked files; (7) analyse the task + write `NOW.md` BEFORE executing; (8) KISS + minimal changes; (9) if you need info, use STOP.
 
 Session-resume safety (anti-rogue):
-- On any fresh session, context compaction return, or crash-recovery resume, read `/.MEMORY/INDEX.md` first, then `/.MEMORY/NOW.md`, before planning or taking action.
-- Treat `INDEX.md` as the memory router and `NOW.md` as the current mission/constraint authority for in-progress work.
+- On any fresh session, context compaction return, or crash-recovery resume, read project `.aidocs/index.aidocs` first, then `/.MEMORY/NOW.md`, then `/.MEMORY/INDEX.md`, before planning or taking action.
+- Treat `.aidocs/*` as startup/setup authority, `NOW.md` as the current mission/constraint authority, and `INDEX.md` as the memory router.
 - If `NOW.md` conflicts with newly provided user instructions, follow the user and update `NOW.md` immediately.
 
 Router policy: global/router files must list/link specific entry files only; do not force-load/import large doc sets by default; do not use bare memory directory targets when `INDEX.md` or `NOW.md` is intended.
@@ -61,12 +61,14 @@ Spawned-agent artifacts (!!!):
 - `/agents/` is a task-artifact workspace, not canonical durable memory; promote durable findings into `/.MEMORY/**` when they matter beyond the current task.
 
 Operational memory writes (not init-only):
-- **Pre-action write (!!!)**: On receiving a new task, BEFORE executing: (1) analyse the task, (2) write `/.MEMORY/NOW.md` with Goal + Active + State + Upcoming, (3) only then begin execution. Reading files to understand the task is analysis, not execution.
+- **Pre-action write (!!!)**: On receiving a new task, BEFORE executing: (1) analyse the task, (2) rewrite `/.MEMORY/NOW.md` with Goal + Active + State + Upcoming and clear previous completed-task items from `Done`, (3) read memory indexes/files if needed for task context, (4) only then begin execution. Reading files to understand the task is analysis, not execution.
 - During execution, on material state changes, update `/.MEMORY/NOW.md`.
 - Investigating/research-only agents must not finalize task memory closure.
 - The editing agent that actually applies edits is responsible for task closure memory writes after edits complete:
+  - write the completed task/result into `/.MEMORY/NOW.md` `Done`
   - append outcome to today's `/.MEMORY/daily/YYYY-MM-DD.md`
   - clean/reset `/.MEMORY/NOW.md` active task state for the completed task
+  - STOP immediately if anything is unclear at any step of this lifecycle
 
 Durable instruction capture: when the user states a durable fact/rule/lesson/preference to remember, persist it immediately to the appropriate categorized memory file and log the event in today's daily file (do not wait for `/archive`).
 

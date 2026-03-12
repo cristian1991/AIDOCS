@@ -17,6 +17,19 @@
 -
 
 ## Done
+- Added `/memstart` for Claude and OpenCode as the explicit startup/restart warm-up command.
+- Shifted the session-start order to `.aidocs/index.aidocs` -> `/.MEMORY/NOW.md` -> `/.MEMORY/INDEX.md` and aligned contracts, project routers, global bootstrap, drift checks, and Claude shims.
+- Re-copied updated `.aidocs/` into all audited D-drive projects, fixed router entry order, and verified the audited projects pass the drift checker.
+- Began `/memstart` command implementation planning and captured the startup-read intent in runtime memory.
+- Aligned AIDOCS contracts so `build/` is the runtime/public root and `/project-update` explicitly recopies the core setup `.aidocs` files from there.
+- Synced `build/` and refreshed live global bootstrap/command packs from `build/`.
+- Captured new durable rule: `build/` is the runtime/public AIDOCS root, and `/project-update` must explicitly recopy core setup `.aidocs` files from there.
+- Reviewed the current command surface and identified high-value next commands/features.
+- Ran a lightweight sanity check on core routing/memory artifacts and a token-compaction review of key contract files.
+- Began command-surface review and lightweight sanity/token-compaction check.
+- Upgraded the public memory-drift checker interactive mode to use arrow-key drive/folder navigation with on-screen instructions.
+- Synced the updated selector to `build/` and verified path-argument scan mode still works on `D:\Projects` and `D:\Games`.
+- Began arrow-key navigation upgrade for the public memory-drift checker.
 - Fully normalized the remaining partial legacy repos' `.aidocs/` trees.
 - Added reusable public drift-check scripts in `scripts/` and `build/scripts/` with argument or interactive scan-root selection.
 - Verified the drift checker on known-good roots and taught it to skip common generated folders.

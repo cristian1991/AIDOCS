@@ -210,6 +210,19 @@ function Get-MarkdownLinks {
   return $targets
 }
 
+function Test-IgnoredLegacyMemoryPath {
+  param(
+    [string]$RelativePath
+  )
+
+  if ([string]::IsNullOrWhiteSpace($RelativePath)) {
+    return $false
+  }
+
+  $normalized = $RelativePath.Trim().Replace('\\', '/')
+  return $normalized -in @('TODO.md', 'DONE.md')
+}
+
 function Test-MemoryIndex {
   param(
     [string]$ProjectRoot
@@ -239,6 +252,8 @@ function Test-MemoryIndex {
       Where-Object {
         $_.Name -ne 'INDEX.md' -and
         $_.Name -ne '.gitkeep' -and
+        $_.Name -ne 'TODO.md' -and
+        $_.Name -ne 'DONE.md' -and
         $_.FullName -notmatch '\\.MEMORY\\\.aidocs\\' -and
         $_.FullName -notmatch '\\.MEMORY\\agents\\' -and
         $_.FullName -notmatch '\\.MEMORY\\archive\\'
@@ -255,6 +270,9 @@ function Test-MemoryIndex {
   $missingLinks = @($memoryFiles | Where-Object { -not $links.Contains($_) } | Sort-Object -Unique)
   $brokenLinks = @()
   foreach ($link in $links) {
+    if (Test-IgnoredLegacyMemoryPath -RelativePath $link) {
+      continue
+    }
     $resolved = Join-Path $memoryRoot ($link -replace '/', '\')
     if (-not (Test-Path -LiteralPath $resolved)) {
       $brokenLinks += $link

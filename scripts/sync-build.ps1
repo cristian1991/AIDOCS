@@ -10,23 +10,18 @@ if (-not $RootPath -or $RootPath.Trim() -eq "") {
 }
 
 $root = (Resolve-Path $RootPath).Path
-$indexFile = Join-Path $root ".aidocs\index.aidocs"
-if (-not (Test-Path $indexFile)) {
-  throw ".aidocs/index.aidocs not found at: $root"
-}
-
 $buildDir = Join-Path $root "build"
-
-# Clear build directory (preserve .git if present)
-if (Test-Path $buildDir) {
-  Get-ChildItem -Path $buildDir -Force | Where-Object { $_.Name -ne ".git" } | Remove-Item -Recurse -Force
+$indexFile = Join-Path $buildDir ".MEMORY\.aidocs\index.aidocs"
+if (-not (Test-Path $indexFile)) {
+  throw "build/.MEMORY/.aidocs/index.aidocs not found at: $buildDir"
 }
 
-New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+$sourceRoot = $buildDir
+$targetRoot = $root
 
-# Manifest: directories to copy
+# Manifest: directories to mirror outward from build/
 $dirCopies = @(
-  @{ Src = ".aidocs"; Dst = ".aidocs" }
+  @{ Src = ".MEMORY\.aidocs"; Dst = ".MEMORY\.aidocs" }
 )
 
 # Manifest: specific subdirectories (only .md files)
@@ -39,10 +34,7 @@ $commandCopies = @(
 $fileCopies = @(
   "AGENTS.md",
   "CLAUDE.md",
-  "opencode.jsonc",
-  "AIDOCS.md",
-  "README.md",
-  "README_INSTALL.md"
+  "opencode.jsonc"
 )
 
 # Manifest: scripts directory
@@ -55,11 +47,15 @@ $scriptCopies = @(
 
 $synced = @()
 
-# Copy full directories
+# Copy full directories from build/ to root
 foreach ($dir in $dirCopies) {
-  $srcPath = Join-Path $root $dir.Src
-  $dstPath = Join-Path $buildDir $dir.Dst
+  $srcPath = Join-Path $sourceRoot $dir.Src
+  $dstPath = Join-Path $targetRoot $dir.Dst
   if (Test-Path $srcPath) {
+    $dstParent = Split-Path -Parent $dstPath
+    if (-not [string]::IsNullOrWhiteSpace($dstParent)) {
+      New-Item -ItemType Directory -Force -Path $dstParent | Out-Null
+    }
     Copy-Item -Recurse -Force $srcPath $dstPath
     $synced += $dir.Dst + "/"
   } else {
@@ -67,10 +63,10 @@ foreach ($dir in $dirCopies) {
   }
 }
 
-# Copy command directories (only .md files)
+# Copy command directories (only .md files) from build/ to root
 foreach ($cmd in $commandCopies) {
-  $srcPath = Join-Path $root $cmd.Src
-  $dstPath = Join-Path $buildDir $cmd.Dst
+  $srcPath = Join-Path $sourceRoot $cmd.Src
+  $dstPath = Join-Path $targetRoot $cmd.Dst
   if (Test-Path $srcPath) {
     New-Item -ItemType Directory -Force -Path $dstPath | Out-Null
     Get-ChildItem -Path $srcPath -Filter $cmd.Filter -File | ForEach-Object {
@@ -84,8 +80,8 @@ foreach ($cmd in $commandCopies) {
 
 # Copy individual files
 foreach ($file in $fileCopies) {
-  $srcPath = Join-Path $root $file
-  $dstPath = Join-Path $buildDir $file
+  $srcPath = Join-Path $sourceRoot $file
+  $dstPath = Join-Path $targetRoot $file
   if (Test-Path $srcPath) {
     Copy-Item -Force $srcPath $dstPath
     $synced += $file
@@ -94,12 +90,12 @@ foreach ($file in $fileCopies) {
   }
 }
 
-# Copy scripts
-$scriptsDstDir = Join-Path $buildDir "scripts"
+# Copy scripts from build/ to root
+$scriptsDstDir = Join-Path $targetRoot "scripts"
 New-Item -ItemType Directory -Force -Path $scriptsDstDir | Out-Null
 foreach ($script in $scriptCopies) {
-  $srcPath = Join-Path $root $script
-  $dstPath = Join-Path $buildDir $script
+  $srcPath = Join-Path $sourceRoot $script
+  $dstPath = Join-Path $targetRoot $script
   if (Test-Path $srcPath) {
     Copy-Item -Force $srcPath $dstPath
     $synced += $script
@@ -108,8 +104,9 @@ foreach ($script in $scriptCopies) {
   }
 }
 
-Write-Host "Synced $($synced.Count) items to build/:"
+Write-Host "Mirrored $($synced.Count) items from build/ to root:"
 foreach ($item in $synced) {
   Write-Host "  $item"
 }
-Write-Host "Build directory: $buildDir"
+Write-Host "Source build: $buildDir"
+Write-Host "Mirror target: $targetRoot"

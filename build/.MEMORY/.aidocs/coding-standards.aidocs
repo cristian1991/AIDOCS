@@ -1,0 +1,38 @@
+# .aidocs/coding-standards.aidocs - Global Coding Standards
+
+## Baseline Rules
+- Work only inside the project unless explicitly instructed otherwise.
+- Prefer existing patterns and reuse over new abstractions.
+- KISS: keep it stupidly simple (so simple that even stupid can understand).
+- Keep changes minimal, focused, and reversible.
+- Avoid adding comments unless the logic is non-obvious.
+
+## Data-Driven Design
+- Do not hardcode business rules or scoped fields in general/shared code.
+- Prefer using the generalized domain entities/config (e.g., tenant/org/workspace + role/level definitions) as data.
+- If you find yourself adding special-case fields/branches for one tenant/customer, stop and propose a generalized approach.
+
+## Reuse Over Reinvent
+- Prefer reusing existing project interfaces (CLI/server APIs/tools) over adding new parallel implementations.
+
+## Reuse (General)
+- Default to reuse: if the project already has a way to do something (module, service, CLI, API), use it.
+- Only introduce a new path when the existing one cannot meet the requirements; explain why.
+
+## Agent Defaults
+- If a rule is ambiguous, ask for the smallest missing detail before proceeding.
+- Prefer simple, local changes over large refactors unless explicitly requested.
+- If you discover unexpected architecture, pause and re-scope before editing.
+
+## Debugging And Errors
+- When the user provides an error (stack trace, log, failing command), first explain WHY the error appeared in plain terms.
+- If the cause is 100% clear, then fix the error.
+- If the cause is not 100% clear, ask for the smallest missing detail before making risky changes.
+
+## Documentation Expectations
+- Project documentation should include an index file.
+- Keep routing concise and actionable.
+- When documentation and code disagree, report both options with rationale.
+
+## Data (NF)
+- Prefer database designs that follow normal forms (NF1..NF5) unless there is a clear, documented reason to denormalize.

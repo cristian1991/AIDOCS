@@ -177,15 +177,15 @@ function Test-RouterFile {
   [string]$content = Get-Content -LiteralPath $FilePath -Raw -Encoding UTF8
   $indexPos = $content.IndexOf('/.MEMORY/INDEX.md', [System.StringComparison]::Ordinal)
   $nowPos = $content.IndexOf('/.MEMORY/NOW.md', [System.StringComparison]::Ordinal)
-  $aidocsPos = $content.IndexOf('.aidocs/index.aidocs', [System.StringComparison]::Ordinal)
+  $aidocsPos = $content.IndexOf('/.MEMORY/.aidocs/index.aidocs', [System.StringComparison]::Ordinal)
   $issues = @()
 
   if ([string]::IsNullOrWhiteSpace($content)) { $issues += 'file is empty' }
   if ($indexPos -lt 0) { $issues += 'missing /.MEMORY/INDEX.md' }
   if ($nowPos -lt 0) { $issues += 'missing /.MEMORY/NOW.md' }
-  if ($aidocsPos -lt 0) { $issues += 'missing .aidocs/index.aidocs' }
+  if ($aidocsPos -lt 0) { $issues += 'missing /.MEMORY/.aidocs/index.aidocs' }
   if ($issues.Count -eq 0 -and -not ($aidocsPos -lt $nowPos -and $nowPos -lt $indexPos)) {
-    $issues += 'router order is not .aidocs/index -> NOW -> INDEX'
+    $issues += 'router order is not /.MEMORY/.aidocs/index -> NOW -> INDEX'
   }
 
   return @{ Exists = $true; Ok = ($issues.Count -eq 0); Issues = $issues }
@@ -226,17 +226,23 @@ function Test-MemoryIndex {
   if ($content -notmatch '(?m)^# Memory Index\s*$') {
     $issues += 'INDEX.md header is not `# Memory Index`'
   }
-  if ($content -notmatch [regex]::Escape('Main project memory entry point. Router only.')) {
+  if ($content -notmatch [regex]::Escape('Durable-memory router only. Not the session-start entry point.')) {
     $issues += 'INDEX.md is missing the router-only declaration'
   }
-  if ($content -notmatch [regex]::Escape('Read `NOW.md` for active runtime state.')) {
-    $issues += 'INDEX.md is missing the runtime-use guidance'
+  if ($content -notmatch [regex]::Escape('Read `/.MEMORY/.aidocs/index.aidocs` first.')) {
+    $issues += 'INDEX.md is missing the session-entry guidance'
   }
 
   $links = Get-MarkdownLinks -Text $content
   $memoryFiles = @(
     Get-ChildItem -LiteralPath $memoryRoot -Recurse -File -Force -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -ne 'INDEX.md' -and $_.Name -ne '.gitkeep' } |
+      Where-Object {
+        $_.Name -ne 'INDEX.md' -and
+        $_.Name -ne '.gitkeep' -and
+        $_.FullName -notmatch '\\.MEMORY\\\.aidocs\\' -and
+        $_.FullName -notmatch '\\.MEMORY\\agents\\' -and
+        $_.FullName -notmatch '\\.MEMORY\\archive\\'
+      } |
       ForEach-Object {
         [string]$fullName = $_.FullName
         if ([string]::IsNullOrWhiteSpace($fullName) -or $fullName.Length -le $memoryRoot.Length) {
@@ -278,7 +284,7 @@ function Test-MemoryProject {
   try {
     $agents = Test-RouterFile -FilePath (Join-Path $ProjectRoot 'AGENTS.md')
     $claude = Test-RouterFile -FilePath (Join-Path $ProjectRoot 'CLAUDE.md')
-    $aidocsIndex = Join-Path $ProjectRoot '.aidocs\index.aidocs'
+    $aidocsIndex = Join-Path $ProjectRoot '.MEMORY\.aidocs\index.aidocs'
     $index = Test-MemoryIndex -ProjectRoot $ProjectRoot
   }
   catch {
@@ -299,7 +305,7 @@ function Test-MemoryProject {
     $issues += ('CLAUDE.md: ' + ($claude.Issues -join '; '))
   }
   if (-not (Test-Path -LiteralPath $aidocsIndex -PathType Leaf)) {
-    $issues += 'missing .aidocs/index.aidocs'
+    $issues += 'missing /.MEMORY/.aidocs/index.aidocs'
   }
   if (-not $index.Ok) {
     $issues += $index.Issues

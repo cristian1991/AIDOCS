@@ -1,15 +1,19 @@
 # Memory Index
 
-Main project memory entry point. Router only.
+Durable-memory router only. Not the session-start entry point.
 
-Use:
-1. Read `NOW.md` for active runtime state.
-2. Open only relevant linked files below.
-3. Write durable memory only inside `/.MEMORY/**`.
+Read order:
+1. Read `/.MEMORY/.aidocs/index.aidocs` first.
+2. Read `NOW.md` for active runtime state.
+3. Only then use this file to open relevant durable-memory files.
+
+## Adjacent
+- [/.MEMORY/.aidocs/index.aidocs](.aidocs/index.aidocs) — session-start router
+- [NOW.md](NOW.md) — runtime task state
+- [CHANGELOG.md](CHANGELOG.md) — completed work history created by `/archive`
 
 ## Runtime
-- [NOW.md](NOW.md) — active task state
-- [DONE.md](DONE.md) — archived NOW snapshots (completion ledger)
+- (runtime state is in `NOW.md`; do not duplicate it here)
 
 ## Rules
 - [standards.md](rules/standards.md) — coding conventions, engineering rules
@@ -31,12 +35,13 @@ Use:
 - [memory-system.md](domains/memory-system.md) — canonical memory entry/routing decisions and Claude enforcement rules
 
 ## Plans
-(none yet — implementation plans go here)
+(none yet — active implementation plans live here and are referenced from `NOW.md`)
 
 ## Daily
 - [2026-03-05.md](daily/2026-03-05.md) — session log
 - [2026-03-08.md](daily/2026-03-08.md) — session log
 - [2026-03-12.md](daily/2026-03-12.md) — session log
+- [2026-03-15.md](daily/2026-03-15.md) — session log
 
 ## Archive
-(none yet — archived daily logs go here)
+(archived daily logs and completed plan files go here)

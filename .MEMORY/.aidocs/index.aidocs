@@ -1,42 +1,19 @@
-# /.MEMORY/.aidocs/index.aidocs - Documentation Index
+# /.MEMORY/.aidocs/index.aidocs
 
-This file routes to the memory-system-local documentation that applies across projects.
+Session-start router only.
 
-Inside initialized projects, this is the session-start documentation entry point.
+Read in order:
+1. `/.MEMORY/.aidocs/global-instructions.aidocs`
+2. `/.MEMORY/.aidocs/coding-standards.aidocs`
+3. `/.MEMORY/.aidocs/memory-system.aidocs`
+4. `/.MEMORY/NOW.md`
+5. `/.MEMORY/INDEX.md`
 
-Router policy: this file is a link/list router only. Do not treat it as a forced full-load import list.
+Then open only task-relevant linked files.
 
-Read order when reached directly:
-1. Stay in this file first.
-2. Read `/.MEMORY/NOW.md`.
-3. Read `/.MEMORY/INDEX.md`.
-4. Open only task-relevant linked files.
-
-## Core Setup Docs
-- `/.MEMORY/.aidocs/index.aidocs`
-- `/.MEMORY/.aidocs/global-instructions.aidocs`
-- `/.MEMORY/.aidocs/coding-standards.aidocs`
-- `/.MEMORY/.aidocs/memory-system.aidocs`
-
-These files must exist in initialized projects. `/project-update` rewrites them from the AIDOCS source root.
-
-## Runtime Routers
-- `/.MEMORY/NOW.md`
-- `/.MEMORY/INDEX.md`
+Also available when needed:
+- `/.MEMORY/.aidocs/research-safety.aidocs`
+- `/.MEMORY/.aidocs/personality-system.aidocs`
 - `/.MEMORY/CHANGELOG.md`
 
-## Shared Docs
-- `/.MEMORY/.aidocs/global-instructions.aidocs`
-- `/.MEMORY/.aidocs/coding-standards.aidocs`
-- `/.MEMORY/.aidocs/memory-system.aidocs`
-- `/.MEMORY/.aidocs/research-safety.aidocs`
-- `/.MEMORY/.aidocs/project-init.aidocs`
-- `/.MEMORY/.aidocs/project-update.aidocs`
-- `/.MEMORY/.aidocs/personality-system.aidocs`
-- `/.MEMORY/.aidocs/reingest-system.aidocs`
-- `/.MEMORY/.aidocs/cleanup-system.aidocs`
-
-## Project-Specific Docs
-Each project should add its own documentation index and link it here as it is created.
-Use `/project-init` to initialize a new project.
-Use `/project-update` to sync system files in already initialized projects.
+Command logic lives in global command packs, not in `/.MEMORY/.aidocs/`.

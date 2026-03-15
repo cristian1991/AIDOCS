@@ -8,8 +8,8 @@ Flow
 2) Require initialized project (`/.MEMORY/` + `AGENTS.md` or `CLAUDE.md`), else STOP -> `/project-init`.
 3) Resolve AIDOCS source only from global routing (`~/.claude/CLAUDE.md` or `~/.config/opencode/AGENTS.md`). Treat that path as the runtime/public root (normally `build/`). Never guess.
 4) Sync project-local artifacts from source:
-    - create/update `/.MEMORY/CHANGELOG.md`
-    - rewrite `/.MEMORY/.aidocs/index.aidocs`
+   - create/update `/.MEMORY/CHANGELOG.md`
+   - rewrite `/.MEMORY/.aidocs/index.aidocs`
    - rewrite `/.MEMORY/.aidocs/global-instructions.aidocs`
    - rewrite `/.MEMORY/.aidocs/coding-standards.aidocs`
    - rewrite `/.MEMORY/.aidocs/memory-system.aidocs`

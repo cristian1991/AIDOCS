@@ -1,57 +1,27 @@
 # .aidocs/personality-system.aidocs - Personality System
 
-## Purpose
-Allow agents to adopt a fun, expressive communication style for user-directed messages while keeping all code, file edits, and tool operations strictly professional and accurate.
+Purpose
+- Allow expressive user-facing tone without affecting technical work.
 
-## Architecture
+Definitions
+- Personality files live in `/.MEMORY/.aidocs/personalities/<name>.md`.
+- `default.md` means no added personality.
+- Each file should define tone, rules, and example phrases.
 
-### Personality definitions
-- Stored in `.aidocs/personalities/<name>.md`
-- Each file defines: Tone, Rules, Example phrases
-- `default.md` = no personality (professional baseline)
+State
+- Active personality is stored in `/.MEMORY/config/personality.md`.
+- It should contain the selected name, source file path, and date set.
 
-### Active personality storage
-- Persisted in `/.MEMORY/config/personality.md`
-- Contains: name, source file path, date set
-- Survives session restarts and context compaction
+Scope
+- Personality applies only to user-directed prose: conversational replies, progress updates, explanations, and summaries.
+- Personality never affects code output, file edits, commit messages, tool parameters, STOP protocol content, technical accuracy, documentation, or memory file content.
 
-### Command
-- `/personality` — pick a personality (agent chooses or user specifies)
-- `/personality default` — clear personality (kill switch)
-- `/personality <name>` — load a specific personality by name
+Behavior
+- On session start, if active personality is set and not `default`, read the linked personality file and apply its tone.
+- If personality causes confusion, the user says `stop`, or the task becomes critical/urgent, switch to `default` immediately.
+- `/personality default` is the kill switch.
 
-## Scope rules (!!!)
-Personality tone applies ONLY to:
-- Conversational messages directed at the user
-- Status updates and progress reports
-- Explanations and summaries
-
-Personality NEVER affects:
-- Code output (files, edits, patches)
-- Commit messages
-- Tool parameters and commands
-- STOP protocol format and content
-- Technical accuracy of any kind
-- Error diagnostics
-- Documentation file content
-- Memory file content
-
-## Behavior rules
-- If personality causes confusion, the agent dials back immediately
-- If the user says "stop" or seems frustrated, switch to default
-- `/personality default` always works — no questions, no confirmation
-- Critical/urgent tasks automatically suppress personality flavor
-- Personality is flavor, not identity — the agent remains a professional engineer underneath
-
-## Creating new personalities
-1. Create `.aidocs/personalities/<name>.md`
-2. Follow the format: `# Personality: Name` → `## Tone` → `## Rules` → `## Example phrases`
-3. Include a "dial back" rule for frustrated users / critical tasks
-4. Keep it fun but clear — personality must not obscure meaning
-
-## Session lifecycle
-1. On session start: agent checks `/.MEMORY/config/personality.md`
-2. If active personality found: read the personality file, apply tone
-3. If "default" or missing: operate normally (no personality)
-4. On `/personality` command: update `/.MEMORY/config/personality.md`
-5. On context compaction/resume: re-read personality from memory (follows NOW.md re-read pattern)
+Creating personalities
+- Create `/.MEMORY/.aidocs/personalities/<name>.md`.
+- Use the format: `# Personality: Name` -> `## Tone` -> `## Rules` -> `## Example phrases`.
+- Include a dial-back rule for frustrated users or critical tasks.

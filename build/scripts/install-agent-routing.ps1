@@ -97,39 +97,40 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText((Join-Path $opencodeDir "AGENTS.md"), $globalAgents, $utf8NoBom)
 [System.IO.File]::WriteAllText((Join-Path $claudeDir "CLAUDE.md"), $globalClaude, $utf8NoBom)
 
-$commandsDirs = @(
-  (Join-Path $sourceRoot ".opencode\commands"),
-  (Join-Path $sourceRoot ".opencode\command")
-)
-
 $skipGlobalCommands = @("doctor.md")
+
+$sharedCommandsDir = Join-Path $sourceRoot ".commands"
 
 # Clean target command dirs before copying (removes stale/renamed commands)
 Get-ChildItem -Path $opencodeCommandsDir -Filter "*.md" -File -ErrorAction SilentlyContinue | Remove-Item -Force
 Get-ChildItem -Path $claudeCommandsDir -Filter "*.md" -File -ErrorAction SilentlyContinue | Remove-Item -Force
 
 $copied = @{}
-foreach ($srcDir in $commandsDirs) {
-  if (Test-Path $srcDir) {
-    Get-ChildItem -Path $srcDir -Filter "*.md" -File | ForEach-Object {
-      if (-not ($skipGlobalCommands -contains $_.Name)) {
-        $dst = Join-Path $opencodeCommandsDir $_.Name
-        Copy-Item -Force $_.FullName $dst
-        $copied[$dst] = $true
-      }
-    }
-  }
+$claudeCopied = @{}
+if (-not (Test-Path $sharedCommandsDir)) {
+  throw "Missing shared command source folder: $sharedCommandsDir"
 }
 
-$claudeCommandSrcDir = Join-Path $sourceRoot ".claude\commands"
-$claudeCopied = @{}
-if (Test-Path $claudeCommandSrcDir) {
-  Get-ChildItem -Path $claudeCommandSrcDir -Filter "*.md" -File | ForEach-Object {
-    if (-not ($skipGlobalCommands -contains $_.Name)) {
-      $dst = Join-Path $claudeCommandsDir $_.Name
-      Copy-Item -Force $_.FullName $dst
-      $claudeCopied[$dst] = $true
+Get-ChildItem -Path $sharedCommandsDir -Filter "*.md" -File | ForEach-Object {
+  if (-not ($skipGlobalCommands -contains $_.Name)) {
+    $raw = [System.IO.File]::ReadAllText($_.FullName)
+
+    $claudeDst = Join-Path $claudeCommandsDir $_.Name
+    [System.IO.File]::WriteAllText($claudeDst, $raw, $utf8NoBom)
+    $claudeCopied[$claudeDst] = $true
+
+    $opencodeRaw = $raw
+    if ($opencodeRaw -match "(?s)^---\r?\n(.*?)\r?\n---") {
+      $frontmatter = $matches[1]
+      if ($frontmatter -notmatch "(?m)^agent:\s*") {
+        $replacement = "---`r`n$frontmatter`r`nagent: build`r`n---"
+        $opencodeRaw = [System.Text.RegularExpressions.Regex]::Replace($opencodeRaw, "(?s)^---\r?\n(.*?)\r?\n---", [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $replacement }, 1)
+      }
     }
+
+    $opencodeDst = Join-Path $opencodeCommandsDir $_.Name
+    [System.IO.File]::WriteAllText($opencodeDst, $opencodeRaw, $utf8NoBom)
+    $copied[$opencodeDst] = $true
   }
 }
 
@@ -152,10 +153,7 @@ $requiredCommandFiles = @(
   "reingest.md",
   "archive.md",
   "personality.md",
-  "clean.md",
-  "uber-clean.md",
-  "refactor.md",
-  "uber-refactor.md"
+  "clean.md"
 )
 
 foreach ($commandName in $requiredCommandFiles) {

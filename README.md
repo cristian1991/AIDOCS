@@ -95,3 +95,7 @@ Installed commands:
 - Keep command logic in `build/.commands/` only.
 - Keep memory-system mechanics in `build/.MEMORY/.aidocs/` only.
 - Keep root support copies aligned with canonical `build/` content when needed.
+
+## License
+
+AIDOCS is licensed under Apache 2.0. See `LICENSE` and `NOTICE`.

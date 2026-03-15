@@ -2,6 +2,7 @@
 /.MEMORY/
 /AGENTS.md
 /CLAUDE.md
+/opencode.jsonc
 
 # OpenCode runtime
 .opencode/node_modules/

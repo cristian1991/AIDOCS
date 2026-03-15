@@ -1,37 +1,82 @@
-# AIDOCS Install
+# AIDOCS
 
-## Quick install
+A portable toolkit for AI coding agents. Provides persistent memory, structured commands, and consistent behavior across projects.
 
-From this `build/` directory, run:
+This file is internal project documentation — agents do not need to read it. Agent entry points are `AGENTS.md` and `CLAUDE.md`, which route to `/.MEMORY/.aidocs/index.aidocs`, `/.MEMORY/NOW.md`, and `/.MEMORY/INDEX.md`.
 
-```powershell
-scripts\install-agent-routing.cmd
+## Architecture
+
+```
+.claude/commands/           → Claude Code command files
+.opencode/command/          → OpenCode command files
+scripts/                    → Installer, drift checker, and build sync scripts
+
+build/                      → Distributable kit and runtime/public root (synced from root)
+  .MEMORY/.aidocs/          → Reusable memory-system contracts and templates only
+  .claude/commands/         → Copy of Claude commands
+  .opencode/command/        → Copy of OpenCode commands
+  scripts/                  → Installer and utility scripts
+  AGENTS.md, CLAUDE.md      → External router templates
+  opencode.jsonc            → OpenCode config
+  RELEASE_ROOT.md           → Generated source-vs-release separation marker
+
+/.MEMORY/                   → AIDOCS repo's own fully encapsulated project memory system
+  .aidocs/                  → Session-start docs and system contracts
+    index.aidocs            → Session-start documentation router
+    global-instructions.*   → Agent behavior rules
+    coding-standards.*      → Code quality rules
+    memory-system.*         → Memory protocol
+    project-init.*          → /project-init contract
+    project-update.*        → /project-update contract
+    cleanup-system.*        → Cleanup chain contract
+    personality-system.*    → Personality framework
+    research-safety.*       → Safety guardrails
+    personalities/          → Personality definitions
+    templates/              → Memory-system templates
+  NOW.md                    → Runtime task state
+  INDEX.md                  → Durable-memory router (not session-start entry)
+  CHANGELOG.md              → Completed work history created by /archive
+  agents/                   → Spawned-agent task artifacts
+  rules/                    → Normative rules (standards, security, workflow)
+  system/                   → System facts (architecture, caveats, testing)
+  config/                   → Agent settings (personality, future plugins)
+  related-projects/         → Cross-project issue/fix handoff log
+  domains/                  → Topic-specific knowledge + decisions
+  plans/                    → Active implementation plans
+  daily/                    → Session logs
+  archive/                  → Archived daily logs + completed plans
 ```
 
-## What the installer does
+## Install
 
-- writes global bootstrap routing files for OpenCode and Claude
-- installs the global command packs
-- points the global bootstrap to this directory as the AIDOCS source
+1. Clone or copy the `AIDOCS` folder anywhere.
+2. Double-click `build/scripts/install-agent-routing.cmd`.
 
-## After install
+The installer wires the AIDOCS source path into the user's global agent config and installs the global command pack. Projects then consume AIDOCS through global commands plus project-local `/.MEMORY/` state.
 
-In a target project:
+`build/` is a generated release/runtime root, not this repo's live working memory surface. If you want the separation to be stronger operationally, publishing `build/` from a dedicated repo or release branch is the right model.
 
-1. run `/project-init` to create the project-local AI system
-2. use `/memstart` at session start or after resume/compaction
-3. use `/project-update` when you refresh the installed toolkit
+## Development
 
-## Expected project routing
+After editing system files at root, sync to build:
 
-Initialized projects should route in this order:
+```
+scripts/sync-build.cmd
+```
 
-1. `/.MEMORY/.aidocs/index.aidocs`
-2. `/.MEMORY/NOW.md`
-3. `/.MEMORY/INDEX.md`
+This copies the distributable manifest from root to `build/`.
 
-## Notes
+## Commands
 
-- This directory is the canonical AIDOCS tree.
-- Keep project-specific runtime memory inside each target project's own `/.MEMORY/`.
-- If you update AIDOCS itself, edit this tree first.
+| Command | Description |
+|---------|-------------|
+| `/memstart` | Warm startup context from `/.MEMORY/.aidocs` core setup docs plus project memory entry files |
+| `/project-init` | Initialize a project: git bootstrap, copy system files, create memory structure |
+| `/project-update` | Sync system files to latest without full re-init |
+| `/reingest` | Primary ingestion command: ask user for full/git/date scope, then refresh memory accordingly |
+| `/archive` | Distill daily logs into canonical memory, update `/.MEMORY/CHANGELOG.md`, and archive completed plans |
+| `/personality` | Pick an agent communication personality |
+| `/clean` | Remove orphaned/temp files from project |
+| `/uber-clean` | `/clean` + dead code removal inside files |
+| `/refactor` | `/uber-clean` + duplicate logic consolidation |
+| `/uber-refactor` | `/refactor` + structural analysis & file splitting |

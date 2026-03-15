@@ -1,42 +1,37 @@
-# AIDOCS
+# AIDOCS Install
 
-This directory is the canonical AIDOCS toolkit tree.
+## Quick install
 
-Use this directory when you want to develop, install, or publish AIDOCS.
-
-## What is included
-
-- `AGENTS.md`, `CLAUDE.md` - external router templates
-- `.MEMORY/.aidocs/` - reusable memory-system contracts, startup docs, and templates
-- `.claude/commands/` - Claude command pack
-- `.opencode/command/` - OpenCode command pack
-- `scripts/` - installer and utility scripts
-
-## Install
-
-Run:
+From this `build/` directory, run:
 
 ```powershell
 scripts\install-agent-routing.cmd
 ```
 
-Or see `README_INSTALL.md` for the install flow.
+## What the installer does
+
+- writes global bootstrap routing files for OpenCode and Claude
+- installs the global command packs
+- points the global bootstrap to this directory as the AIDOCS source
+
+## After install
+
+In a target project:
+
+1. run `/project-init` to create the project-local AI system
+2. use `/memstart` at session start or after resume/compaction
+3. use `/project-update` when you refresh the installed toolkit
+
+## Expected project routing
+
+Initialized projects should route in this order:
+
+1. `/.MEMORY/.aidocs/index.aidocs`
+2. `/.MEMORY/NOW.md`
+3. `/.MEMORY/INDEX.md`
 
 ## Notes
 
-- Edit this tree first; mirror outward only when needed.
-- Target projects keep runtime task state inside their own `/.MEMORY/` trees.
-- `.MEMORY/.aidocs/` in this tree is the reusable AIDOCS system layer that gets installed into projects.
-
-## Main commands
-
-- `/memstart`
-- `/project-init`
-- `/project-update`
-- `/reingest`
-- `/archive`
-- `/personality`
-- `/clean`
-- `/uber-clean`
-- `/refactor`
-- `/uber-refactor`
+- This directory is the canonical AIDOCS tree.
+- Keep project-specific runtime memory inside each target project's own `/.MEMORY/`.
+- If you update AIDOCS itself, edit this tree first.

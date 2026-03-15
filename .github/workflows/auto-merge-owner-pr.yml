@@ -21,24 +21,36 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            try {
-              await github.graphql(
-                `mutation EnableAutoMerge($pullRequestId: ID!) {
-                  enablePullRequestAutoMerge(input: {
-                    pullRequestId: $pullRequestId,
-                    mergeMethod: MERGE
-                  }) {
-                    clientMutationId
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+            for (let attempt = 1; attempt <= 10; attempt++) {
+              try {
+                await github.graphql(
+                  `mutation EnableAutoMerge($pullRequestId: ID!) {
+                    enablePullRequestAutoMerge(input: {
+                      pullRequestId: $pullRequestId,
+                      mergeMethod: MERGE
+                    }) {
+                      clientMutationId
+                    }
+                  }`,
+                  {
+                    pullRequestId: context.payload.pull_request.node_id,
                   }
-                }`,
-                {
-                  pullRequestId: context.payload.pull_request.node_id,
-                }
-              )
-            } catch (error) {
-              if (String(error.message).includes('already')) {
-                core.info('Auto-merge already enabled for this PR.')
+                )
+                core.info(`Auto-merge enabled on attempt ${attempt}.`)
                 return
+              } catch (error) {
+                const message = String(error.message)
+                if (message.includes('already')) {
+                  core.info('Auto-merge already enabled for this PR.')
+                  return
+                }
+                if (message.includes('unstable status') && attempt < 10) {
+                  core.info(`PR still unstable on attempt ${attempt}; retrying in 15 seconds.`)
+                  await sleep(15000)
+                  continue
+                }
+                throw error
               }
-              throw error
             }

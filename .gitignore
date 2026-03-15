@@ -1,8 +1,7 @@
-# Session-specific daily logs
-/.MEMORY/daily/*.md
-!/.MEMORY/daily/.gitkeep
-/.MEMORY/archive/
-!/.MEMORY/archive/.gitkeep
+# Local/private root memory + routers
+/.MEMORY/
+/AGENTS.md
+/CLAUDE.md
 
 # OpenCode runtime
 .opencode/node_modules/

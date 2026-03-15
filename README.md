@@ -95,6 +95,7 @@ Installed commands:
 - Keep command logic in `build/.commands/` only.
 - Keep memory-system mechanics in `build/.MEMORY/.aidocs/` only.
 - Keep root support copies aligned with canonical `build/` content when needed.
+- A private working clone can carry local memory and router files, while clean public-safe changes are promoted into the public repo.
 
 ## License
 

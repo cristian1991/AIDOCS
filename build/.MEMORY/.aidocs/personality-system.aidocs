@@ -25,3 +25,5 @@ Creating personalities
 - Create `/.MEMORY/.aidocs/personalities/<name>.md`.
 - Use the format: `# Personality: Name` -> `## Tone` -> `## Rules` -> `## Example phrases`.
 - Include a dial-back rule for frustrated users or critical tasks.
+
+<!-- AIDOCS-MANAGED-ABOVE: write project-specific instructions below this line -->

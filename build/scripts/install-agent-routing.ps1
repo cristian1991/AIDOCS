@@ -53,9 +53,9 @@ Non-negotiables:
 - If user provides an error, explain WHY first; if clear, fix; if unclear, STOP and ask.
 - When clarification is needed, print a blank line, then: $header
 - Read only files relevant to the task (do not scan full repo by default).
-- After entering a project, read project `AGENTS.md`/`CLAUDE.md`, then `/.MEMORY/.aidocs/index.aidocs`, then `/.MEMORY/NOW.md`, then `/.MEMORY/INDEX.md`.
+- After entering a project, read project `AGENTS.md`/`CLAUDE.md`, then `/.MEMORY/.aidocs/index.aidocs`, then `/.MEMORY/INDEX.md`, then inspect `/.MEMORY/sessions/*/SESSION.md` and read the selected session.
 - Durable memory, plans, and task output belong only in project-local `/.MEMORY/**`.
-- Spawned-agent plans/investigations belong in `/.MEMORY/agents/YYYY-MM-DD-<topic>-plan.md` or `/.MEMORY/agents/YYYY-MM-DD-<topic>-investigation.md`.
+- Spawned-agent plans/investigations belong in the active session under `/.MEMORY/sessions/<session-id>/agents/`.
 - If user states a durable fact/rule/lesson/preference to remember, persist it immediately to categorized project memory and log it in today's daily file.
 - Router files list/link docs only; do not force-load full documentation by default.
 - If context is insufficient, read necessary related docs + memory files; if still unclear, STOP and ask.
@@ -63,7 +63,7 @@ Non-negotiables:
 
 Routing order:
 1) Project `AGENTS.md` or `CLAUDE.md` if present
-2) Follow the project router (`/.MEMORY/.aidocs/index.aidocs` -> `/.MEMORY/NOW.md` -> `/.MEMORY/INDEX.md`)
+2) Follow the project router (`/.MEMORY/.aidocs/index.aidocs` -> `/.MEMORY/INDEX.md` -> selected `/.MEMORY/sessions/*/SESSION.md`)
 3) If project setup is missing, fall back to $sourceRoot\.MEMORY\.aidocs\index.aidocs
 "@
 
@@ -78,10 +78,10 @@ Non-negotiables:
 - If user provides an error, explain WHY first; if clear, fix; if unclear, STOP and ask.
 - When clarification is needed, print a blank line, then: $header
 - Read only files relevant to the task (do not scan full repo by default).
-- After entering a project, read project `AGENTS.md`/`CLAUDE.md`, then `/.MEMORY/.aidocs/index.aidocs`, then `/.MEMORY/NOW.md`, then `/.MEMORY/INDEX.md`.
+- After entering a project, read project `AGENTS.md`/`CLAUDE.md`, then `/.MEMORY/.aidocs/index.aidocs`, then `/.MEMORY/INDEX.md`, then inspect `/.MEMORY/sessions/*/SESSION.md` and read the selected session.
 - Durable memory, plans, and task output belong only in project-local `/.MEMORY/**`.
 - Claude auto-memory `~/.claude/projects/<resolved>/memory/MEMORY.md` is bootstrap-only; never store memory, plans, or task output there.
-- Spawned-agent plans/investigations belong in `/.MEMORY/agents/YYYY-MM-DD-<topic>-plan.md` or `/.MEMORY/agents/YYYY-MM-DD-<topic>-investigation.md`.
+- Spawned-agent plans/investigations belong in the active session under `/.MEMORY/sessions/<session-id>/agents/`.
 - If user states a durable fact/rule/lesson/preference to remember, persist it immediately to categorized project memory and log it in today's daily file.
 - Router files list/link docs only; do not force-load full documentation by default.
 - If context is insufficient, read necessary related docs + memory files; if still unclear, STOP and ask.
@@ -89,7 +89,7 @@ Non-negotiables:
 
 Routing order:
 1) Project `AGENTS.md` or `CLAUDE.md` if present
-2) Follow the project router (`/.MEMORY/.aidocs/index.aidocs` -> `/.MEMORY/NOW.md` -> `/.MEMORY/INDEX.md`)
+2) Follow the project router (`/.MEMORY/.aidocs/index.aidocs` -> `/.MEMORY/INDEX.md` -> selected `/.MEMORY/sessions/*/SESSION.md`)
 3) If project setup is missing, fall back to $sourceRoot\.MEMORY\.aidocs\index.aidocs
 "@
 
@@ -150,8 +150,10 @@ $requiredCommandFiles = @(
   "memstart.md",
   "project-init.md",
   "project-update.md",
+  "legacy-update.md",
   "reingest.md",
   "archive.md",
+  "delete-session.md",
   "personality.md",
   "clean.md"
 )

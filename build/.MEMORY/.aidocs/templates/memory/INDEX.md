@@ -4,16 +4,17 @@ Durable-memory router only. Not the session-start entry point.
 
 Read order:
 1. Read `/.MEMORY/.aidocs/index.aidocs` first.
-2. Read `NOW.md` for active runtime state.
-3. Only then use this file to open relevant durable-memory files.
+2. Inspect active sessions under `sessions/*/SESSION.md`.
+3. Read the selected session's `SESSION.md`.
+4. Only then use this file to open relevant durable-memory files.
 
 ## Adjacent
 - [/.MEMORY/.aidocs/index.aidocs](.aidocs/index.aidocs) — session-start router
-- [NOW.md](NOW.md) — runtime task state
 - [CHANGELOG.md](CHANGELOG.md) — completed work history created by `/archive`
 
-## Runtime
-- (runtime state is in `NOW.md`; do not duplicate it here)
+## Sessions
+- `sessions/` — active per-session runtime state
+- `archive/sessions/` — completed session history
 
 ## Rules
 - [standards.md](rules/standards.md) — coding conventions, engineering rules
@@ -34,11 +35,10 @@ Read order:
 ## Domains
 (none yet — topic-specific knowledge + decisions go here)
 
-## Plans
-(none yet — active implementation plans live here and are referenced from `NOW.md`)
-
 ## Daily
 (recent session logs go here)
 
 ## Archive
-(archived daily logs and completed plan files go here)
+(archived daily logs and explicitly archived sessions go here)
+
+<!-- AIDOCS-MANAGED-ABOVE: write project-specific instructions below this line -->

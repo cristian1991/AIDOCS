@@ -5,14 +5,15 @@ Scope
 - In multi-repo or monorepo work, read/write only the active target project's memory system unless the user explicitly asks for cross-project memory operations.
 
 Startup discipline
-- Follow the routing and memory-write rules in `/.MEMORY/.aidocs/memory-system.aidocs`.
-- On new tasks and on resume-after-compaction, re-read the required memory entry files before acting.
+- Follow the routing, session-selection, and memory-write rules in `/.MEMORY/.aidocs/memory-system.aidocs`.
+- On session start, fresh project entry, or resume-after-compaction, re-read the required memory entry files before acting.
+- On a new task inside the current session, re-read the selected `SESSION.md` and any newly relevant linked files before acting.
 
 Priority model
 - `!` = low-priority note. Log in daily; promote only if repeated/useful.
-- `!!` = task-priority. Add to `/.MEMORY/NOW.md` (`Upcoming`) + daily.
+- `!!` = task-priority. Add to the active session `Upcoming` list + daily.
 - `!!!` = durable rule/lesson/preference. Persist immediately to canonical memory file + daily.
-- `!!!!` = high-impact invariant/security/process rule. Persist immediately, pin in `NOW.md` (`Active`), and prioritize execution.
+- `!!!!` = high-impact invariant/security/process rule. Persist immediately, pin in the active session, and prioritize execution.
 - `!!!!!` = critical/blocking directive. STOP unrelated work, acknowledge, persist immediately, and treat as top-priority constraint.
 
 Priority authority
@@ -73,3 +74,5 @@ Generalization
 - In shared/general code, do not hardcode tenant/customer rules or fields.
 - Prefer generalized domain entities/config as data.
 - If a request implies tenant-specific branching in shared code, issue STOP before implementing.
+
+<!-- AIDOCS-MANAGED-ABOVE: write project-specific instructions below this line -->

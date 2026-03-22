@@ -2,7 +2,7 @@
 
 AIDOCS is a portable AI coding-agent toolkit with a routed memory system, global command pack, and consistent cross-project startup behavior.
 
-Agents do not use this file as an entry point. Project entry files are `AGENTS.md` and `CLAUDE.md`, which route into `/.MEMORY/.aidocs/index.aidocs`, `/.MEMORY/NOW.md`, and `/.MEMORY/INDEX.md`.
+Agents do not use this file as an entry point. Project entry files are `AGENTS.md` and `CLAUDE.md`, which route into `/.MEMORY/.aidocs/index.aidocs`, `/.MEMORY/INDEX.md`, and session selection under `/.MEMORY/sessions/*/SESSION.md`.
 
 ## Canonical layout
 
@@ -43,8 +43,12 @@ README_INSTALL.md          -> install notes
 Inside initialized projects, the memory system lives in project-local `/.MEMORY/`.
 
 - `/.MEMORY/.aidocs/index.aidocs` -> session-start router
-- `/.MEMORY/NOW.md` -> runtime task state
 - `/.MEMORY/INDEX.md` -> durable-memory router
+- `/.MEMORY/sessions/<session-id>/SESSION.md` -> selected session router/status
+- `/.MEMORY/sessions/<session-id>/context.md` -> factual session-local context
+- `/.MEMORY/sessions/<session-id>/plans/` -> session-local implementation plans
+- `/.MEMORY/sessions/<session-id>/agents/` -> session-local agent artifacts
+- `/.MEMORY/sessions/<session-id>/artifacts/` -> session-local outputs/logs/reports
 - `/.MEMORY/CHANGELOG.md` -> completed work history
 
 Core split:
@@ -83,11 +87,18 @@ Installed commands:
 |---------|-------------|
 | `/memstart` | Load startup context from the project memory routers |
 | `/project-init` | Initialize a project with routed `/.MEMORY/` scaffolding |
-| `/project-update` | Refresh project-local AI system files to current contracts |
+| `/project-update` | Refresh already-migrated session-based projects to current contracts |
+| `/legacy-update` | Upgrade legacy `NOW.md` / root-plan projects into the session-based model |
 | `/reingest` | Refresh memory by user-selected scope |
-| `/archive` | Promote completed work into `/.MEMORY/CHANGELOG.md` and archive logs/plans |
+| `/archive` | Promote completed work into `/.MEMORY/CHANGELOG.md` and archive logs |
+| `/delete-session` | Explicitly archive or delete a selected session |
 | `/personality` | Set or clear user-facing communication personality |
 | `/clean` | Run cleanup by user-selected scope (`file-clean`, `dead-code-clean`, `dedupe-clean`, `structural-clean`) |
+
+Utility scripts in `build/scripts/`:
+
+- `check-memory-drift.*` -> safe `check`, `check-legacy`, and `fix`
+- `detect-memory-loop.*` -> scan the memory graph for routed link loops
 
 ## Development notes
 
@@ -95,7 +106,7 @@ Installed commands:
 - Keep command logic in `build/.commands/` only.
 - Keep memory-system mechanics in `build/.MEMORY/.aidocs/` only.
 - Keep root support copies aligned with canonical `build/` content when needed.
-- A private working clone can carry local memory and router files, while clean public-safe changes are promoted into the public repo.
+- Keep local/private root memory/router/config files ignored in working clones when they should not be published.
 
 ## License
 

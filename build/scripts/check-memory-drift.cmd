@@ -2,22 +2,34 @@
 setlocal
 
 set SCRIPT_DIR=%~dp0
+set MODE=check
+set TARGET=
 
-if "%~1"=="" (
-  powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%check-memory-drift.ps1"
+if /I "%~1"=="check" (
+  set MODE=check
+  set TARGET=%~2
+) else if /I "%~1"=="fix" (
+  set MODE=fix
+  set TARGET=%~2
 ) else (
-  powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%check-memory-drift.ps1" -ScanRoot "%~1"
+  set TARGET=%~1
+)
+
+if "%TARGET%"=="" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%check-memory-drift.ps1" -Mode %MODE%
+) else (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%check-memory-drift.ps1" -Mode %MODE% -ScanRoot "%TARGET%"
 )
 
 set EXIT_CODE=%ERRORLEVEL%
 
 echo.
 if "%EXIT_CODE%"=="0" (
-  echo Memory drift check completed. No drift found.
+  echo AIDOCS memory %MODE% completed. No drift found.
 ) else if "%EXIT_CODE%"=="1" (
-  echo Memory drift check completed. Drift was found.
+  echo AIDOCS memory %MODE% completed. Drift remains.
 ) else (
-  echo Memory drift check did not complete cleanly.
+  echo AIDOCS memory %MODE% did not complete cleanly.
 )
 
 exit /b %EXIT_CODE%

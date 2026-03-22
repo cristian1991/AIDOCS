@@ -5,7 +5,7 @@ Run cleanup using a user-chosen scope.
 
 Mandatory first step
 - Ask one STOP-style question with options:
-  1) `file-clean` (Recommended) — orphaned files, temp files, debug artifacts, completed plan files
+  1) `file-clean` (Recommended) — orphaned files, temp files, debug artifacts, stale session-local plan/artifact files
   2) `dead-code-clean` — `file-clean` plus provably dead code removal
   3) `dedupe-clean` — `dead-code-clean` plus duplicate/near-duplicate consolidation
   4) `structural-clean` — `dedupe-clean` plus structural analysis and file-split proposals
@@ -13,7 +13,7 @@ Mandatory first step
 
 Run selected mode only
 - `file-clean`:
-  - scan whole repo for orphaned temp/agent artifacts, empty placeholders, misplaced scratch files
+  - scan whole repo for orphaned temp files, debug artifacts, empty placeholders, stale session-local artifacts, and misplaced temporary files
   - present candidate file list with short rationale
   - STOP for confirmation before delete
   - report deleted/skipped items + bytes reclaimed

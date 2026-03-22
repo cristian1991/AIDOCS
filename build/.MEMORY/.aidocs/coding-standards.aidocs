@@ -21,3 +21,5 @@ Data
 
 Project portability
 - Avoid absolute machine-specific paths in project files.
+
+<!-- AIDOCS-MANAGED-ABOVE: write project-specific instructions below this line -->

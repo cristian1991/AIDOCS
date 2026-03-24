@@ -34,6 +34,19 @@ Initialized projects should route in this order:
 2. `/.MEMORY/INDEX.md`
 3. `/.MEMORY/sessions/<session-id>/SESSION.md`
 
+## Optional: MCP Server
+
+For enhanced runtime enforcement and code/schema indexing:
+
+```bash
+cd mcp
+pip install -e .
+```
+
+Then configure your agent's MCP server settings to run `aidocs-mcp` or `python -m aidocs_mcp.mcp_server`.
+
+See `mcp/README.md` for details and `mcp/HOST_INTEGRATION.md` for agent integration contracts.
+
 ## Notes
 
 - This directory is the canonical AIDOCS tree.

@@ -1,109 +1,116 @@
 # AIDOCS
 
-AIDOCS is a portable AI coding-agent toolkit with a routed memory system, global command pack, and consistent cross-project startup behavior.
+**v0.99-beta** — Portable AI coding-agent toolkit with a routed memory system, session-based runtime, and optional MCP enforcement layer.
 
-Agents do not use this file as an entry point. Project entry files are `AGENTS.md` and `CLAUDE.md`, which route into `/.MEMORY/.aidocs/index.aidocs`, `/.MEMORY/INDEX.md`, and session selection under `/.MEMORY/sessions/*/SESSION.md`.
+## Components
 
-## Canonical layout
+### AIDOCS Core (`build/`)
+Standalone markdown-first memory system. Works with any AI coding agent (Claude Code, OpenCode, etc.) without dependencies.
 
-`build/` is the canonical AIDOCS runtime/public tree.
+- Routed memory: `index.aidocs` -> `INDEX.md` -> `SESSION.md`
+- Session-based runtime: isolated workstreams, plans, agent artifacts
+- Global command pack: `/aidocs`, `/reingest`, `/archive`, `/personality`, `/clean`
+- Cross-platform install scripts (Windows + Linux/macOS)
+- Zero dependencies — just markdown files and shell scripts
 
-```text
-build/
-  .commands/               -> canonical shared command source
-  .MEMORY/
-    .aidocs/               -> canonical instruction + memory-system docs
-      index.aidocs
-      global-instructions.aidocs
-      coding-standards.aidocs
-      memory-system.aidocs
-      research-safety.aidocs
-      personality-system.aidocs
-      personalities/
-      templates/
-  AGENTS.md                -> project router template
-  CLAUDE.md                -> project router template + Claude bootstrap note
-  scripts/
-    install-agent-routing.*
-    check-memory-drift.*
+### AIDOCS MCP (`mcp/`)
+Optional Python MCP server that adds runtime enforcement, indexing, and retrieval over the Core file system.
+
+- 90+ MCP tools for session, memory, code, schema, and project lifecycle
+- Derived SQLite indexes (memory, code symbols, schema entities) — rebuildable from files
+- Code retrieval: outlines, symbol search, dependency edges, context bundles
+- Schema analysis: entity classification, field search, relationship tracing
+- Session enforcement: managed mode, task lifecycle, policy routing
+- Requires: Python 3.11+, `fastmcp>=2.0.0`
+
+**Principle:** Files remain the only source of truth. MCP never stores a second canonical copy. Deleting the SQLite index loses nothing — it rebuilds from files.
+
+## Quick Start
+
+### Core Only (no dependencies)
+
+```bash
+# Install global routing + commands
+build\scripts\install-agent-routing.cmd    # Windows
+bash build/scripts/install-agent-routing.sh # Linux/macOS (if available)
+
+# In any project:
+/aidocs    # Bootstrap or resume AIDOCS for the project
 ```
 
-Root-level files in this repo are support mirrors/dev wrappers for working on AIDOCS itself:
+### Core + MCP
 
-```text
-/.MEMORY/                  -> this repo's own working memory system
-AGENTS.md                  -> local router for this repo
-CLAUDE.md                  -> local Claude router for this repo
-README.md                  -> project documentation
-README_INSTALL.md          -> install notes
+```bash
+# Install MCP server
+cd mcp
+pip install -e .
+
+# Configure your agent to use the MCP server:
+# Claude Code: add to ~/.claude/settings.json mcpServers
+# OpenCode: add to opencode.jsonc mcp section
+
+# In any project:
+/aidocs    # Now uses MCP-backed session/memory/retrieval
 ```
 
-## Memory model
+## Memory Model
 
-Inside initialized projects, the memory system lives in project-local `/.MEMORY/`.
+Inside initialized projects, the memory system lives in project-local `/.MEMORY/`:
 
-- `/.MEMORY/.aidocs/index.aidocs` -> session-start router
-- `/.MEMORY/INDEX.md` -> durable-memory router
-- `/.MEMORY/sessions/<session-id>/SESSION.md` -> selected session router/status
-- `/.MEMORY/sessions/<session-id>/context.md` -> factual session-local context
-- `/.MEMORY/sessions/<session-id>/plans/` -> session-local implementation plans
-- `/.MEMORY/sessions/<session-id>/agents/` -> session-local agent artifacts
-- `/.MEMORY/sessions/<session-id>/artifacts/` -> session-local outputs/logs/reports
-- `/.MEMORY/CHANGELOG.md` -> completed work history
-
-Core split:
-
-- `index.aidocs` -> route
-- `global-instructions.aidocs` -> agent behavior
-- `coding-standards.aidocs` -> coding rules
-- `memory-system.aidocs` -> memory mechanics
-- command files -> command logic
-
-Command logic does not live in `.aidocs`; it lives in the global command pack.
-
-## Install
-
-Run the installer from `build/`:
-
-```powershell
-build\scripts\install-agent-routing.cmd
+```
+/.MEMORY/
+  .aidocs/index.aidocs          -> session-start router
+  INDEX.md                       -> durable-memory router
+  sessions/<id>/SESSION.md       -> session state + scope
+  sessions/<id>/context.md       -> session-local context
+  sessions/<id>/plans/           -> implementation plans
+  sessions/<id>/agents/          -> agent artifacts
+  sessions/<id>/artifacts/       -> outputs/logs/reports
+  rules/                         -> workflow, communication, coding rules
+  domains/                       -> domain knowledge, project state
+  system/                        -> architecture metadata
+  CHANGELOG.md                   -> completed work history
 ```
 
-The installer:
+## Canonical Layout
 
-- writes global bootstrap routing files for OpenCode and Claude
-- installs the global command pack from `build/.commands/`
-- points global bootstrap to the AIDOCS runtime/public root
+```
+build/                    # Standalone markdown-first system
+  .commands/              # Global command source (/aidocs, /reingest, etc.)
+  .MEMORY/.aidocs/        # Canonical instruction + memory-system docs
+  scripts/                # Install, check, fix scripts
+  plugins/                # OpenCode global plugin
+  AGENTS.md               # Project router template
+  CLAUDE.md               # Claude bootstrap template
 
-More detail: `README_INSTALL.md`
+mcp/                      # Optional MCP runtime layer
+  server/aidocs_mcp/      # Python MCP server (21 service modules)
+  tests/                  # Test suite (private repo only)
+  pyproject.toml          # Python package config
+  README.md               # MCP-specific docs
+  ROADMAP.md              # Feature roadmap
+  HOST_INTEGRATION.md     # Host integration contract
+```
 
 ## Commands
 
-The canonical command source is `build/.commands/`.
-
-Installed commands:
-
 | Command | Description |
 |---------|-------------|
-| `/aidocs` | Bootstrap or connect a project to AIDOCS, then select or create a session |
+| `/aidocs` | Bootstrap or connect a project to AIDOCS, select or create a session |
 | `/reingest` | Refresh memory by user-selected scope |
-| `/archive` | Promote completed work into `/.MEMORY/CHANGELOG.md` and archive logs |
+| `/archive` | Promote completed work into CHANGELOG and archive logs |
 | `/personality` | Set or clear user-facing communication personality |
-| `/clean` | Run cleanup by user-selected scope (`file-clean`, `dead-code-clean`, `dedupe-clean`, `structural-clean`) |
+| `/clean` | Run cleanup by scope (file, dead-code, dedupe, structural) |
 
-Utility scripts in `build/scripts/`:
+## Releases
 
-- `check-memory-drift.*` -> safe `check`, `check-legacy`, and `fix`
-- `detect-memory-loop.*` -> scan the memory graph for routed link loops
+Each release provides two packages:
 
-## Development notes
+- **aidocs-core** — `build/` directory (standalone markdown system)
+- **aidocs-mcp** — `mcp/server/` + config (Python MCP package)
 
-- Treat `build/` as the canonical AIDOCS tree when updating the shipped system.
-- Keep command logic in `build/.commands/` only.
-- Keep memory-system mechanics in `build/.MEMORY/.aidocs/` only.
-- Keep root support copies aligned with canonical `build/` content when needed.
-- Keep local/private root memory/router/config files ignored in working clones when they should not be published.
+Download from [Releases](https://github.com/cristian1991/AIDOCS/releases).
 
 ## License
 
-AIDOCS is licensed under Apache 2.0. See `LICENSE` and `NOTICE`.
+Apache 2.0. See `LICENSE` and `NOTICE`.

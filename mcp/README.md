@@ -1,53 +1,62 @@
 # AIDOCS MCP
 
-Optional MCP layer for AIDOCS Core.
+**v0.99-beta** — Optional MCP runtime layer for AIDOCS Core.
 
 `build/` remains the canonical Markdown-first system.
 `mcp/` adds runtime enforcement, indexing, and retrieval over that file-backed system.
 
-Principles
+## Principles
+
 - Files remain the only source of truth.
 - MCP never stores a second canonical memory.
 - MCP reads, validates, and writes the existing AIDOCS files.
 - MCP is optional; the Markdown system must still work without it.
 - Indexes are project-wide; sessions guide retrieval and ranking, not index scope.
+- SQLite indexes are derived only — rebuildable from files at any time.
 
-Planned responsibilities
-- Enforce startup/session selection flow
-- Enforce memory write lifecycle
-- Provide structured memory read/write APIs
-- Provide safe project update and legacy migration helpers
-- Build local derived indexes for memory and code
-- Support targeted code reads and wider code sweeps
+## Install
 
-Proposed layout
-```text
-mcp/
-  README.md
-  ROADMAP.md
-  pyproject.toml
-  server/
-    aidocs_mcp/
-  tests/
+```bash
+cd mcp
+pip install -e .          # standard install
+pip install -e ".[dev]"   # with pytest
+pip install -e ".[ast]"   # with tree-sitter for JS/TS AST parsing
 ```
 
-Planned runtime model
-- Canonical files: `build/` and project-local `/.MEMORY/**`
-- MCP server: optional execution layer
+## Architecture
+
+```
+mcp/
+  server/aidocs_mcp/      # 21 Python service modules
+    mcp_server.py          # FastMCP tool registration (90+ tools)
+    service_hub.py         # Composition root
+    runtime_service.py     # High-level orchestration
+    session_store.py       # Session CRUD + lifecycle
+    memory_store.py        # Memory read/write/capture
+    index_store.py         # Memory/session SQLite index
+    code_index_store.py    # Code symbol/dependency index
+    schema_index_store.py  # Schema entity/field index
+    policy_service.py      # Preflight + routing policy
+    managed_mode_service.py # Project managed-mode state
+    workflow_action_service.py # Workflow rule compilation
+    legacy_migration_service.py # NOW.md/plans migration
+    updater_service.py     # Cross-platform script bridge
+    frontend_ast.py        # JS/TS tree-sitter AST parsing
+    ...
+  pyproject.toml           # Python package config
+  README.md                # This file
+  ROADMAP.md               # Feature roadmap
+  HOST_INTEGRATION.md      # Host integration contract
+```
+
+## Runtime Model
+
+- Canonical files: `build/` templates + project-local `/.MEMORY/**`
+- MCP server: optional execution layer over those files
 - Local index: SQLite, derived only, rebuildable
-- Code retrieval: jcodemunch-style symbol/index layer
+- Code retrieval: symbol outlines, dependency edges, context bundles
 
-Relationship to AIDOCS Core
-- `build/` = human-readable core
-- `mcp/` = optional runtime engine
-- both must stay aligned to the same contracts
-
-Current implementation status
-- first file-backed services exist:
-  - managed file rewriting
-  - session listing/reading/creation/update
-  - canonical memory read/capture
-- first MCP tools exist:
+## Implemented Tools (90+)
   - `aidocs_orchestrate`
   - `aidocs_mode_get`
   - `aidocs_mode_set`

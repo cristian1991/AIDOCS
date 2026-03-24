@@ -47,6 +47,7 @@ def test_session_start_requires_selection_when_multiple_active(tmp_path: Path) -
     assert result["requires_session_selection"] is True
     assert result["reason"] == "no_unique_active_session"
     assert len(result["sessions"]) == 2
+    assert "Session selection is required" in result["report"]["headline"]
 
 
 def test_session_start_auto_selects_single_active_session(tmp_path: Path) -> None:
@@ -84,6 +85,7 @@ def test_session_start_with_explicit_session_returns_context_bundle(tmp_path: Pa
     assert result["requires_session_selection"] is False
     assert result["selected_session"]["session_id"] == "2026-03-23-a"
     assert result["code_bundle"]["primary_files"][0]["path"] == "src/app.py"
+    assert result["report"]["headline"] == "Session context is ready."
 
 
 def test_project_bootstrap_or_resume_requires_setup_when_uninitialized(tmp_path: Path) -> None:
@@ -98,6 +100,7 @@ def test_project_bootstrap_or_resume_requires_setup_when_uninitialized(tmp_path:
     assert result["stage"] == "setup_required"
     assert result["ready"] is False
     assert result["next_step"] == "project_init"
+    assert "setup is required" in result["report"]["headline"].lower()
 
 
 def test_project_bootstrap_or_resume_syncs_and_selects_session(tmp_path: Path) -> None:
@@ -129,6 +132,11 @@ def test_project_bootstrap_or_resume_syncs_and_selects_session(tmp_path: Path) -
     assert result["session"]["selected_session"]["session_id"] == "2026-03-23-a"
     assert result["sync"]["workflow"]["action_count"] == 1
     assert result["sync"]["workflow"]["actions"][0]["kind"] == "github_workflow_check"
+    assert result["sync"]["capabilities"]["capability_definitions"] >= 50
+    assert result["sync"]["procedures"]["procedure_definitions"] >= 1
+    assert "procedure_capability_links" in result["sync"]
+    assert "execution" in result["sync"]
+    assert result["report"]["headline"] == "Project bootstrap is ready."
 
 
 def test_aidocs_orchestrate_uses_session_bundle_by_default(tmp_path: Path) -> None:
@@ -143,7 +151,7 @@ def test_aidocs_orchestrate_uses_session_bundle_by_default(tmp_path: Path) -> No
     (project_root / "src" / "app.py").write_text("class App:\n    pass\n", encoding="utf-8")
     hub.sessions.create_session(project_root, "2026-03-23-a", "A", "Agent", "Goal A")
     hub.sessions.context_file(project_root, "2026-03-23-a").write_text(
-        "# Context\n\n## Relevant Files\n- `src/app.py`\n", encoding="utf-8"
+        "# Context\n\n## Relevant Files\n- `src/app.py`\n\n## Relevant Commands\n- `action_surface_compare`\n", encoding="utf-8"
     )
 
     result = runtime.aidocs_orchestrate(project_root, user_request="understand app")
@@ -156,6 +164,19 @@ def test_aidocs_orchestrate_uses_session_bundle_by_default(tmp_path: Path) -> No
     assert result["retrieval"]["memory_structure"]["router_files"] == ["/.MEMORY/.aidocs/index.aidocs", "/.MEMORY/INDEX.md"]
     assert result["retrieval"]["memory_structure"]["sections"][0]["name"] == "sessions"
     assert result["retrieval"]["memory_structure"]["sections"][0]["active_count"] == 1
+    assert result["operator_summary"]["ready"] is True
+    assert result["operator_summary"]["resolution"] == "managed_mode"
+    assert result["operator_summary"]["session_id"] == "2026-03-23-a"
+    assert "action_surface_compare" in result["operator_summary"]["derived_queries"]
+    assert result["readiness_summary"]["ready"] is True
+    assert result["readiness_summary"]["selected_session_id"] == "2026-03-23-a"
+    assert result["readiness_summary"]["managed_mode_active"] is True
+    assert result["readiness_summary"]["managed_mode_session_id"] == "2026-03-23-a"
+    assert result["readiness_summary"]["indexes"]["capability_definitions"] >= 50
+    assert result["readiness_summary"]["indexes"]["procedure_definitions"] >= 0
+    assert "AIDOCS is ready" in result["operator_report"]["headline"]
+    assert result["report"]["headline"] == result["operator_report"]["headline"]
+    assert any("Active session: 2026-03-23-a." == item for item in result["operator_report"]["bullets"])
 
 
 def test_aidocs_orchestrate_includes_session_bundle_when_requested(tmp_path: Path) -> None:
@@ -170,13 +191,17 @@ def test_aidocs_orchestrate_includes_session_bundle_when_requested(tmp_path: Pat
     (project_root / "src" / "app.py").write_text("class App:\n    pass\n", encoding="utf-8")
     hub.sessions.create_session(project_root, "2026-03-23-a", "A", "Agent", "Goal A")
     hub.sessions.context_file(project_root, "2026-03-23-a").write_text(
-        "# Context\n\n## Relevant Files\n- `src/app.py`\n", encoding="utf-8"
+        "# Context\n\n## Relevant Files\n- `src/app.py`\n\n## Relevant Commands\n- `memory_capture`\n", encoding="utf-8"
     )
 
     result = runtime.aidocs_orchestrate(project_root, user_request="understand app", include_code_bundle=True)
 
     assert result["retrieval"]["mode"] == "session_bundle"
     assert result["retrieval"]["bundle"]["primary_files"][0]["path"] == "src/app.py"
+    assert result["operator_summary"]["ready"] is True
+    assert result["operator_summary"]["session_id"] == "2026-03-23-a"
+    assert result["readiness_summary"]["operator_state"] == result["operator_summary"]["overall_state"]
+    assert result["operator_report"]["next_step"] is not None
 
 
 def test_aidocs_orchestrate_summarizes_large_session_targets_by_default(tmp_path: Path) -> None:
@@ -332,6 +357,7 @@ def test_aidocs_handle_prompt_requires_entry_when_unmanaged(tmp_path: Path) -> N
 
     assert result["handled"] is False
     assert result["mode"] == "requires_aidocs_entry"
+    assert "Enter `/aidocs` first" in result["report"]["headline"]
     assert result["next_step"] == "/aidocs"
 
 
@@ -347,7 +373,7 @@ def test_aidocs_handle_prompt_orchestrates_when_managed(tmp_path: Path) -> None:
     (project_root / "src" / "app.py").write_text("class App:\n    pass\n", encoding="utf-8")
     hub.sessions.create_session(project_root, "2026-03-23-a", "A", "Agent", "Goal A")
     hub.sessions.context_file(project_root, "2026-03-23-a").write_text(
-        "# Context\n\n## Relevant Files\n- `src/app.py`\n", encoding="utf-8"
+        "# Context\n\n## Relevant Files\n- `src/app.py`\n\n## Relevant Commands\n- `action_surface_compare`\n", encoding="utf-8"
     )
     hub.managed_mode.set_mode(project_root, session_id="2026-03-23-a")
 
@@ -356,7 +382,32 @@ def test_aidocs_handle_prompt_orchestrates_when_managed(tmp_path: Path) -> None:
     assert result["handled"] is True
     assert result["mode"] == "mcp_orchestrated"
     assert result["classification"]["action_kind"] == "understand"
+    assert result["report"]["headline"] == result["operator_report"]["headline"]
     assert result["orchestration"]["selected_session_id"] == "2026-03-23-a"
+    assert "AIDOCS is ready" in result["operator_report"]["headline"]
+    assert result["readiness_summary"]["selected_session_id"] == "2026-03-23-a"
+
+
+def test_aidocs_handle_prompt_allows_direct_inspection_with_report(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    hub = AidocsServiceHub(templates_root=templates)
+    runtime = RuntimeService(hub)
+    project_root = tmp_path / "project"
+    _seed_project(project_root)
+    hub.managed_mode.set_mode(project_root, session_id="2026-03-23-a")
+
+    result = runtime.aidocs_handle_prompt(
+        project_root,
+        user_request="inspect file",
+        action_kind="inspect",
+        explicit_targets=["src/app.py"],
+    )
+
+    assert result["handled"] is True
+    assert result["mode"] == "direct_inspection_allowed"
+    assert "Direct inspection is allowed" in result["report"]["headline"]
+    assert result["report"]["next_step"] == "inspect_target_then_return_to_mcp_for_broader_work"
 
 
 def test_project_bootstrap_or_resume_returns_migration_required_for_legacy_project(tmp_path: Path) -> None:

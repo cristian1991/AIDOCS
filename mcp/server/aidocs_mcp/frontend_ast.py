@@ -75,8 +75,15 @@ class FrontendAstExtractor:
         self._parser_cache[language] = parser
         return parser
 
-    def _walk(self, node, text: str, results: list[tuple[str, str, int, str | None, bool]]) -> None:
+    def _walk(
+        self,
+        node,
+        text: str,
+        results: list[tuple[str, str, int, str | None, bool]],
+        container: str | None = None,
+    ) -> None:
         node_type = node.type
+        next_container = container
 
         if node_type == "function_declaration":
             name = self._child_text(node, text, "name")
@@ -86,6 +93,30 @@ class FrontendAstExtractor:
             name = self._child_text(node, text, "name")
             if self._is_valid_symbol(name):
                 results.append((name, "class", node.start_point[0] + 1, None, False))
+                next_container = name
+        elif node_type == "interface_declaration":
+            name = self._type_declaration_name(node, text)
+            if self._is_valid_symbol(name):
+                results.append((name, "interface", node.start_point[0] + 1, None, False))
+                next_container = name
+        elif node_type == "type_alias_declaration":
+            name = self._type_declaration_name(node, text)
+            if self._is_valid_symbol(name):
+                results.append((name, "type_alias", node.start_point[0] + 1, None, False))
+                next_container = name
+        elif node_type == "enum_declaration":
+            name = self._type_declaration_name(node, text)
+            if self._is_valid_symbol(name):
+                results.append((name, "enum", node.start_point[0] + 1, None, False))
+                next_container = name
+        elif node_type == "property_signature" and container is not None:
+            name = self._property_signature_name(node, text)
+            if self._is_valid_symbol(name):
+                results.append((name, "property", node.start_point[0] + 1, container, False))
+        elif node_type == "property_identifier" and container is not None and node.parent is not None and node.parent.type == "enum_body":
+            name = text[node.start_byte:node.end_byte]
+            if self._is_valid_symbol(name):
+                results.append((name, "enum_member", node.start_point[0] + 1, container, False))
         elif node_type in {"lexical_declaration", "variable_declaration"}:
             for child in node.children:
                 if child.type != "variable_declarator":
@@ -98,7 +129,22 @@ class FrontendAstExtractor:
                     results.append((name, self._frontend_kind(name), child.start_point[0] + 1, None, False))
 
         for child in node.children:
-            self._walk(child, text, results)
+            self._walk(child, text, results, next_container)
+
+    def _type_declaration_name(self, node, text: str) -> str | None:
+        name = self._child_text(node, text, "name")
+        if name is not None:
+            return name
+        for child in node.children:
+            if child.type in {"type_identifier", "identifier"}:
+                return text[child.start_byte:child.end_byte]
+        return None
+
+    def _property_signature_name(self, node, text: str) -> str | None:
+        for child in node.children:
+            if child.type in {"property_identifier", "identifier"}:
+                return text[child.start_byte:child.end_byte]
+        return None
 
     def _child_text(self, node, text: str, field_name: str) -> str | None:
         child = node.child_by_field_name(field_name)

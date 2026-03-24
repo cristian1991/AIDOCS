@@ -13,7 +13,7 @@ from .session_store import SessionStore
 class CodeIndexStore:
     """Derived SQLite index for repository code files and lightweight summaries."""
 
-    INDEX_VERSION = "code-index-v2"
+    INDEX_VERSION = "code-index-v5"
 
     def __init__(self, session_store: SessionStore | None = None) -> None:
         self.session_store = session_store
@@ -87,7 +87,9 @@ class CodeIndexStore:
         if current == self.INDEX_VERSION:
             return
 
-        conn.execute("DELETE FROM code_files")
+        # Incremental migration: keep file metadata, invalidate parsed state.
+        # Outlines and edges will be repopulated on next sync_code_files.
+        conn.execute("UPDATE code_files SET parsed = 0")
         conn.execute("DELETE FROM code_outlines")
         conn.execute("DELETE FROM code_edges")
         conn.execute(
@@ -325,24 +327,50 @@ class CodeIndexStore:
             for _, row, reasons in ranked[:limit]
         ]
 
-    def search_symbols(self, project_root: Path, query: str, limit: int = 25) -> list[dict[str, str | int | bool | None]]:
+    def search_symbols(
+        self,
+        project_root: Path,
+        query: str,
+        kind: str | None = None,
+        role: str | None = None,
+        limit: int = 25,
+    ) -> list[dict[str, str | int | bool | None]]:
         self.init_db(project_root)
         needle = query.strip()
-        if not needle:
+
+        # Allow searching by kind alone (no symbol name needed)
+        if not needle and not kind:
             return []
-        self._ensure_parsed_candidates(project_root, needle, limit=limit * 4)
-        variants = self._concept_variants(needle)
-        clauses = " OR ".join(["symbol LIKE ? OR COALESCE(container, '') LIKE ?" for _ in variants])
-        params = []
-        for variant in variants:
-            pattern = f"%{variant}%"
-            params.extend([pattern, pattern])
+
         with self.connect(project_root) as conn:
+            if needle:
+                self._ensure_parsed_candidates(project_root, needle, limit=limit * 4)
+                variants = self._concept_variants(needle)
+                clauses = " OR ".join(["co.symbol LIKE ? OR COALESCE(co.container, '') LIKE ?" for _ in variants])
+                params: list[object] = []
+                for variant in variants:
+                    pattern = f"%{variant}%"
+                    params.extend([pattern, pattern])
+                where = f"({clauses})"
+            else:
+                where = "1=1"
+                params = []
+
+            if kind:
+                where += " AND co.kind = ?"
+                params.append(kind)
+            if role:
+                where += " AND cf.role = ?"
+                params.append(role)
+
+            join_clause = "JOIN code_files cf ON cf.path = co.path" if role else ""
+
             rows = conn.execute(
                 f"""
-                SELECT path, symbol, kind, line_number, container, is_partial
-                FROM code_outlines
-                WHERE {clauses}
+                SELECT co.path, co.symbol, co.kind, co.line_number, co.container, co.is_partial
+                FROM code_outlines co
+                {join_clause}
+                WHERE {where}
                 LIMIT 500
                 """,
                 params,
@@ -353,6 +381,7 @@ class CodeIndexStore:
             "record": 28,
             "struct": 26,
             "interface": 24,
+            "type_alias": 23,
             "enum": 22,
             "function": 20,
             "component": 20,
@@ -1891,6 +1920,125 @@ class CodeIndexStore:
             "cluster": cluster[:limit],
         }
 
+    def find_duplicate_structures(
+        self,
+        project_root: Path,
+        role_filter: str | None = None,
+        kind_filter: str | None = None,
+        min_shared: int = 3,
+        limit: int = 30,
+    ) -> dict[str, object]:
+        """Find files with overlapping outline symbols — candidates for extraction into shared partials/components.
+
+        Groups files by shared symbol fingerprints (same symbol name + kind appearing in multiple files).
+        Returns clusters of files that share enough structure to warrant extraction.
+
+        Args:
+            role_filter: Only consider files with this role (e.g., "page-view", "partial-view").
+            kind_filter: Only consider outline symbols of this kind (e.g., "translation_key", "partial_ref", "js_function").
+            min_shared: Minimum number of files sharing a symbol to be considered duplicate (default 3).
+            limit: Maximum number of clusters to return.
+        """
+        self.init_db(project_root)
+
+        with self.connect(project_root) as conn:
+            # Step 1: Find symbols that appear in multiple files
+            kind_clause = ""
+            params: list[object] = [min_shared]
+            if kind_filter:
+                kind_clause = "AND co.kind = ?"
+                params.insert(0, kind_filter)
+
+            role_clause = ""
+            if role_filter:
+                role_clause = "AND cf.role = ?"
+                params.insert(0, role_filter)
+
+            shared_symbols = conn.execute(
+                f"""
+                SELECT co.symbol, co.kind, COUNT(DISTINCT co.path) AS file_count,
+                       GROUP_CONCAT(DISTINCT co.path) AS files
+                FROM code_outlines co
+                JOIN code_files cf ON cf.path = co.path
+                WHERE 1=1 {role_clause} {kind_clause}
+                GROUP BY co.symbol, co.kind
+                HAVING COUNT(DISTINCT co.path) >= ?
+                ORDER BY file_count DESC
+                LIMIT 200
+                """,
+                params,
+            ).fetchall()
+
+            if not shared_symbols:
+                return {"clusters": [], "summary": "No duplicate structures found with the given filters."}
+
+            # Step 2: Build file → shared-symbols map for clustering
+            file_symbols: dict[str, list[dict[str, object]]] = {}
+            for row in shared_symbols:
+                files = str(row["files"]).split(",")
+                for f in files:
+                    f = f.strip()
+                    if f not in file_symbols:
+                        file_symbols[f] = []
+                    file_symbols[f].append({
+                        "symbol": row["symbol"],
+                        "kind": row["kind"],
+                        "shared_with": int(row["file_count"]),
+                    })
+
+            # Step 3: Find file pairs/groups with high overlap
+            file_list = list(file_symbols.keys())
+            pair_scores: dict[tuple[str, str], list[str]] = {}
+            for row in shared_symbols:
+                files = [f.strip() for f in str(row["files"]).split(",")]
+                for i in range(len(files)):
+                    for j in range(i + 1, len(files)):
+                        pair = (files[i], files[j]) if files[i] < files[j] else (files[j], files[i])
+                        if pair not in pair_scores:
+                            pair_scores[pair] = []
+                        pair_scores[pair].append(f"{row['kind']}:{row['symbol']}")
+
+            # Step 4: Sort pairs by overlap count, build clusters
+            sorted_pairs = sorted(pair_scores.items(), key=lambda x: len(x[1]), reverse=True)
+
+            clusters: list[dict[str, object]] = []
+            for (file_a, file_b), shared in sorted_pairs[:limit]:
+                # Get roles for context
+                role_a = conn.execute("SELECT role FROM code_files WHERE path = ?", (file_a,)).fetchone()
+                role_b = conn.execute("SELECT role FROM code_files WHERE path = ?", (file_b,)).fetchone()
+
+                # Categorize shared symbols by kind
+                by_kind: dict[str, list[str]] = {}
+                for s in shared:
+                    kind, sym = s.split(":", 1)
+                    if kind not in by_kind:
+                        by_kind[kind] = []
+                    by_kind[kind].append(sym)
+
+                clusters.append({
+                    "files": [file_a, file_b],
+                    "roles": [role_a["role"] if role_a else None, role_b["role"] if role_b else None],
+                    "shared_count": len(shared),
+                    "shared_by_kind": {k: v for k, v in sorted(by_kind.items(), key=lambda x: len(x[1]), reverse=True)},
+                })
+
+            # Step 5: Also report the most duplicated individual symbols
+            top_symbols = [
+                {
+                    "symbol": row["symbol"],
+                    "kind": row["kind"],
+                    "file_count": int(row["file_count"]),
+                    "files": [f.strip() for f in str(row["files"]).split(",")],
+                }
+                for row in shared_symbols[:20]
+            ]
+
+        return {
+            "clusters": clusters,
+            "top_shared_symbols": top_symbols,
+            "summary": f"Found {len(clusters)} file pairs with shared structures, {len(shared_symbols)} symbols appearing in {min_shared}+ files.",
+        }
+
     def find_transition_points(self, project_root: Path, concept: str | None = None, limit: int = 50) -> dict[str, object]:
         self.init_db(project_root)
         needle = (concept or "").strip()
@@ -2060,7 +2208,7 @@ class CodeIndexStore:
         sql = """
             SELECT path, symbol, kind, line_number, container, is_partial
             FROM code_outlines
-            WHERE kind IN ('class', 'record', 'struct', 'interface', 'enum', 'property', 'field', 'enum_member')
+            WHERE kind IN ('class', 'record', 'struct', 'interface', 'type_alias', 'enum', 'property', 'field', 'enum_member')
         """
         if query and query.strip():
             needle = f"%{query.strip()}%"
@@ -2606,6 +2754,73 @@ class CodeIndexStore:
             "edges": edges[:limit],
         }
 
+    def get_style_bundle(
+        self,
+        project_root: Path,
+        class_names: list[str],
+        limit: int = 100,
+    ) -> dict[str, object]:
+        """Find CSS definitions and usages for given class names across indexed files."""
+        self.init_db(project_root)
+        results: list[dict[str, object]] = []
+
+        with self.connect(project_root) as conn:
+            for class_name in class_names[:20]:  # cap input
+                clean = class_name.strip().lstrip(".")
+                if not clean:
+                    continue
+
+                # Find definitions in CSS files (kind=css_class)
+                definitions = conn.execute(
+                    """
+                    SELECT co.path, co.symbol, co.kind, co.line_number, cf.role
+                    FROM code_outlines co
+                    JOIN code_files cf ON cf.path = co.path
+                    WHERE co.symbol = ? AND co.kind = 'css_class'
+                    LIMIT 20
+                    """,
+                    (clean,),
+                ).fetchall()
+
+                # Find usages in razor/cshtml files (grep-style via outline text won't work —
+                # class usages are in HTML attributes, not indexed as symbols).
+                # Instead, search code_files content for the class name in razor files.
+                # For now, return definitions and related CSS variables.
+                css_vars: list[dict[str, object]] = []
+                if definitions:
+                    # Get all CSS variables from the same files for context
+                    def_paths = list({row["path"] for row in definitions})
+                    for def_path in def_paths[:5]:
+                        vars_in_file = conn.execute(
+                            """
+                            SELECT symbol, line_number, container
+                            FROM code_outlines
+                            WHERE path = ? AND kind = 'css_variable'
+                            ORDER BY line_number
+                            LIMIT 50
+                            """,
+                            (def_path,),
+                        ).fetchall()
+                        css_vars.extend([
+                            {"variable": row["symbol"], "line": int(row["line_number"]), "context": row["container"]}
+                            for row in vars_in_file
+                        ])
+
+                results.append({
+                    "class_name": clean,
+                    "definitions": [
+                        {
+                            "path": row["path"],
+                            "line_number": int(row["line_number"]),
+                            "role": row["role"],
+                        }
+                        for row in definitions
+                    ],
+                    "related_variables": css_vars[:20],
+                })
+
+        return {"results": results[:limit]}
+
     def get_session_code_bundle(self, project_root: Path, session_id: str) -> dict[str, object]:
         if self.session_store is None:
             raise RuntimeError("SessionStore is required for session-guided code bundles")
@@ -2745,7 +2960,6 @@ class CodeIndexStore:
         rel = path.relative_to(project_root).as_posix()
         prefixes = (
             ".git/",
-            "core/",
             ".MEMORY/",
             ".opencode/",
             ".claude/",
@@ -2778,6 +2992,7 @@ class CodeIndexStore:
                 "dist",
                 "coverage",
                 "obj",
+                "bin",
                 "__pycache__",
                 ".venv",
                 "venv",
@@ -2785,6 +3000,8 @@ class CodeIndexStore:
         ):
             return True
         if "website" in parts and "build" in parts:
+            return True
+        if "wwwroot" in parts and "lib" in parts:
             return True
         if path.name.lower().endswith((".min.js", ".min.css")):
             return True
@@ -2794,6 +3011,12 @@ class CodeIndexStore:
         return False
 
     def _language_for(self, path: Path) -> str | None:
+        lower = path.name.lower()
+        # .cshtml.cs is C# code-behind, not razor
+        if lower.endswith(".cshtml.cs"):
+            return "csharp"
+        if lower.endswith(".cshtml"):
+            return "razor"
         mapping = {
             ".py": "python",
             ".js": "javascript",
@@ -2803,6 +3026,8 @@ class CodeIndexStore:
             ".cs": "csharp",
             ".sh": "shell",
             ".ps1": "powershell",
+            ".resx": "resx",
+            ".css": "css",
         }
         return mapping.get(path.suffix.lower())
 
@@ -2827,16 +3052,29 @@ class CodeIndexStore:
                         outlines.append((initializer, "initializer", line_number, None, False))
                 return outlines
             patterns = [
-                (r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)", "class"),
+                (r"^\s*(?:export\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)", "class"),
+                (r"^\s*(?:export\s+)?interface\s+([A-Za-z_][A-Za-z0-9_]*)", "interface"),
+                (r"^\s*(?:export\s+)?type\s+([A-Za-z_][A-Za-z0-9_]*)\s*=", "type_alias"),
+                (r"^\s*(?:export\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)", "enum"),
                 (r"^\s*(?:export\s+)?(?:default\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)", "function"),
                 (r"^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)", "function"),
                 (r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?\(", "function"),
                 (r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?[A-Za-z_][A-Za-z0-9_]*\s*=>", "function"),
+                # Namespace patterns: window.Foo = { ... } or window.Foo = window.Foo || {}
+                (r"^\s*window\.([A-Za-z_][A-Za-z0-9_]*)\s*=", "namespace"),
+                # Object method assignment: Foo.bar = function(...)
+                (r"^\s*([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s+)?function", "method"),
+                # AJAX/fetch endpoints: fetch('/api/...')
+                (r"""fetch\(\s*['"`](/api/[^'"`]+)['"`]""", "api_call"),
             ]
         elif language == "csharp":
             return self._extract_csharp_outline(text)
+        elif language == "razor":
+            return self._extract_razor_outline(text)
+        elif language == "resx":
+            return self._extract_resx_outline(text)
         elif language == "css":
-            return []
+            return self._extract_css_outline(text)
 
         for line_number, line in enumerate(text.splitlines(), start=1):
             for pattern, kind in patterns:
@@ -2877,11 +3115,21 @@ class CodeIndexStore:
         )
         namespace_pattern = re.compile(r"^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\.]*)")
 
+        # Attribute patterns
+        http_attr_pattern = re.compile(r'\[(Http(?:Get|Post|Put|Delete|Patch))(?:\(\s*"([^"]*)"\s*\))?\]')
+        route_attr_pattern = re.compile(r'\[Route\(\s*"([^"]*)"\s*\)\]')
+        authorize_attr_pattern = re.compile(r'\[Authorize(?:\(\s*(?:Roles\s*=\s*"([^"]*)")?(?:Policy\s*=\s*"([^"]*)")?\s*\))?\]')
+        allow_anon_pattern = re.compile(r"\[AllowAnonymous\]")
+        validation_attr_pattern = re.compile(r"\[(Required|MaxLength|MinLength|StringLength|Range|RegularExpression|EmailAddress|Phone|Url|Compare|CreditCard)(?:\(\s*([^)]*)\s*\))?\]")
+        hub_method_pattern = re.compile(r"^\s*(?:public|private|protected)\s+(?:async\s+)?(?:Task|Task<[^>]+>|void)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
         current_type: str | None = None
         current_kind: str | None = None
         brace_depth = 0
         type_depth: int | None = None
         inside_enum = False
+        pending_attrs: list[tuple[str, str, int]] = []  # (symbol, kind, line)
+        is_hub_class = False
 
         for line_number, line in enumerate(text.splitlines(), start=1):
             opens = line.count("{")
@@ -2890,6 +3138,33 @@ class CodeIndexStore:
             ns_match = namespace_pattern.match(line)
             if ns_match:
                 namespace_name = ns_match.group(1)
+
+            # Collect attributes before the method/class they decorate
+            for m in http_attr_pattern.finditer(line):
+                verb = m.group(1)  # HttpGet, HttpPost, etc.
+                route = m.group(2) or ""
+                endpoint = f"{verb}:{route}" if route else verb
+                pending_attrs.append((endpoint, "http_endpoint", line_number))
+
+            m = route_attr_pattern.search(line)
+            if m:
+                pending_attrs.append((m.group(1), "route", line_number))
+
+            m = authorize_attr_pattern.search(line)
+            if m:
+                role = m.group(1)
+                policy = m.group(2)
+                auth_detail = role or policy or "default"
+                pending_attrs.append((auth_detail, "authorize", line_number))
+
+            if allow_anon_pattern.search(line):
+                pending_attrs.append(("AllowAnonymous", "authorize", line_number))
+
+            for m in validation_attr_pattern.finditer(line):
+                attr_name = m.group(1)
+                attr_args = m.group(2) or ""
+                val_symbol = f"{attr_name}({attr_args})" if attr_args else attr_name
+                pending_attrs.append((val_symbol, "validation", line_number))
 
             type_match = type_pattern.match(line)
             if type_match:
@@ -2902,16 +3177,34 @@ class CodeIndexStore:
                 current_kind = kind
                 type_depth = brace_depth + 1
                 inside_enum = kind == "enum"
+                is_hub_class = ": Hub" in line or ":Hub" in line
+
+                # Attach pending attributes (route, authorize) to the type
+                for attr_sym, attr_kind, attr_line in pending_attrs:
+                    outlines.append((attr_sym, attr_kind, attr_line, symbol, False))
+                pending_attrs.clear()
 
             method_match = method_pattern.match(line)
             if method_match and current_type is not None:
                 symbol = method_match.group(1)
-                outlines.append((symbol, "method", line_number, current_type, False))
+                method_kind = "method"
+                if is_hub_class and symbol not in {"OnConnectedAsync", "OnDisconnectedAsync"}:
+                    method_kind = "hub_method"
+                outlines.append((symbol, method_kind, line_number, current_type, False))
+                # Attach pending attributes (http_endpoint, authorize, validation) to the method
+                for attr_sym, attr_kind, attr_line in pending_attrs:
+                    outlines.append((attr_sym, attr_kind, attr_line, current_type, False))
+                pending_attrs.clear()
 
             property_match = property_pattern.match(line)
             if property_match and current_type is not None and current_kind != "enum":
                 symbol = property_match.group(1)
                 outlines.append((symbol, "property", line_number, current_type, False))
+                # Attach validation attributes to the property
+                for attr_sym, attr_kind, attr_line in pending_attrs:
+                    if attr_kind == "validation":
+                        outlines.append((f"{symbol}:{attr_sym}", "validation", attr_line, current_type, False))
+                pending_attrs = [(s, k, l) for s, k, l in pending_attrs if k != "validation"]
 
             field_match = field_pattern.match(line)
             if field_match and current_type is not None and current_kind != "enum":
@@ -2925,6 +3218,11 @@ class CodeIndexStore:
                     if symbol not in {"public", "private", "internal", "protected"}:
                         outlines.append((symbol, "enum_member", line_number, current_type, False))
 
+            # Clear stale pending attrs if we hit a blank line or brace-only line
+            stripped = line.strip()
+            if not stripped or stripped in {"{", "}"}:
+                pending_attrs.clear()
+
             brace_depth += opens
             brace_depth -= closes
             if type_depth is not None and brace_depth < type_depth - 1:
@@ -2932,6 +3230,8 @@ class CodeIndexStore:
                 current_kind = None
                 type_depth = None
                 inside_enum = False
+                is_hub_class = False
+                pending_attrs.clear()
 
         return outlines
 
@@ -2968,6 +3268,226 @@ class CodeIndexStore:
                 return symbol
         return None
 
+    def _extract_razor_outline(self, text: str) -> list[tuple[str, str, int, str | None, bool]]:
+        """Extract symbols from Razor .cshtml files: sections, partials, model, forms, components."""
+        outlines: list[tuple[str, str, int, str | None, bool]] = []
+
+        # Regex patterns for razor constructs
+        model_pattern = re.compile(r"^\s*@model\s+([A-Za-z_][A-Za-z0-9_\.]*)")
+        section_pattern = re.compile(r"@section\s+([A-Za-z_][A-Za-z0-9_]*)")
+        partial_tag = re.compile(r'<partial\s+name="([^"]+)"', re.IGNORECASE)
+        partial_async = re.compile(r'Html\.PartialAsync\(\s*"([^"]+)"')
+        inject_pattern = re.compile(r"^\s*@inject\s+([A-Za-z_][A-Za-z0-9_<>,\.\s]*?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
+        lang_t_pattern = re.compile(r'Lang\.T\(\s*"([^"]+)"\s*\)')
+        form_tag = re.compile(r"<form[^>]*(?:asp-page-handler|asp-action|asp-page)\s*=\s*\"([^\"]+)\"", re.IGNORECASE)
+        component_pattern = re.compile(r"@(?:await\s+)?Component\.InvokeAsync\(\s*\"([^\"]+)\"")
+        render_section = re.compile(r"@RenderSection\(\s*\"([^\"]+)\"")
+        layout_pattern = re.compile(r'^\s*Layout\s*=\s*"([^"]+)"')
+        page_directive = re.compile(r'^\s*@page(?:\s+"?([^"\s]*)"?)?')
+        functions_block = re.compile(r"^\s*@functions\s*\{|^\s*@code\s*\{")
+
+        # asp-for bindings (view↔model contract)
+        asp_for_pattern = re.compile(r'asp-for="([^"]+)"')
+        # data-* attributes (HTML↔JS contract)
+        data_attr_pattern = re.compile(r'\bdata-([a-z][a-z0-9-]*)')
+        # Permission/auth checks in views
+        perm_check_patterns = [
+            re.compile(r"@if\s*\(\s*Model\.([A-Za-z_]*(?:Can|Has|Is|Allow|Enable|Show|Permission)[A-Za-z_]*)"),
+            re.compile(r"@if\s*\(\s*(?:User|Context\.User)\.IsInRole\(\s*\"([^\"]+)\""),
+            re.compile(r"@if\s*\(\s*ViewData\[\"([A-Za-z_]*(?:Can|Has|Is)[A-Za-z_]*)\""),
+        ]
+
+        seen_translations: set[str] = set()
+        seen_asp_for: set[str] = set()
+        seen_data_attrs: set[str] = set()
+
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            # @model directive
+            m = model_pattern.match(line)
+            if m:
+                outlines.append((m.group(1), "model_binding", line_number, None, False))
+                continue
+
+            # @page directive (route)
+            m = page_directive.match(line)
+            if m:
+                route = (m.group(1) or "").strip() or "@page"
+                outlines.append((route, "page_route", line_number, None, False))
+                continue
+
+            # Layout assignment
+            m = layout_pattern.search(line)
+            if m:
+                outlines.append((m.group(1), "layout_ref", line_number, None, False))
+                continue
+
+            # @inject directives
+            m = inject_pattern.match(line)
+            if m:
+                outlines.append((m.group(2), "inject", line_number, m.group(1).strip(), False))
+                continue
+
+            # @section definitions
+            for m in section_pattern.finditer(line):
+                outlines.append((m.group(1), "section", line_number, None, False))
+
+            # <partial> tag helper references
+            for m in partial_tag.finditer(line):
+                outlines.append((m.group(1), "partial_ref", line_number, None, False))
+
+            # Html.PartialAsync references
+            for m in partial_async.finditer(line):
+                outlines.append((m.group(1), "partial_ref", line_number, None, False))
+
+            # @await Component.InvokeAsync
+            for m in component_pattern.finditer(line):
+                outlines.append((m.group(1), "component_ref", line_number, None, False))
+
+            # @RenderSection
+            for m in render_section.finditer(line):
+                outlines.append((m.group(1), "render_section", line_number, None, False))
+
+            # Form handlers (asp-page-handler, asp-action, asp-page)
+            for m in form_tag.finditer(line):
+                outlines.append((m.group(1), "form_handler", line_number, None, False))
+
+            # @functions/@code blocks
+            if functions_block.match(line):
+                outlines.append(("@functions", "code_block", line_number, None, False))
+
+            # Translation keys — Lang.T("...")
+            for m in lang_t_pattern.finditer(line):
+                key = m.group(1)
+                if key not in seen_translations:
+                    seen_translations.add(key)
+                    outlines.append((key, "translation_key", line_number, None, False))
+
+            # Inline JS: function declarations inside <script> blocks
+            func_match = re.match(r"\s*(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", line)
+            if func_match:
+                outlines.append((func_match.group(1), "js_function", line_number, None, False))
+
+            # Inline JS: fetch/AJAX endpoint calls
+            for m in re.finditer(r"""fetch\(\s*[`'"](/api/[^`'"]+)[`'"]""", line):
+                outlines.append((m.group(1), "api_call", line_number, None, False))
+
+            # Inline JS: $.ajax, $.get, $.post URL patterns
+            for m in re.finditer(r"""\$\.(?:ajax|get|post|getJSON)\(\s*[`'"](/api/[^`'"]+)[`'"]""", line):
+                outlines.append((m.group(1), "api_call", line_number, None, False))
+
+            # asp-for bindings (view↔model property contract)
+            for m in asp_for_pattern.finditer(line):
+                binding = m.group(1)
+                if binding not in seen_asp_for:
+                    seen_asp_for.add(binding)
+                    outlines.append((binding, "asp_for_binding", line_number, None, False))
+
+            # data-* attributes (HTML↔JS contract)
+            for m in data_attr_pattern.finditer(line):
+                attr = m.group(1)
+                if attr not in seen_data_attrs and attr not in {"toggle", "bs-toggle", "bs-target", "bs-dismiss"}:
+                    seen_data_attrs.add(attr)
+                    outlines.append((f"data-{attr}", "data_attribute", line_number, None, False))
+
+            # Permission/auth checks
+            for perm_re in perm_check_patterns:
+                for m in perm_re.finditer(line):
+                    outlines.append((m.group(1), "permission_check", line_number, None, False))
+
+        return outlines
+
+    def _extract_resx_outline(self, text: str) -> list[tuple[str, str, int, str | None, bool]]:
+        """Extract translation key-value pairs from .resx XML files."""
+        outlines: list[tuple[str, str, int, str | None, bool]] = []
+        # Match <data name="Key" ...> <value>Value</value> </data>
+        data_pattern = re.compile(r'<data\s+name="([^"]+)"')
+        value_pattern = re.compile(r"<value>(.*?)</value>", re.DOTALL)
+
+        in_data = False
+        current_name: str | None = None
+        current_line = 1
+
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            m = data_pattern.search(line)
+            if m:
+                current_name = m.group(1)
+                current_line = line_number
+                in_data = True
+            if in_data and current_name is not None:
+                vm = value_pattern.search(line)
+                if vm:
+                    value = vm.group(1).strip()
+                    container = value[:80] if value else None
+                    outlines.append((current_name, "translation", current_line, container, False))
+                    in_data = False
+                    current_name = None
+                elif "</data>" in line:
+                    # Data block closed without a value — reset state
+                    in_data = False
+                    current_name = None
+
+        return outlines
+
+    def _extract_css_outline(self, text: str) -> list[tuple[str, str, int, str | None, bool]]:
+        """Extract symbols from CSS files: custom classes, CSS variables, @theme vars, @keyframes, @layer."""
+        outlines: list[tuple[str, str, int, str | None, bool]] = []
+
+        # Patterns for CSS constructs
+        class_pattern = re.compile(r"^\s*\.([a-zA-Z_][a-zA-Z0-9_-]*)\s*[{,]")
+        var_pattern = re.compile(r"--([a-zA-Z][a-zA-Z0-9_-]*)\s*:")
+        keyframes_pattern = re.compile(r"@keyframes\s+([a-zA-Z_][a-zA-Z0-9_-]*)")
+        layer_pattern = re.compile(r"@layer\s+([a-zA-Z_][a-zA-Z0-9_-]*)")
+        theme_pattern = re.compile(r"@theme\s*\{")
+        variant_pattern = re.compile(r"@variant\s+([a-zA-Z_][a-zA-Z0-9_-]*)")
+
+        in_theme = False
+        brace_depth = 0
+        theme_depth: int | None = None
+
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            opens = line.count("{")
+            closes = line.count("}")
+
+            # @theme block
+            if theme_pattern.search(line):
+                in_theme = True
+                theme_depth = brace_depth + opens
+                outlines.append(("@theme", "theme_block", line_number, None, False))
+
+            # CSS variables (--color-primary, etc.)
+            for m in var_pattern.finditer(line):
+                var_name = m.group(1)
+                context = "theme" if in_theme else None
+                outlines.append((f"--{var_name}", "css_variable", line_number, context, False))
+
+            # Custom classes
+            m = class_pattern.match(line)
+            if m:
+                outlines.append((m.group(1), "css_class", line_number, None, False))
+
+            # @keyframes
+            m = keyframes_pattern.search(line)
+            if m:
+                outlines.append((m.group(1), "keyframes", line_number, None, False))
+
+            # @layer
+            m = layer_pattern.search(line)
+            if m:
+                outlines.append((m.group(1), "css_layer", line_number, None, False))
+
+            # @variant
+            m = variant_pattern.search(line)
+            if m:
+                outlines.append((m.group(1), "css_variant", line_number, None, False))
+
+            brace_depth += opens
+            brace_depth -= closes
+            if in_theme and theme_depth is not None and brace_depth < theme_depth:
+                in_theme = False
+                theme_depth = None
+
+        return outlines
+
     def _extract_edges(self, text: str, language: str) -> list[tuple[str, str]]:
         edges: list[tuple[str, str]] = []
         if language == "python":
@@ -2991,6 +3511,34 @@ class CodeIndexStore:
                 m = re.match(r"^using\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;", stripped)
                 if m:
                     edges.append((m.group(1), "using"))
+            elif language == "razor":
+                # @using directives
+                m = re.match(r"^@using\s+([A-Za-z_][A-Za-z0-9_\.]*)", stripped)
+                if m:
+                    edges.append((m.group(1), "using"))
+                # @model binding → edge to the model type
+                m = re.match(r"^@model\s+([A-Za-z_][A-Za-z0-9_\.]*)", stripped)
+                if m:
+                    edges.append((m.group(1), "model_binding"))
+                # @inject → edge to the injected service type
+                m = re.match(r"^@inject\s+([A-Za-z_][A-Za-z0-9_<>,\.\s]*?)\s+[A-Za-z_][A-Za-z0-9_]*\s*$", stripped)
+                if m:
+                    edges.append((m.group(1).strip(), "inject"))
+                # <partial name="..."> references
+                for pm in re.finditer(r'<partial\s+name="([^"]+)"', stripped, re.IGNORECASE):
+                    edges.append((pm.group(1), "partial_ref"))
+                # Html.PartialAsync("...")
+                for pm in re.finditer(r'Html\.PartialAsync\(\s*"([^"]+)"', stripped):
+                    edges.append((pm.group(1), "partial_ref"))
+                # Component.InvokeAsync("...")
+                for pm in re.finditer(r'Component\.InvokeAsync\(\s*"([^"]+)"', stripped):
+                    edges.append((pm.group(1), "component_ref"))
+                # Layout reference
+                m = re.search(r'Layout\s*=\s*"([^"]+)"', stripped)
+                if m:
+                    edges.append((m.group(1), "layout_ref"))
+            elif language == "resx":
+                pass  # resx files have no outgoing edges
         # dedupe preserve order
         seen = set()
         result: list[tuple[str, str]] = []
@@ -3460,6 +4008,22 @@ class CodeIndexStore:
                 return "script"
             if any(token in parts for token in ("utils", "helpers")):
                 return "utility-module"
+        if language == "razor":
+            if lower.endswith("_layout.cshtml"):
+                return "layout"
+            if lower.endswith("_viewstart.cshtml") or lower.endswith("_viewimports.cshtml"):
+                return "configuration"
+            if name.startswith("_"):
+                return "partial-view"
+            if "shared" in parts:
+                return "shared-view"
+            return "page-view"
+        if language == "resx":
+            return "resource"
+        if language == "css":
+            if "input" in name or "tailwind" in name:
+                return "asset-style-source"
+            return "asset-style"
         if language == "powershell":
             return "script"
         if language == "shell":

@@ -131,6 +131,48 @@ def test_get_outline_for_python_and_typescript(tmp_path: Path) -> None:
     ]
 
 
+def test_typescript_outline_and_data_structures_include_contract_types(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "src").mkdir(parents=True, exist_ok=True)
+    (project_root / "src" / "contracts.ts").write_text(
+        "export interface WorkflowRunInput {\n"
+        "  runtime: 'codex' | 'opencode'\n"
+        "  model?: string\n"
+        "}\n\n"
+        "export type WorkflowRunResponse = {\n"
+        "  output: string\n"
+        "}\n\n"
+        "export enum RuntimeMode {\n"
+        "  Codex,\n"
+        "  OpenCode\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "src/contracts.ts")
+    structures = store.find_data_structures(project_root, query="Workflow", limit=20)
+    symbol_bundle = store.get_symbol_bundle(project_root, symbol="WorkflowRunInput", path="src/contracts.ts", limit=20)
+
+    outline_kinds = {(item["symbol"], item["kind"], item["container"]) for item in outline}
+    structure_kinds = {(item["symbol"], item["kind"], item["container"]) for item in structures}
+
+    assert ("WorkflowRunInput", "interface", None) in outline_kinds
+    assert ("runtime", "property", "WorkflowRunInput") in outline_kinds
+    assert ("model", "property", "WorkflowRunInput") in outline_kinds
+    assert ("WorkflowRunResponse", "type_alias", None) in outline_kinds
+    assert ("output", "property", "WorkflowRunResponse") in outline_kinds
+    assert ("RuntimeMode", "enum", None) in outline_kinds
+    assert ("Codex", "enum_member", "RuntimeMode") in outline_kinds
+    assert ("OpenCode", "enum_member", "RuntimeMode") in outline_kinds
+
+    assert ("WorkflowRunInput", "interface", None) in structure_kinds
+    assert ("runtime", "property", "WorkflowRunInput") in structure_kinds
+    assert symbol_bundle["definitions"]
+
+
 def test_python_ast_outline_handles_decorators_async_and_methods(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -2143,3 +2185,178 @@ def test_get_preset_bundle(tmp_path: Path) -> None:
     assert bundle["preset"] == "csharp-partial"
     assert bundle["value"] == "MainWindow"
     assert len(bundle["bundle"]) == 2
+
+
+# ---- New: Razor/Resx/CSS extraction tests ----
+
+
+def test_razor_cshtml_parsed_with_outline(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages" / "Index.cshtml").write_text(
+        '@page\n@model IndexModel\n@inject IService Svc\n<partial name="_Header" />\n'
+        '@section Scripts {\n<script>\nfunction init() {}\n</script>\n}\n'
+        '@Lang.T("Hello")\n<form asp-page-handler="Save"></form>\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "Pages/Index.cshtml")
+
+    kinds = {item["kind"] for item in outline}
+    assert "page_route" in kinds
+    assert "model_binding" in kinds
+    assert "inject" in kinds
+    assert "partial_ref" in kinds
+    assert "section" in kinds
+    assert "js_function" in kinds
+    assert "translation_key" in kinds
+    assert "form_handler" in kinds
+
+
+def test_razor_cshtml_role_inference(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages" / "Shared").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages" / "Index.cshtml").write_text("@page\n<h1>Home</h1>\n", encoding="utf-8")
+    (project_root / "Pages" / "_Header.cshtml").write_text("<header>Logo</header>\n", encoding="utf-8")
+    (project_root / "Pages" / "Shared" / "_Layout.cshtml").write_text('<html>\n@RenderBody()\n</html>\n', encoding="utf-8")
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    with store.connect(project_root) as conn:
+        roles = {r["path"]: r["role"] for r in conn.execute("SELECT path, role FROM code_files")}
+
+    assert roles["Pages/Index.cshtml"] == "page-view"
+    assert roles["Pages/_Header.cshtml"] == "partial-view"
+    assert roles["Pages/Shared/_Layout.cshtml"] == "layout"
+
+
+def test_resx_translation_extraction(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Resources").mkdir(parents=True, exist_ok=True)
+    (project_root / "Resources" / "Lang.en.resx").write_text(
+        '<?xml version="1.0"?>\n<root>\n'
+        '  <data name="Hello" xml:space="preserve"><value>Hello World</value></data>\n'
+        '  <data name="Save" xml:space="preserve"><value>Save Changes</value></data>\n'
+        '</root>\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "Resources/Lang.en.resx")
+
+    symbols = {item["symbol"] for item in outline}
+    assert "Hello" in symbols
+    assert "Save" in symbols
+    assert all(item["kind"] == "translation" for item in outline)
+
+
+def test_css_class_and_variable_extraction(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "css").mkdir(parents=True, exist_ok=True)
+    (project_root / "css" / "app.css").write_text(
+        '@theme {\n  --color-primary: #3b82f6;\n  --app-bg: #fff;\n}\n'
+        '.modal-overlay { display: flex; }\n'
+        '.glassmorphic { backdrop-filter: blur(10px); }\n'
+        '@keyframes fadeIn { from { opacity: 0; } }\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "css/app.css")
+
+    kinds = {item["kind"] for item in outline}
+    symbols = {item["symbol"] for item in outline}
+    assert "css_class" in kinds
+    assert "css_variable" in kinds
+    assert "keyframes" in kinds
+    assert "theme_block" in kinds
+    assert "modal-overlay" in symbols
+    assert "--color-primary" in symbols
+    assert "fadeIn" in symbols
+
+
+def test_csharp_http_endpoint_extraction(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Controllers").mkdir(parents=True, exist_ok=True)
+    (project_root / "Controllers" / "ApiController.cs").write_text(
+        'using Microsoft.AspNetCore.Mvc;\n'
+        'namespace App.Controllers;\n'
+        '[Route("api/[controller]")]\n'
+        'public class ApiController : ControllerBase\n{\n'
+        '    [HttpGet("items")]\n'
+        '    public IActionResult GetItems() { return Ok(); }\n'
+        '    [HttpPost]\n'
+        '    [Authorize(Roles="Admin")]\n'
+        '    public IActionResult Create() { return Ok(); }\n'
+        '}\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "Controllers/ApiController.cs")
+
+    kinds = {item["kind"] for item in outline}
+    assert "http_endpoint" in kinds
+    assert "route" in kinds
+    assert "authorize" in kinds
+
+
+def test_search_symbols_by_kind(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages" / "Index.cshtml").write_text(
+        '@page\n@model IndexModel\n@Lang.T("Welcome")\n@Lang.T("Login")\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    results = store.search_symbols(project_root, query="", kind="translation_key")
+
+    assert len(results) >= 2
+    assert all(r["kind"] == "translation_key" for r in results)
+
+
+def test_incremental_index_version_migration(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "src").mkdir(parents=True, exist_ok=True)
+    (project_root / "src" / "app.py").write_text("def hello(): pass\n", encoding="utf-8")
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    # First sync
+    store.sync_code_files(project_root)
+    with store.connect(project_root) as conn:
+        files_before = conn.execute("SELECT COUNT(*) FROM code_files").fetchone()[0]
+        outlines_before = conn.execute("SELECT COUNT(*) FROM code_outlines").fetchone()[0]
+
+    assert files_before == 1
+    assert outlines_before >= 1
+
+    # Simulate version bump
+    with store.connect(project_root) as conn:
+        conn.execute("INSERT OR REPLACE INTO index_meta (key, value) VALUES ('code_index_version', 'old-version')")
+
+    # Re-init triggers version migration
+    store.init_db(project_root)
+    with store.connect(project_root) as conn:
+        # Files should still be there (not deleted), but marked unparsed
+        files_after = conn.execute("SELECT COUNT(*) FROM code_files").fetchone()[0]
+        parsed_after = conn.execute("SELECT COUNT(*) FROM code_files WHERE parsed = 1").fetchone()[0]
+        outlines_after = conn.execute("SELECT COUNT(*) FROM code_outlines").fetchone()[0]
+
+    assert files_after == files_before  # files preserved
+    assert parsed_after == 0  # all marked unparsed
+    assert outlines_after == 0  # outlines cleared for reparse

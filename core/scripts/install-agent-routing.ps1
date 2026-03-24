@@ -143,6 +143,26 @@ Routing order:
 "@
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+function New-LinkOrCopy {
+  param(
+    [Parameter(Mandatory = $true)][string]$Source,
+    [Parameter(Mandatory = $true)][string]$Target
+  )
+
+  if (Test-Path $Target) {
+    Remove-Item -LiteralPath $Target -Force -ErrorAction SilentlyContinue
+  }
+
+  try {
+    New-Item -ItemType SymbolicLink -Path $Target -Target $Source -Force | Out-Null
+    return "link"
+  } catch {
+    Copy-Item -LiteralPath $Source -Destination $Target -Force
+    return "copy"
+  }
+}
+
 [System.IO.File]::WriteAllText((Join-Path $opencodeDir "AGENTS.md"), $globalAgents, $utf8NoBom)
 [System.IO.File]::WriteAllText((Join-Path $claudeDir "CLAUDE.md"), $globalClaude, $utf8NoBom)
 
@@ -152,6 +172,25 @@ if (-not (Test-Path $opencodePluginSource)) {
 }
 $opencodePluginTarget = Join-Path $opencodePluginsDir "aidocs.js"
 [System.IO.File]::WriteAllText($opencodePluginTarget, [System.IO.File]::ReadAllText($opencodePluginSource), $utf8NoBom)
+
+$actionTokensRoot = Join-Path $projectRoot "mcp\server\aidocs_mcp\action_tokens"
+if (-not (Test-Path $actionTokensRoot)) {
+  $actionTokensRoot = Join-Path $sourceRoot "server\aidocs_mcp\action_tokens"
+}
+if (-not (Test-Path $actionTokensRoot)) {
+  throw "Missing action_tokens directory: $actionTokensRoot"
+}
+
+$opencodeActionTokensDir = Join-Path $actionTokensRoot "opencode"
+New-Item -ItemType Directory -Force -Path $opencodeActionTokensDir | Out-Null
+Get-ChildItem -Path $opencodeActionTokensDir -Filter "*.yaml" -File -ErrorAction SilentlyContinue | Remove-Item -Force
+
+$opencodeActionTokenExports = @{}
+Get-ChildItem -Path $actionTokensRoot -Filter "*.yaml" -File | ForEach-Object {
+  $target = Join-Path $opencodeActionTokensDir $_.Name
+  $mode = New-LinkOrCopy -Source $_.FullName -Target $target
+  $opencodeActionTokenExports[$target] = $mode
+}
 
 if (Test-Path $opencodeSettingsPath) {
   $opencodeSettingsRaw = [System.IO.File]::ReadAllText($opencodeSettingsPath)
@@ -292,6 +331,9 @@ foreach ($k in $copied.Keys) {
 }
 foreach ($k in $claudeCopied.Keys) {
   Write-Host "-" $k
+}
+foreach ($k in $opencodeActionTokenExports.Keys) {
+  Write-Host "-" $k "(" $opencodeActionTokenExports[$k] ")"
 }
 Write-Host "AIDOCS source wired to:" $sourceRoot
 Write-Host "Command pack version:" $commandPackVersion

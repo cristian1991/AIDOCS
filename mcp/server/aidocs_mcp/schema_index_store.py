@@ -50,12 +50,14 @@ class SchemaIndexStore:
                     source_entity TEXT NOT NULL,
                     target_entity TEXT NOT NULL,
                     relation_kind TEXT NOT NULL,
+                    relationship_family TEXT NOT NULL DEFAULT 'structural',
                     source_path TEXT NOT NULL,
                     line_number INTEGER,
                     PRIMARY KEY (source_entity, target_entity, relation_kind, source_path)
                 );
                 """
             )
+            self._ensure_column(conn, "schema_relationships", "relationship_family", "TEXT NOT NULL DEFAULT 'structural'")
 
     def sync_schema(self, project_root: Path) -> dict[str, int]:
         self.init_db(project_root)
@@ -76,14 +78,19 @@ class SchemaIndexStore:
 
             suffix = path.suffix.lower()
             if suffix == ".cs":
-                entities, fields = self._extract_csharp_schema(path, rel)
+                entities, fields, nav_rels = self._extract_csharp_schema(path, rel)
                 entity_rows.extend(entities)
                 field_rows.extend(fields)
+                relationship_rows.extend(nav_rels)
                 ef_tables, ef_dbsets, ef_fields, ef_relationships = self._extract_ef_core_schema(path, rel)
                 ef_table_specs.extend(ef_tables)
                 ef_dbset_specs.extend(ef_dbsets)
                 ef_field_specs.extend(ef_fields)
                 ef_relationship_specs.extend(ef_relationships)
+                di_rels = self._extract_di_registrations(path, rel)
+                relationship_rows.extend(di_rels)
+                impl_rels = self._extract_interface_implementations(path, rel)
+                relationship_rows.extend(impl_rels)
             elif suffix == ".prisma":
                 entities, fields, relationships = self._extract_prisma_schema(path, rel)
                 entity_rows.extend(entities)
@@ -122,6 +129,10 @@ class SchemaIndexStore:
         entity_rows = list({(row[0], row[1], row[2], row[3]): row for row in entity_rows}.values())
         field_rows = list({(row[0], row[1], row[3], row[4], row[5]): row for row in field_rows}.values())
         relationship_rows = list({(row[0], row[1], row[2], row[3]): row for row in relationship_rows}.values())
+        relationship_rows_with_family = [
+            (source_entity, target_entity, relation_kind, self._classify_relationship_family(relation_kind), source_path, line_number)
+            for source_entity, target_entity, relation_kind, source_path, line_number in relationship_rows
+        ]
 
         with self.connect(project_root) as conn:
             conn.execute("DELETE FROM schema_entities")
@@ -136,8 +147,8 @@ class SchemaIndexStore:
                 field_rows,
             )
             conn.executemany(
-                "INSERT INTO schema_relationships (source_entity, target_entity, relation_kind, source_path, line_number) VALUES (?, ?, ?, ?, ?)",
-                relationship_rows,
+                "INSERT INTO schema_relationships (source_entity, target_entity, relation_kind, relationship_family, source_path, line_number) VALUES (?, ?, ?, ?, ?, ?)",
+                relationship_rows_with_family,
             )
 
         return {
@@ -158,9 +169,13 @@ class SchemaIndexStore:
             kind_rows = conn.execute(
                 "SELECT kind, COUNT(*) AS count FROM schema_entities GROUP BY kind ORDER BY count DESC, kind ASC"
             ).fetchall()
+            relationship_family_rows = conn.execute(
+                "SELECT relationship_family, COUNT(*) AS count FROM schema_relationships GROUP BY relationship_family ORDER BY count DESC, relationship_family ASC"
+            ).fetchall()
 
         by_source_type = {row["source_type"]: int(row["count"]) for row in source_rows}
         by_kind = {row["kind"]: int(row["count"]) for row in kind_rows}
+        by_relationship_family = {row["relationship_family"]: int(row["count"]) for row in relationship_family_rows}
         categories: dict[str, dict[str, object]] = {}
         for source_type, count in by_source_type.items():
             category = self._schema_category_for_source_type(source_type)
@@ -178,6 +193,9 @@ class SchemaIndexStore:
                 "by_source_type": by_source_type,
                 "by_kind": by_kind,
                 "categories": categories,
+            },
+            "relationship_breakdown": {
+                "by_family": by_relationship_family,
             },
         }
 
@@ -286,7 +304,7 @@ class SchemaIndexStore:
 
         with self.connect(project_root) as conn:
             rows = conn.execute(
-                "SELECT source_entity, target_entity, relation_kind, source_path, line_number FROM schema_relationships"
+                "SELECT source_entity, target_entity, relation_kind, relationship_family, source_path, line_number FROM schema_relationships"
             ).fetchall()
 
         graph: dict[str, list[dict[str, object]]] = {}
@@ -353,6 +371,7 @@ class SchemaIndexStore:
             r"^\s*(?:public|private|internal|protected|static|readonly|const|volatile|unsafe|new|\s)+([A-Za-z_<>,\[\]\.?]+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;)"
         )
 
+        nav_relationships: list[tuple[str, str, str, str, int]] = []
         current_entity = None
         current_kind = None
         brace_depth = 0
@@ -381,18 +400,26 @@ class SchemaIndexStore:
             if current_entity is not None:
                 pm = property_pattern.match(line)
                 if pm and current_kind != "enum":
-                    field_rows.append((current_entity, pm.group(2), pm.group(1), "property", "csharp", rel, line_number))
+                    prop_type = pm.group(1)
+                    prop_name = pm.group(2)
+                    field_rows.append((current_entity, prop_name, prop_type, "property", "csharp", rel, line_number))
+                    # Detect navigation properties (virtual + entity type)
+                    if "virtual" in line:
+                        nav_rel = self._detect_nav_relationship(prop_type, prop_name, current_entity)
+                        if nav_rel:
+                            nav_relationships.append((*nav_rel, rel, line_number))
 
                 fm = field_pattern.match(line)
                 if fm and current_kind != "enum":
                     field_rows.append((current_entity, fm.group(2), fm.group(1), "field", "csharp", rel, line_number))
 
                 if inside_enum:
-                    em = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=\s*[^,]+)?\s*,?\s*$", line)
+                    em = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=\s*([^,\s]+))?\s*,?\s*$", line)
                     if em:
                         symbol = em.group(1)
                         if symbol not in {"public", "private", "internal", "protected"}:
-                            field_rows.append((current_entity, symbol, None, "enum_member", "csharp", rel, line_number))
+                            enum_val = em.group(2)  # e.g., "0", "1", etc.
+                            field_rows.append((current_entity, symbol, enum_val, "enum_member", "csharp", rel, line_number))
 
             brace_depth += opens
             brace_depth -= closes
@@ -402,7 +429,70 @@ class SchemaIndexStore:
                 entity_depth = None
                 inside_enum = False
 
-        return entity_rows, field_rows
+        return entity_rows, field_rows, nav_relationships
+
+    def _detect_nav_relationship(self, prop_type: str, prop_name: str, current_entity: str) -> tuple[str, str, str] | None:
+        """Detect navigation property relationships from type signatures."""
+        clean = prop_type.rstrip("?").strip()
+        # ICollection<T>, IList<T>, List<T>, IEnumerable<T>, HashSet<T>
+        collection_match = re.match(r"(?:I?(?:Collection|List|Enumerable|Set)|List|HashSet)<([A-Za-z_][A-Za-z0-9_]*)>", clean)
+        if collection_match:
+            target = collection_match.group(1)
+            return (current_entity, target, "nav_collection")
+        # Simple navigation property (not a primitive type)
+        if clean[:1].isupper() and not clean.startswith(("Guid", "DateTime", "String", "Decimal", "Int", "Boolean", "Byte", "Double", "Float", "Long", "Short", "Nullable")):
+            # Likely a reference navigation
+            return (current_entity, clean, "nav_reference")
+        return None
+
+    def _extract_di_registrations(self, path: Path, rel: str) -> list[tuple[str, str, str, str, int | None]]:
+        """Extract DI service registrations: AddScoped<IFoo, Foo>(), AddTransient<>(), AddSingleton<>()."""
+        relationships: list[tuple[str, str, str, str, int | None]] = []
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        # Match: Add{Scoped|Transient|Singleton}<IService, Implementation>()
+        di_pattern = re.compile(
+            r"\.Add(Scoped|Transient|Singleton)<([A-Za-z_][A-Za-z0-9_]*),\s*([A-Za-z_][A-Za-z0-9_]*)>"
+        )
+        # Match: Add{Scoped|Transient|Singleton}<ConcreteOnly>()
+        di_single_pattern = re.compile(
+            r"\.Add(Scoped|Transient|Singleton)<([A-Za-z_][A-Za-z0-9_]*)>\s*\("
+        )
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            # Collect spans matched by two-type pattern to avoid double-counting
+            two_type_spans: set[tuple[int, int]] = set()
+            for m in di_pattern.finditer(line):
+                lifetime = m.group(1).lower()
+                interface = m.group(2)
+                implementation = m.group(3)
+                relationships.append((interface, implementation, f"di_{lifetime}", rel, line_number))
+                two_type_spans.add((m.start(), m.end()))
+            for m in di_single_pattern.finditer(line):
+                # Skip if this match overlaps with a two-type match
+                if any(m.start() >= s and m.start() < e for s, e in two_type_spans):
+                    continue
+                lifetime = m.group(1).lower()
+                concrete = m.group(2)
+                relationships.append((concrete, concrete, f"di_{lifetime}", rel, line_number))
+        return relationships
+
+    def _extract_interface_implementations(self, path: Path, rel: str) -> list[tuple[str, str, str, str, int | None]]:
+        """Extract interface implementation relationships from class declarations."""
+        relationships: list[tuple[str, str, str, str, int | None]] = []
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        # Match: class Foo : IBar, IBaz  or  class Foo : BaseClass, IBar
+        class_pattern = re.compile(
+            r"^\s*(?:public|private|internal|protected|sealed|abstract|static|partial|\s)*\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*:\s*(.+)"
+        )
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            m = class_pattern.match(line)
+            if m:
+                class_name = m.group(1)
+                bases = m.group(2).split("{")[0]  # trim any opening brace
+                for base in bases.split(","):
+                    base = base.strip().split("<")[0].strip()  # remove generics
+                    if base.startswith("I") and len(base) > 1 and base[1:2].isupper():
+                        relationships.append((base, class_name, "implements", rel, line_number))
+        return relationships
 
     def _extract_ef_core_schema(self, path: Path, rel: str):
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -417,7 +507,19 @@ class SchemaIndexStore:
         property_pattern = re.compile(r'\bProperty\(\s*\w+\s*=>\s*\w+\.([A-Za-z_][A-Za-z0-9_]*)\s*\)')
         table_pattern = re.compile(r'\bToTable\(\s*"([^"]+)"')
         has_one_pattern = re.compile(r'HasOne(?:<(?P<generic>[A-Za-z_][A-Za-z0-9_]*)>)?\(\s*(?:(?P<param>\w+)\s*=>\s*(?P=param)\.(?P<nav>[A-Za-z_][A-Za-z0-9_]*))?')
-        fk_pattern = re.compile(r'HasForeignKey\(\s*\w+\s*=>\s*\w+\.([A-Za-z_][A-Za-z0-9_]*)\s*\)')
+        has_many_pattern = re.compile(r'HasMany(?:<(?P<generic>[A-Za-z_][A-Za-z0-9_]*)>)?\(\s*(?:(?P<param>\w+)\s*=>\s*(?P=param)\.(?P<nav>[A-Za-z_][A-Za-z0-9_]*))?')
+        with_one_pattern = re.compile(r'WithOne\(\s*(?:(?P<param>\w+)\s*=>\s*(?P=param)\.(?P<nav>[A-Za-z_][A-Za-z0-9_]*))?')
+        with_many_pattern = re.compile(r'WithMany\(\s*(?:(?P<param>\w+)\s*=>\s*(?P=param)\.(?P<nav>[A-Za-z_][A-Za-z0-9_]*))?')
+        fk_pattern = re.compile(r'HasForeignKey(?:<(?P<fk_entity>[A-Za-z_][A-Za-z0-9_]*)>)?\(\s*\w+\s*=>\s*\w+\.([A-Za-z_][A-Za-z0-9_]*)\s*\)')
+        owns_one_pattern = re.compile(r'OwnsOne(?:<(?P<generic>[A-Za-z_][A-Za-z0-9_]*)>)?\(\s*(?:(?P<param>\w+)\s*=>\s*(?P=param)\.(?P<nav>[A-Za-z_][A-Za-z0-9_]*))?')
+        owns_many_pattern = re.compile(r'OwnsMany(?:<(?P<generic>[A-Za-z_][A-Za-z0-9_]*)>)?\(\s*(?:(?P<param>\w+)\s*=>\s*(?P=param)\.(?P<nav>[A-Za-z_][A-Za-z0-9_]*))?')
+        has_key_pattern = re.compile(r'HasKey\(\s*\w+\s*=>\s*(?:new\s*\{[^}]+\}|\w+\.\w+)\s*\)')
+        is_required_pattern = re.compile(r'\.IsRequired\(\s*(?:true|false)?\s*\)')
+        max_length_pattern = re.compile(r'\.HasMaxLength\(\s*(\d+)\s*\)')
+        default_pattern = re.compile(r'\.HasDefaultValue\(\s*([^)]+)\s*\)')
+        has_query_filter = re.compile(r'\.HasQueryFilter\(')
+        ignore_pattern = re.compile(r'\.Ignore\(\s*\w+\s*=>\s*\w+\.([A-Za-z_][A-Za-z0-9_]*)\s*\)')
+        delete_behavior_pattern = re.compile(r'\.OnDelete\(\s*DeleteBehavior\.([A-Za-z]+)\s*\)')
 
         brace_depth = 0
         current_entity_type: str | None = None
@@ -425,6 +527,7 @@ class SchemaIndexStore:
         entity_depth: int | None = None
         current_table_name: str | None = None
         pending_target: str | None = None
+        pending_relation_kind: str | None = None
 
         for line_number, line in enumerate(lines, start=1):
             for match in dbset_pattern.finditer(line):
@@ -437,6 +540,7 @@ class SchemaIndexStore:
                 entity_depth = brace_depth + line.count("{")
                 current_table_name = None
                 pending_target = None
+                pending_relation_kind = None
 
             if current_entity_type is not None:
                 table_match = table_pattern.search(line)
@@ -446,29 +550,85 @@ class SchemaIndexStore:
                 for property_match in property_pattern.finditer(line):
                     ef_fields.append((current_entity_type, property_match.group(1), None, rel, "ef", line_number))
 
+                # HasOne → target entity (one-to-one or many-to-one)
                 has_one_match = has_one_pattern.search(line)
                 if has_one_match:
                     pending_target = has_one_match.group("generic") or has_one_match.group("nav")
+                    pending_relation_kind = "ef_has_one"
 
+                # HasMany → target entity (one-to-many)
+                has_many_match = has_many_pattern.search(line)
+                if has_many_match:
+                    target = has_many_match.group("generic") or has_many_match.group("nav")
+                    if target:
+                        target = self._capitalize_identifier(target.rstrip("?"))
+                        ef_relationships.append((current_entity_type, target, "ef_has_many", rel, line_number))
+                    pending_target = target
+                    pending_relation_kind = "ef_has_many"
+
+                # WithOne / WithMany — refine the relationship direction
+                with_one_match = with_one_pattern.search(line)
+                if with_one_match and pending_target:
+                    nav = with_one_match.group("nav")
+                    if nav and pending_relation_kind == "ef_has_many":
+                        # HasMany(...).WithOne(...) — standard one-to-many
+                        pass  # already recorded above
+
+                with_many_match = with_many_pattern.search(line)
+                if with_many_match and pending_target and pending_relation_kind == "ef_has_one":
+                    # HasOne(...).WithMany(...) — many-to-one from current to target
+                    pass  # FK will capture this below, or we record it now
+
+                # OwnsOne / OwnsMany
+                owns_one_match = owns_one_pattern.search(line)
+                if owns_one_match:
+                    target = owns_one_match.group("generic") or owns_one_match.group("nav")
+                    if target:
+                        target = self._capitalize_identifier(target.rstrip("?"))
+                        ef_relationships.append((current_entity_type, target, "ef_owns_one", rel, line_number))
+
+                owns_many_match = owns_many_pattern.search(line)
+                if owns_many_match:
+                    target = owns_many_match.group("generic") or owns_many_match.group("nav")
+                    if target:
+                        target = self._capitalize_identifier(target.rstrip("?"))
+                        ef_relationships.append((current_entity_type, target, "ef_owns_many", rel, line_number))
+
+                # HasForeignKey — captures FK field and resolves pending relationship
                 fk_match = fk_pattern.search(line)
                 if fk_match:
-                    fk_name = fk_match.group(1)
+                    fk_name = fk_match.group(2)
                     target = pending_target or fk_name[:-2]
                     target = self._capitalize_identifier(target.rstrip("?"))
                     ef_relationships.append((current_entity_type, target, "ef_foreign_key", rel, line_number))
                     ef_fields.append((current_entity_type, fk_name, None, rel, "ef", line_number))
                     pending_target = None
+                    pending_relation_kind = None
+
+                # HasQueryFilter — note as metadata
+                if has_query_filter.search(line):
+                    ef_fields.append((current_entity_type, "__query_filter__", None, rel, "ef", line_number))
+
+                # Ignore — unmapped property
+                ignore_match = ignore_pattern.search(line)
+                if ignore_match:
+                    ef_fields.append((current_entity_type, ignore_match.group(1), "__ignored__", rel, "ef", line_number))
 
             brace_depth += line.count("{")
             brace_depth -= line.count("}")
 
             if current_entity_type is not None and entity_depth is not None and brace_depth < entity_depth:
+                # If there was a pending HasOne without FK, still record the relationship
+                if pending_target and pending_relation_kind == "ef_has_one":
+                    target = self._capitalize_identifier(pending_target.rstrip("?"))
+                    ef_relationships.append((current_entity_type, target, "ef_has_one", rel, current_start_line or line_number))
                 ef_tables.append((current_entity_type, current_table_name, rel, current_start_line))
                 current_entity_type = None
                 current_start_line = None
                 entity_depth = None
                 current_table_name = None
                 pending_target = None
+                pending_relation_kind = None
 
         return ef_tables, ef_dbsets, ef_fields, ef_relationships
 
@@ -665,6 +825,26 @@ class SchemaIndexStore:
         split = re.split(r'\s+(?:NOT\s+NULL|NULL|DEFAULT|PRIMARY\s+KEY|REFERENCES|CONSTRAINT|UNIQUE|CHECK)\b', cleaned, maxsplit=1, flags=re.IGNORECASE)
         return split[0].strip().rstrip(",")
 
+    # Relationship family classification
+    _STRUCTURAL_KINDS = {
+        "ef_foreign_key", "ef_has_one", "ef_has_many", "ef_owns_one", "ef_owns_many",
+        "foreign_key", "nav_reference", "nav_collection",
+        "prisma_relation",
+    }
+    _PROCEDURAL_KINDS = {
+        "di_scoped", "di_transient", "di_singleton",
+        "implements",
+    }
+    # Everything else defaults to structural
+
+    def _classify_relationship_family(self, relation_kind: str) -> str:
+        if relation_kind in self._PROCEDURAL_KINDS:
+            return "procedural"
+        if relation_kind in self._STRUCTURAL_KINDS:
+            return "structural"
+        # Execution family will come from execution_events, not from static code extraction
+        return "structural"
+
     def _capitalize_identifier(self, value: str) -> str:
         if not value:
             return value
@@ -745,6 +925,12 @@ class SchemaIndexStore:
             "id_reference": 2,
         }
         return priorities.get(relation_kind, 10)
+
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        existing = {row[1] for row in rows}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def _line_number(self, text: str, offset: int) -> int:
         return text[:offset].count("\n") + 1

@@ -16,14 +16,24 @@ def test_read_memory_reads_existing_targets(tmp_path: Path) -> None:
     assert "/.MEMORY/missing.md" not in result
 
 
-def test_capture_memory_uses_kind_mapping(tmp_path: Path) -> None:
+def test_capture_memory_routes_rule_by_content(tmp_path: Path) -> None:
     store = MemoryStore()
     project_root = tmp_path / "project"
 
+    # Communication-style content routes to communication.md
     result = store.capture_memory(project_root, kind="rule", content="keep things concise")
+    assert result.target_file.name == "communication.md"
+    assert result.target_file.parent.name == "rules"
 
-    assert result.target_file.name == "workflow.md"
-    assert result.target_file.read_text(encoding="utf-8") == "- keep things concise\n"
+    # Workflow-style content routes to workflow.md
+    result2 = store.capture_memory(project_root, kind="rule", content="after task push sync indexes")
+    assert result2.target_file.name == "workflow.md"
+    assert result2.target_file.parent.name == "rules"
+
+    # Design-style content routes to design.md
+    result3 = store.capture_memory(project_root, kind="rule", content="UI should be colorful")
+    assert result3.target_file.name == "design.md"
+    assert result3.target_file.parent.name == "rules"
 
 
 def test_capture_memory_honors_target_hint(tmp_path: Path) -> None:
@@ -41,7 +51,7 @@ def test_capture_memory_honors_target_hint(tmp_path: Path) -> None:
     assert result.target_file.read_text(encoding="utf-8") == "- custom fact\n"
 
 
-def test_capture_memory_ignores_bare_target_hint_and_falls_back_to_kind_mapping(tmp_path: Path) -> None:
+def test_capture_memory_routes_bare_target_hint_to_kind_folder(tmp_path: Path) -> None:
     store = MemoryStore()
     project_root = tmp_path / "project"
 
@@ -52,7 +62,8 @@ def test_capture_memory_ignores_bare_target_hint_and_falls_back_to_kind_mapping(
         target_hint="workflow-git-push",
     )
 
-    assert result.target_file.name == "workflow.md"
+    # Bare target_hint is used as filename, routed to the kind-appropriate folder
+    assert result.target_file.name == "workflow-git-push.md"
     assert result.target_file.parent.name == "rules"
     assert result.target_file.read_text(encoding="utf-8") == "- after task push\n"
 

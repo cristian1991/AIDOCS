@@ -1,8 +1,59 @@
 from __future__ import annotations
 
+import logging
+import re
 from pathlib import Path
 
 from .service_hub import AidocsServiceHub
+
+logger = logging.getLogger("aidocs.runtime")
+
+_ACTION_TOKENS_DIR = Path(__file__).resolve().parent / "action_tokens"
+
+
+def _load_action_tokens(directory: Path | None = None) -> list[tuple[str, tuple[str, ...]]]:
+    """Load action token mappings from all YAML files in the action_tokens directory.
+
+    Returns an ordered list of (action_kind, tokens) tuples suitable for
+    first-match classification.  Files are simple ``key: [- value]`` YAML
+    parsed without PyYAML to avoid an extra dependency.
+    """
+    root = directory or _ACTION_TOKENS_DIR
+    if not root.is_dir():
+        logger.warning("action_tokens directory not found: %s", root)
+        return []
+
+    merged: dict[str, list[str]] = {}
+    for yaml_file in sorted(root.glob("*.yaml")):
+        current_key: str | None = None
+        try:
+            for raw_line in yaml_file.read_text(encoding="utf-8").splitlines():
+                line = raw_line.rstrip()
+                if not line or line.lstrip().startswith("#"):
+                    continue
+                key_match = re.match(r"^(\w[\w_]*):\s*$", line)
+                if key_match:
+                    current_key = key_match.group(1)
+                    continue
+                item_match = re.match(r"^\s+-\s+(.+)$", line)
+                if item_match and current_key:
+                    token = item_match.group(1).strip()
+                    if token:
+                        merged.setdefault(current_key, []).append(token)
+        except Exception as exc:
+            logger.warning("Failed to load action tokens from %s: %s", yaml_file, exc)
+
+    # Deduplicate tokens per action_kind while preserving order
+    result: list[tuple[str, tuple[str, ...]]] = []
+    for action_kind, tokens in merged.items():
+        seen: set[str] = set()
+        unique: list[str] = []
+        for token in tokens:
+            if token not in seen:
+                seen.add(token)
+                unique.append(token)
+        result.append((action_kind, tuple(unique)))
+    return result
 
 
 class RuntimeService:
@@ -10,6 +61,12 @@ class RuntimeService:
 
     def __init__(self, hub: AidocsServiceHub) -> None:
         self.hub = hub
+        self._action_token_mapping: list[tuple[str, tuple[str, ...]]] | None = None
+
+    def _get_action_tokens(self) -> list[tuple[str, tuple[str, ...]]]:
+        if self._action_token_mapping is None:
+            self._action_token_mapping = _load_action_tokens()
+        return self._action_token_mapping
 
     def session_start(
         self,
@@ -21,7 +78,7 @@ class RuntimeService:
     ) -> dict[str, object]:
         if sync_indexes:
             self.hub.index.sync_all(project_root)
-            self.hub.code.sync_code_manifest(project_root, include_tests=include_tests)
+            self.hub.code.sync_code_files(project_root, include_tests=include_tests)
 
         startup_files = [
             "/.MEMORY/.aidocs/index.aidocs",
@@ -49,12 +106,14 @@ class RuntimeService:
             if len(active) == 1:
                 session_id = active[0].session_id
             else:
-                return {
+                response = {
                     "startup_files": startup_files,
                     "requires_session_selection": True,
                     "reason": "no_unique_active_session",
                     "sessions": session_summaries,
                 }
+                response["report"] = self._build_session_start_report(response)
+                return response
 
         session = self.hub.sessions.read_session(project_root, session_id)
         context = self.hub.sessions.read_context(project_root, session_id)
@@ -80,7 +139,234 @@ class RuntimeService:
         if include_code_bundle:
             response["code_bundle"] = self.hub.code.get_context_bundle(project_root, session_id=session_id)
 
+        response["report"] = self._build_session_start_report(response)
+
         return response
+
+    def _registered_tools_snapshot(self) -> list[object]:
+        from .mcp_server import create_server
+
+        server = create_server()
+        components = getattr(getattr(server, "_local_provider", None), "_components", {})
+        return [component for key, component in components.items() if str(key).startswith("tool:")]
+
+    def _sync_bootstrap_indexes(self, project_root: Path, include_tests: bool) -> dict[str, object]:
+        workflow = self.hub.workflow.compile_project_rules(project_root)
+        capabilities = self.hub.capabilities.sync_capabilities(project_root, self._registered_tools_snapshot())
+        procedures = self.hub.procedures.sync_procedures(project_root, self.hub.workflow.read_compiled(project_root))
+        links = self.hub.procedure_links.sync_links(
+            project_root,
+            self.hub.procedures.find_procedures(project_root, query=None, limit=1000),
+            self.hub.capabilities.find_capabilities(project_root, query=None, limit=1000),
+        )
+        return {
+            "memory": self.hub.index.sync_all(project_root),
+            "code_manifest": {"code_files": self.hub.code.sync_code_files(project_root, include_tests=include_tests)},
+            "schema": self.hub.schema.sync_schema(project_root),
+            "workflow": workflow,
+            "capabilities": {"capability_definitions": capabilities},
+            "procedures": {"procedure_definitions": procedures},
+            "procedure_capability_links": {"links": links},
+            "execution": self.hub.execution.execution_status(project_root),
+        }
+
+    def _build_session_start_report(self, response: dict[str, object]) -> dict[str, object]:
+        if response.get("requires_session_selection"):
+            sessions = response.get("sessions") if isinstance(response.get("sessions"), list) else []
+            return {
+                "headline": "Session selection is required before continuing.",
+                "bullets": [f"Active/available sessions: {len(sessions)}."],
+                "next_step": "select_session",
+            }
+
+        selected = response.get("selected_session") if isinstance(response.get("selected_session"), dict) else {}
+        session_id = selected.get("session_id")
+        bullets = [f"Selected session: {session_id}."] if session_id else []
+        if response.get("code_bundle"):
+            bullets.append("Context code bundle is included.")
+        else:
+            bullets.append("Context code bundle is deferred by default.")
+        return {
+            "headline": "Session context is ready.",
+            "bullets": bullets,
+            "next_step": None,
+        }
+
+    def _build_bootstrap_report(self, result: dict[str, object]) -> dict[str, object]:
+        stage = str(result.get("stage") or "unknown")
+        if stage == "setup_required":
+            return {
+                "headline": "AIDOCS project setup is required.",
+                "bullets": [str(result.get("reason") or "Missing AIDOCS project structure.")],
+                "next_step": result.get("next_step"),
+            }
+        if stage == "migration_required":
+            return {
+                "headline": "Legacy migration choice is required before continuing.",
+                "bullets": ["Legacy runtime files are present and no session has been migrated yet."],
+                "next_step": result.get("next_step"),
+            }
+
+        session = result.get("session") if isinstance(result.get("session"), dict) else {}
+        selected = session.get("selected_session") if isinstance(session.get("selected_session"), dict) else {}
+        sync = result.get("sync") if isinstance(result.get("sync"), dict) else {}
+        capabilities = sync.get("capabilities") if isinstance(sync.get("capabilities"), dict) else {}
+        procedures = sync.get("procedures") if isinstance(sync.get("procedures"), dict) else {}
+        links = sync.get("procedure_capability_links") if isinstance(sync.get("procedure_capability_links"), dict) else {}
+        bullets = []
+        if selected.get("session_id"):
+            bullets.append(f"Selected session: {selected.get('session_id')}.")
+        bullets.append(
+            f"Action surfaces synced: capabilities={capabilities.get('capability_definitions')}, procedures={procedures.get('procedure_definitions')}, links={links.get('links')}."
+        )
+        return {
+            "headline": "Project bootstrap is ready.",
+            "bullets": bullets,
+            "next_step": None,
+        }
+
+    def _build_readiness_summary(
+        self,
+        *,
+        bootstrap: dict[str, object],
+        selected_session_id: str | None,
+        managed_mode: dict[str, object] | None,
+        operator_summary: dict[str, object] | None,
+    ) -> dict[str, object]:
+        sync = bootstrap.get("sync") if isinstance(bootstrap.get("sync"), dict) else {}
+        workflow = sync.get("workflow") if isinstance(sync.get("workflow"), dict) else {}
+        capabilities = sync.get("capabilities") if isinstance(sync.get("capabilities"), dict) else {}
+        procedures = sync.get("procedures") if isinstance(sync.get("procedures"), dict) else {}
+        links = sync.get("procedure_capability_links") if isinstance(sync.get("procedure_capability_links"), dict) else {}
+        execution = sync.get("execution") if isinstance(sync.get("execution"), dict) else {}
+        memory = sync.get("memory") if isinstance(sync.get("memory"), dict) else {}
+        code_manifest = sync.get("code_manifest") if isinstance(sync.get("code_manifest"), dict) else {}
+        schema = sync.get("schema") if isinstance(sync.get("schema"), dict) else {}
+
+        return {
+            "ready": bool(bootstrap.get("ready")),
+            "stage": bootstrap.get("stage"),
+            "selected_session_id": selected_session_id,
+            "managed_mode_active": bool((managed_mode or {}).get("active")),
+            "managed_mode_session_id": (managed_mode or {}).get("session_id"),
+            "operator_state": (operator_summary or {}).get("overall_state") or (operator_summary or {}).get("state"),
+            "indexes": {
+                "memory_files": memory.get("memory_files"),
+                "code_files": code_manifest.get("code_files"),
+                "schema_entities": schema.get("entities"),
+                "workflow_actions": workflow.get("action_count"),
+                "capability_definitions": capabilities.get("capability_definitions"),
+                "procedure_definitions": procedures.get("procedure_definitions"),
+                "procedure_capability_links": links.get("links"),
+                "execution_runs": execution.get("execution_runs"),
+                "execution_events": execution.get("execution_events"),
+            },
+        }
+
+    def _build_operator_report(
+        self,
+        *,
+        readiness_summary: dict[str, object],
+        operator_summary: dict[str, object] | None,
+        bootstrap: dict[str, object],
+        action_kind: str | None = None,
+        project_root: Path | None = None,
+    ) -> dict[str, object]:
+        ready = bool(readiness_summary.get("ready"))
+        stage = str(readiness_summary.get("stage") or "unknown")
+        operator_state = str(readiness_summary.get("operator_state") or "unknown")
+        selected_session_id = str(readiness_summary.get("selected_session_id") or "").strip() or None
+        indexes = readiness_summary.get("indexes") if isinstance(readiness_summary.get("indexes"), dict) else {}
+
+        if not ready:
+            next_step = bootstrap.get("next_step") or bootstrap.get("stage")
+            return {
+                "headline": f"AIDOCS is not ready: {stage}.",
+                "bullets": [
+                    f"Next step: {next_step}.",
+                ],
+                "next_step": next_step,
+            }
+
+        bullets = []
+        if selected_session_id:
+            bullets.append(f"Active session: {selected_session_id}.")
+        bullets.append(f"Operator state: {operator_state}.")
+        bullets.append(
+            "Index coverage: "
+            f"memory={indexes.get('memory_files')}, "
+            f"code={indexes.get('code_files')}, "
+            f"schema={indexes.get('schema_entities')}, "
+            f"capabilities={indexes.get('capability_definitions')}, "
+            f"procedures={indexes.get('procedure_definitions')}, "
+            f"links={indexes.get('procedure_capability_links')}."
+        )
+        next_step = None
+        if isinstance(operator_summary, dict):
+            attention_items = operator_summary.get("attention_items")
+            if isinstance(attention_items, list) and attention_items:
+                first_attention = attention_items[0]
+                if isinstance(first_attention, dict):
+                    steps = list(first_attention.get("recommended_next_steps") or [])
+                    next_step = steps[0] if steps else None
+            if next_step is None:
+                steps = list(operator_summary.get("recommended_next_steps") or [])
+                next_step = steps[0] if steps else None
+            if next_step is None and str(operator_summary.get("overall_state") or "") == "healthy":
+                next_step = "No immediate gap detected; continue monitoring execution history and drift."
+
+        # Surface pending workflow actions for the current action_kind
+        pending_workflow = self._collect_pending_workflow(action_kind, project_root)
+        if pending_workflow:
+            bullets.append(f"Pending workflow actions after `{action_kind}`: {pending_workflow}.")
+
+        return {
+            "headline": f"AIDOCS is ready in stage `{stage}`.",
+            "bullets": bullets,
+            "next_step": next_step,
+        }
+
+    def _build_handle_prompt_report(
+        self,
+        *,
+        mode: str,
+        classification: dict[str, object],
+        route: dict[str, object],
+        next_step: object = None,
+        operator_report: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        action_kind = str(classification.get("action_kind") or "unknown")
+        if mode == "requires_aidocs_entry":
+            return {
+                "headline": "Enter `/aidocs` first to work in managed mode.",
+                "bullets": [f"Requested action kind: {action_kind}."],
+                "next_step": next_step,
+            }
+        if mode == "blocked":
+            return {
+                "headline": "The requested action is blocked by current policy or routing state.",
+                "bullets": [
+                    f"Requested action kind: {action_kind}.",
+                    f"Blocked reason: {route.get('blocked_reason')}.",
+                ],
+                "next_step": next_step,
+            }
+        if mode == "direct_inspection_allowed":
+            return {
+                "headline": "Direct inspection is allowed for the requested target.",
+                "bullets": [
+                    f"Requested action kind: {action_kind}.",
+                    "Inspect the target first, then return to MCP orchestration for broader work.",
+                ],
+                "next_step": next_step,
+            }
+        if mode == "mcp_orchestrated" and isinstance(operator_report, dict):
+            return operator_report
+        return {
+            "headline": "Prompt was classified and routed successfully.",
+            "bullets": [f"Requested action kind: {action_kind}."],
+            "next_step": next_step,
+        }
 
     def project_bootstrap_or_resume(
         self,
@@ -95,25 +381,22 @@ class RuntimeService:
 
         initialized = memory_root.is_dir() and (agents.is_file() or claude.is_file())
         if not initialized:
-            return {
+            result = {
                 "stage": "setup_required",
                 "ready": False,
                 "next_step": "project_init",
                 "reason": "missing AIDOCS project structure",
             }
+            result["report"] = self._build_bootstrap_report(result)
+            return result
 
-        sync_result = {
-            "memory": self.hub.index.sync_all(project_root),
-            "code_manifest": {"code_files": self.hub.code.sync_code_manifest(project_root, include_tests=include_tests)},
-            "schema": self.hub.schema.sync_schema(project_root),
-            "workflow": self.hub.workflow.compile_project_rules(project_root),
-        }
+        sync_result = self._sync_bootstrap_indexes(project_root, include_tests=include_tests)
 
         legacy_state = self.hub.legacy.inspect_legacy(project_root)
         sessions = self.hub.sessions.list_sessions(project_root)
         if legacy_state.get("legacy_present") and len(sessions) == 0:
             proposal = self.hub.legacy.build_session_proposal(project_root, session_id=session_id)
-            return {
+            result = {
                 "stage": "migration_required",
                 "ready": False,
                 "initialized": True,
@@ -123,6 +406,8 @@ class RuntimeService:
                 "proposal": proposal,
                 "next_step": "issue_stop_for_migration_choice",
             }
+            result["report"] = self._build_bootstrap_report(result)
+            return result
 
         session_result = self.session_start(
             project_root,
@@ -143,7 +428,7 @@ class RuntimeService:
                     sync_indexes=False,
                 )
 
-        return {
+        result = {
             "stage": "session_active" if not session_result.get("requires_session_selection") else "session_selection_required",
             "ready": not session_result.get("requires_session_selection"),
             "initialized": True,
@@ -151,6 +436,8 @@ class RuntimeService:
             "sync": sync_result,
             "session": session_result,
         }
+        result["report"] = self._build_bootstrap_report(result)
+        return result
 
     def aidocs_orchestrate(
         self,
@@ -186,12 +473,41 @@ class RuntimeService:
         }
 
         if not bootstrap.get("ready"):
+            result["readiness_summary"] = self._build_readiness_summary(
+                bootstrap=bootstrap,
+                selected_session_id=None,
+                managed_mode=None,
+                operator_summary=None,
+            )
+            result["operator_report"] = self._build_operator_report(
+                readiness_summary=result["readiness_summary"],
+                operator_summary=None,
+                bootstrap=bootstrap,
+                action_kind=action_kind,
+                project_root=project_root,
+            )
+            result["report"] = result["operator_report"]
             result["next_step"] = bootstrap.get("next_step") or bootstrap.get("stage")
             return result
 
         selected = bootstrap["session"]["selected_session"]["session_id"]
         result["selected_session_id"] = selected
         result["managed_mode"] = self.hub.managed_mode.set_mode(project_root, session_id=selected, source="/aidocs")
+        result["operator_summary"] = self.hub.action_surface.current_session_bundle(project_root, limit=10, max_queries=12)
+        result["readiness_summary"] = self._build_readiness_summary(
+            bootstrap=bootstrap,
+            selected_session_id=selected,
+            managed_mode=result.get("managed_mode") if isinstance(result.get("managed_mode"), dict) else None,
+            operator_summary=result.get("operator_summary") if isinstance(result.get("operator_summary"), dict) else None,
+        )
+        result["operator_report"] = self._build_operator_report(
+            readiness_summary=result["readiness_summary"],
+            operator_summary=result.get("operator_summary") if isinstance(result.get("operator_summary"), dict) else None,
+            bootstrap=bootstrap,
+            action_kind=action_kind,
+            project_root=project_root,
+        )
+        result["report"] = result["operator_report"]
 
         if explicit_targets:
             if include_code_bundle:
@@ -228,6 +544,13 @@ class RuntimeService:
                     "memory_structure": self._memory_structure_summary(project_root),
                     "reason": "bundle_omitted_by_default",
                 }
+
+        # Include compiled workflow actions so the host doesn't need to re-read
+        try:
+            result["workflow"] = self.hub.workflow.read_compiled(project_root)
+        except Exception as exc:
+            logger.warning("Failed to read workflow for orchestration result: %s", exc)
+            result["workflow"] = None
 
         return result
 
@@ -296,16 +619,7 @@ class RuntimeService:
                 action_kind = "inspect"
             return {"action_kind": action_kind, "why": ["explicit_targets"]}
 
-        mapping = [
-            ("project_update", ("update project", "fix drift", "sync project", "refresh aidocs", "run project update")),
-            ("archive", ("archive", "patch notes", "changelog")),
-            ("delete_session", ("delete session", "archive session", "remove session")),
-            ("write_memory", ("remember", "persist this", "save this rule", "capture this")),
-            ("edit", ("fix", "change", "edit", "update", "implement", "refactor", "rename", "add", "remove")),
-            ("trace", ("trace", "where does", "why does", "find usage", "find references", "how does")),
-            ("understand", ("understand", "explain", "inspect", "analyze", "analyse", "look into", "investigate")),
-        ]
-
+        mapping = self._get_action_tokens()
         for action_kind, tokens in mapping:
             if any(token in text for token in tokens):
                 return {"action_kind": action_kind, "why": [f"matched:{action_kind}"]}
@@ -340,6 +654,12 @@ class RuntimeService:
                 "mode": "requires_aidocs_entry",
                 "classification": classified,
                 "route": route,
+                "report": self._build_handle_prompt_report(
+                    mode="requires_aidocs_entry",
+                    classification=classified,
+                    route=route,
+                    next_step="/aidocs",
+                ),
                 "next_step": "/aidocs",
             }
 
@@ -349,6 +669,12 @@ class RuntimeService:
                 "mode": "blocked",
                 "classification": classified,
                 "route": route,
+                "report": self._build_handle_prompt_report(
+                    mode="blocked",
+                    classification=classified,
+                    route=route,
+                    next_step=route.get("recommended_mcp_flow"),
+                ),
                 "next_step": route.get("recommended_mcp_flow"),
             }
 
@@ -360,6 +686,12 @@ class RuntimeService:
                 "classification": classified,
                 "route": route,
                 "selected_session_id": session_id,
+                "report": self._build_handle_prompt_report(
+                    mode="direct_inspection_allowed",
+                    classification=classified,
+                    route=route,
+                    next_step="inspect_target_then_return_to_mcp_for_broader_work",
+                ),
                 "next_step": "inspect_target_then_return_to_mcp_for_broader_work",
             }
 
@@ -378,6 +710,14 @@ class RuntimeService:
                 "mode": "mcp_orchestrated",
                 "classification": classified,
                 "route": route,
+                "operator_report": orchestration.get("operator_report"),
+                "readiness_summary": orchestration.get("readiness_summary"),
+                "report": self._build_handle_prompt_report(
+                    mode="mcp_orchestrated",
+                    classification=classified,
+                    route=route,
+                    operator_report=orchestration.get("operator_report") if isinstance(orchestration.get("operator_report"), dict) else None,
+                ),
                 "orchestration": orchestration,
             }
 
@@ -386,6 +726,12 @@ class RuntimeService:
             "mode": "preflight_only",
             "classification": classified,
             "route": route,
+            "report": self._build_handle_prompt_report(
+                mode="preflight_only",
+                classification=classified,
+                route=route,
+                next_step=route.get("recommended_mcp_flow"),
+            ),
         }
 
     def task_begin(
@@ -510,7 +856,7 @@ class RuntimeService:
     ) -> dict[str, object]:
         if sync_indexes:
             self.hub.index.sync_all(project_root)
-            self.hub.code.sync_code_manifest(project_root, include_tests=include_tests)
+            self.hub.code.sync_code_files(project_root, include_tests=include_tests)
         self.hub.code.sync_session_code(project_root, session_id=session_id, include_tests=include_tests)
         return self.hub.code.get_context_bundle(project_root, session_id=session_id)
 
@@ -539,6 +885,53 @@ class RuntimeService:
             if stripped:
                 result.append(stripped)
         return result
+
+    def _collect_pending_workflow(self, action_kind: str | None, project_root: Path | None) -> str:
+        """Collect pending workflow actions for a given action_kind and format as a summary string."""
+        if not action_kind or not project_root:
+            return ""
+        try:
+            triggers = self.hub.workflow.triggers_for_action_kind(action_kind)
+            if not triggers:
+                return ""
+            pending: list[dict[str, object]] = []
+            for trigger in triggers:
+                pending.extend(self.hub.workflow.pending_actions_for_trigger(project_root, trigger))
+            if not pending:
+                return ""
+            # Record trigger evaluation event
+            try:
+                managed = self.hub.managed_mode.get_mode(project_root)
+                session_id = str(managed.get("session_id") or "").strip() or None
+                self.hub.execution.record_event(
+                    project_root,
+                    event_kind="workflow_trigger_evaluated",
+                    source_kind="operator_report",
+                    session_id=session_id,
+                    action_kind=action_kind,
+                    status="pending",
+                    payload={
+                        "triggers": triggers,
+                        "pending_count": len(pending),
+                        "pending_actions": [
+                            {"trigger": a.get("trigger"), "kind": a.get("kind")}
+                            for a in pending[:5]
+                        ],
+                    },
+                )
+            except Exception as exc:
+                logger.debug("Failed to record workflow trigger evaluation event: %s", exc)
+            parts = []
+            for action in pending[:3]:
+                trigger = action.get("trigger", "?")
+                kind = action.get("kind", "?")
+                parts.append(f"`{trigger} → {kind}`")
+            if len(pending) > 3:
+                parts.append(f"and {len(pending) - 3} more")
+            return ", ".join(parts)
+        except Exception as exc:
+            logger.warning("Failed to collect pending workflow for action_kind=%s: %s", action_kind, exc)
+            return ""
 
     def _memory_structure_summary(self, project_root: Path) -> dict[str, object]:
         root = project_root / ".MEMORY"

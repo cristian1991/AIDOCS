@@ -82,14 +82,16 @@ class MemoryStore:
 
     def _infer_target_from_content(self, root: Path, kind: str, content: str | None) -> Path | None:
         text = (content or "").strip().lower()
-        if kind == "rule":
-            return root / "rules" / "workflow.md"
-        if kind == "feedback":
-            # Route feedback by topic: communication style vs workflow vs coding
-            if any(tok in text for tok in ("terse", "concise", "verbose", "summary", "explain", "tone", "style", "response")):
+        if kind in {"rule", "feedback"}:
+            # Route by topic: communication, coding, security, design, or workflow (default)
+            if any(tok in text for tok in ("terse", "concise", "verbose", "summary", "explain", "tone", "style", "response", "communication")):
                 return root / "rules" / "communication.md"
-            if any(tok in text for tok in ("code", "naming", "pattern", "refactor", "test", "lint", "format")):
+            if any(tok in text for tok in ("code", "naming", "pattern", "refactor", "test", "lint", "format", "typing", "import")):
                 return root / "rules" / "coding-standards.md"
+            if any(tok in text for tok in ("security", "auth", "permission", "credential", "secret", "token", "encrypt")):
+                return root / "rules" / "security.md"
+            if any(tok in text for tok in ("ui", "color", "theme", "design", "layout", "css", "tailwind", "font", "icon", "visual")):
+                return root / "rules" / "design.md"
             return root / "rules" / "workflow.md"
         if kind == "project":
             return root / "domains" / "project-state.md"

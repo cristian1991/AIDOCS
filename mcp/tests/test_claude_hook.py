@@ -90,7 +90,7 @@ def test_user_prompt_submit_adds_context_when_project_is_managed(tmp_path: Path)
     assert payload["hookEventName"] == "UserPromptSubmit"
     assert "AIDOCS-managed mode is active" in payload["additionalContext"]
     assert "`2026-03-24-a`" in payload["additionalContext"]
-    assert "github_workflow_check" in payload["additionalContext"]
+    assert "`understand`" in payload["additionalContext"]
 
 
 def test_pre_tool_use_adds_context_when_project_is_managed(tmp_path: Path) -> None:

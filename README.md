@@ -1,17 +1,19 @@
 # AIDOCS
 
-**v0.99-beta** — Portable AI coding-agent toolkit with a routed memory system, session-based runtime, and optional MCP enforcement layer.
+**v1.0.0** — Portable AI coding-agent toolkit with a routed memory system, session-based runtime, and optional MCP enforcement layer.
+
+`1.0.0` is ready to ship.
 
 ## Components
 
 ### AIDOCS Core (`core/`)
-Standalone markdown-first memory system. Works with any AI coding agent (Claude Code, OpenCode, etc.) without dependencies.
+Canonical portable instruction and memory system. Works with any AI coding agent (Claude Code, OpenCode, etc.) without runtime dependencies.
 
 - Routed memory: `index.aidocs` -> `INDEX.md` -> `SESSION.md`
 - Session-based runtime: isolated workstreams, plans, agent artifacts
 - Global command pack: `/aidocs`, `/reingest`, `/archive`, `/personality`, `/clean`
 - Cross-platform install scripts (Windows + Linux/macOS)
-- Zero dependencies — just markdown files and shell scripts
+- Zero runtime dependencies — markdown files, command specs, plugins, and install scripts
 
 ### AIDOCS MCP (`mcp/`)
 Optional Python MCP server that adds runtime enforcement, indexing, and retrieval over the Core file system.
@@ -32,7 +34,7 @@ Optional Python MCP server that adds runtime enforcement, indexing, and retrieva
 ```bash
 # Install global routing + commands
 build\scripts\install-agent-routing.cmd    # Windows
-bash core/scripts/install-agent-routing.sh # Linux/macOS (if available)
+bash core/scripts/install-agent-routing.sh  # Linux/macOS
 
 # In any project:
 /aidocs    # Bootstrap or resume AIDOCS for the project
@@ -107,12 +109,23 @@ mcp/                      # Optional MCP runtime layer
 - [MCP Tools & Architecture](mcp/README.md) — Full MCP tool list, install, architecture
 - [Install Guide](README_INSTALL.md) — Detailed installation steps
 
+## OpenCode Caveats
+
+- OpenCode does not yet have Claude-style per-prompt MCP hook execution inside the plugin path.
+- The OpenCode plugin currently mirrors `action_tokens` locally for advisory action-kind hints; it does not yet replace MCP runtime routing.
+- `/aidocs` is improved in OpenCode by rewriting the slash-command prompt into a shorter execution prompt, but command handling is still not fully host-owned.
+- The installer exposes multilingual token files under `mcp/server/aidocs_mcp/action_tokens/opencode/` so users can inspect the language packs that OpenCode mirrors.
+
 ## Releases
 
 Each release provides two packages:
 
 - **aidocs-core** — `core/` directory (standalone markdown system)
 - **aidocs-mcp** — `mcp/server/` + config (Python MCP package)
+
+Current release:
+
+- **`1.0.0`** — ready to ship
 
 Download from [Releases](https://github.com/cristian1991/AIDOCS/releases).
 

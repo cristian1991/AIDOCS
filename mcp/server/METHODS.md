@@ -20,6 +20,9 @@ Outputs
 - selected session id when ready
 - managed-mode state bound to the selected session
 - first retrieval bundle (explicit-target or session bundle)
+- top-level `report` for default human-facing output
+- `readiness_summary` for compact structured readiness
+- `operator_report` / `operator_summary` for richer managed-session interpretation
 
 ## aidocs_mode_get
 
@@ -107,6 +110,7 @@ Outputs
 - classification result
 - whether the prompt was handled through MCP routing
 - routing decision
+- top-level `report` for default human-facing output across handled modes
 - orchestration result when applicable
 - next-step guidance when blocked or unmanaged
 
@@ -126,6 +130,7 @@ Outputs
 - whether the project is ready for session work
 - index sync results
 - session-start result or session-selection requirement
+- top-level `report` for default human-facing output
 
 ## session_start
 
@@ -144,6 +149,7 @@ Outputs
 - selected session when available
 - selected session context
 - optional code bundle
+- top-level `report` for default human-facing output
 
 Special case
 - If the project has legacy runtime state and no session-era session yet, the bootstrap flow should return `migration_required` plus a deterministic migration proposal instead of selecting a session automatically.

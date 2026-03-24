@@ -142,6 +142,7 @@ def test_sync_schema_extracts_prisma_models_enums_and_relationships(tmp_path: Pa
     entities = store.find_schema_entities(project_root, query="Purchase", limit=20)
     purchase = store.get_schema_entity(project_root, "Purchase")
     relationships = store.trace_relationship_path(project_root, "Purchase", "User", limit=10)
+    status = store.schema_status(project_root)
 
     assert result["entities"] == 3
     assert result["fields"] >= 7
@@ -150,6 +151,8 @@ def test_sync_schema_extracts_prisma_models_enums_and_relationships(tmp_path: Pa
     assert any(field["field_name"] == "user" and field["field_kind"] == "relation" for field in purchase["fields"])
     assert relationships["paths"]
     assert relationships["paths"][0][-1]["target_entity"] == "User"
+    assert relationships["paths"][0][-1]["relationship_family"] == "structural"
+    assert status["relationship_breakdown"]["by_family"]["structural"] >= 1
 
 
 def test_sync_schema_extracts_quoted_postgres_migration_sql(tmp_path: Path) -> None:
@@ -253,5 +256,54 @@ def test_sync_schema_extracts_ef_core_tables_and_relationships(tmp_path: Path) -
     assert any(item["entity_name"] == "Accounts" and item["source_type"] == "ef_table" for item in entities)
     assert status["entity_breakdown"]["by_source_type"]["ef_table"] == 2
     assert status["entity_breakdown"]["categories"]["persistence"]["entities"] >= 2
+    assert status["relationship_breakdown"]["by_family"]["structural"] >= 1
     assert relationship_paths["paths"]
     assert relationship_paths["paths"][0][-1]["target_entity"] == "Users"
+    assert relationship_paths["paths"][0][-1]["relationship_family"] == "structural"
+
+
+def test_di_registrations_classified_as_procedural(tmp_path: Path) -> None:
+    store = SchemaIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Infrastructure").mkdir(parents=True, exist_ok=True)
+    (project_root / "Infrastructure" / "DependencyInjection.cs").write_text(
+        "using Microsoft.Extensions.DependencyInjection;\n"
+        "namespace App;\n"
+        "public static class DI {\n"
+        "    public static void Register(IServiceCollection services) {\n"
+        "        services.AddScoped<IPatientService, PatientService>();\n"
+        "        services.AddSingleton<ICacheService, RedisCacheService>();\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    result = store.sync_schema(project_root)
+    status = store.schema_status(project_root)
+
+    assert result["relationships"] >= 2
+    assert status["relationship_breakdown"]["by_family"].get("procedural", 0) >= 2
+
+
+def test_interface_implementations_classified_as_procedural(tmp_path: Path) -> None:
+    store = SchemaIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Services").mkdir(parents=True, exist_ok=True)
+    (project_root / "Services" / "PatientService.cs").write_text(
+        "namespace App.Services;\n"
+        "public class PatientService : IPatientService, IDisposable\n{\n"
+        "    public void Dispose() { }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    result = store.sync_schema(project_root)
+    with store.connect(project_root) as conn:
+        impl_rels = conn.execute(
+            "SELECT * FROM schema_relationships WHERE relation_kind = 'implements'"
+        ).fetchall()
+
+    assert len(impl_rels) >= 1
+    assert all(r["relationship_family"] == "procedural" for r in impl_rels)

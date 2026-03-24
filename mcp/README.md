@@ -1,6 +1,8 @@
 # AIDOCS MCP
 
-**v0.99-beta** — Optional MCP runtime layer for AIDOCS Core.
+**v1.0.0** — Optional MCP runtime layer for AIDOCS Core.
+
+`1.0.0` is ready to ship.
 
 `core/` remains the canonical Markdown-first system.
 `mcp/` adds runtime enforcement, indexing, and retrieval over that file-backed system.
@@ -55,6 +57,16 @@ mcp/
 - MCP server: optional execution layer over those files
 - Local index: SQLite, derived only, rebuildable
 - Code retrieval: symbol outlines, dependency edges, context bundles
+
+## Release Status
+
+- Current release: `1.0.0`
+
+## OpenCode Caveats
+
+- OpenCode can now mirror multilingual `action_tokens`, but that classification is still advisory.
+- Claude currently uses runtime classification directly; OpenCode still relies on plugin-side context shaping plus command rewriting.
+- The installer creates `action_tokens/opencode/` links or fallback copies so OpenCode-visible language packs are accessible to users.
 
 ## Implemented Tools (90+)
   - `aidocs_orchestrate`

@@ -53,6 +53,30 @@ class WorkflowActionService:
             "compiled_at": compiled.get("compiled_at"),
         }
 
+    # Maps action_kinds (from the classifier) to workflow triggers they can fire
+    _ACTION_KIND_TO_TRIGGERS: dict[str, list[str]] = {
+        "task_complete": ["task_complete"],
+        "task_begin": ["task_begin"],
+        "edit": ["task_complete"],  # edit tasks end with task_complete
+        "write_memory": ["memory_write"],
+        "archive": ["archive"],
+        "project_update": ["project_update"],
+    }
+
+    def triggers_for_action_kind(self, action_kind: str) -> list[str]:
+        """Return workflow triggers that may fire after an action_kind completes."""
+        return self._ACTION_KIND_TO_TRIGGERS.get(action_kind, [])
+
+    def pending_actions_for_trigger(self, project_root: Path, trigger: str) -> list[dict[str, object]]:
+        """Return compiled workflow actions that would fire for a given trigger."""
+        compiled = self.read_compiled(project_root)
+        if not compiled:
+            return []
+        actions = compiled.get("actions", [])
+        if not isinstance(actions, list):
+            return []
+        return [a for a in actions if isinstance(a, dict) and a.get("trigger") == trigger]
+
     def compile_project_rules(self, project_root: Path) -> dict[str, object]:
         source_path = self.rules_path(project_root)
         target_path = self.config_path(project_root)

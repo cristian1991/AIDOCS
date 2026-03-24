@@ -1,0 +1,96 @@
+task_begin:
+  - iniciar tarea
+  - nueva tarea
+  - comenzar tarea
+  - empezar tarea
+  - abrir tarea
+
+task_complete:
+  - completar tarea
+  - terminar tarea
+  - tarea completada
+  - marcar completada
+  - tarea terminada
+  - cerrar tarea
+
+task_update:
+  - actualizar tarea
+  - estado tarea
+  - progreso tarea
+  - avance tarea
+
+project_update:
+  - actualizar proyecto
+  - sincronizar proyecto
+  - actualizar aidocs
+  - recargar aidocs
+
+archive:
+  - archivar
+  - archivo
+  - notas de version
+  - changelog
+
+write_memory:
+  - recuerda
+  - guarda esta regla
+  - memoriza
+  - guardar en memoria
+  - agregar a memoria
+  - ten en cuenta
+
+code_bundle:
+  - recuperar contexto
+  - obtener contexto
+  - bundle de codigo
+  - codigo de sesion
+  - mostrar codigo
+
+read_error:
+  - error
+  - stack trace
+  - traceback
+  - excepcion
+  - crash
+  - fallo
+  - no funciona
+  - se rompe
+  - se bloquea
+
+edit:
+  - corregir
+  - arregla
+  - modificar
+  - cambiar
+  - actualizar
+  - implementar
+  - refactorizar
+  - renombrar
+  - agregar
+  - eliminar
+  - crear
+  - borrar
+  - mover
+  - arreglar
+
+trace:
+  - trazar
+  - donde se usa
+  - por que se usa
+  - buscar uso
+  - buscar referencias
+  - como funciona
+  - quien llama
+  - que usa
+  - de donde viene
+
+understand:
+  - entender
+  - explicar
+  - explicame
+  - inspeccionar
+  - analizar
+  - investigar
+  - muestrame
+  - que es
+  - dime

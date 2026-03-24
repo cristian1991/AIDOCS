@@ -1,0 +1,29 @@
+name: Sync to Public Repo
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Strip private files
+        run: |
+          rm -rf mcp/tests/ tests/
+          # Remove any other private-only files here if needed
+
+      - name: Push to public repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && echo "No changes to sync" && exit 0
+          git commit -m "sync: mirror from private ($(git rev-parse --short HEAD~1))"
+          git remote add public https://x-access-token:${{ secrets.PUBLIC_REPO_TOKEN }}@github.com/cristian1991/AIDOCS.git
+          git push public main --force

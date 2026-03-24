@@ -105,8 +105,6 @@ mcp/                      # Optional MCP runtime layer
 ## Documentation
 
 - [MCP Tools & Architecture](mcp/README.md) — Full MCP tool list, install, architecture
-- [MCP Roadmap](mcp/ROADMAP.md) — Feature roadmap and completion criteria
-- [Host Integration](mcp/HOST_INTEGRATION.md) — How agents integrate with MCP runtime
 - [Install Guide](README_INSTALL.md) — Detailed installation steps
 
 ## Releases

@@ -15,8 +15,7 @@ jobs:
 
       - name: Strip private files
         run: |
-          rm -rf mcp/tests/ tests/
-          # Remove any other private-only files here if needed
+          rm -rf mcp/tests/ tests/ mcp/ROADMAP.md
 
       - name: Push to public repo
         run: |

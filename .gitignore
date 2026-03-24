@@ -11,3 +11,12 @@
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Derived indexes (rebuildable)
+build/.MEMORY/.index/

@@ -2745,7 +2745,7 @@ class CodeIndexStore:
         rel = path.relative_to(project_root).as_posix()
         prefixes = (
             ".git/",
-            "build/",
+            "core/",
             ".MEMORY/",
             ".opencode/",
             ".claude/",

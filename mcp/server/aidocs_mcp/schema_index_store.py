@@ -323,7 +323,7 @@ class SchemaIndexStore:
     def _should_skip(self, rel: str) -> bool:
         prefixes = (
             ".git/",
-            "build/",
+            "core/",
             "mcp/",
             ".MEMORY/",
         )

@@ -1,1 +1,1 @@
-module.exports = require("../../build/plugins/aidocs.js")
+module.exports = require("../../core/plugins/aidocs.js")

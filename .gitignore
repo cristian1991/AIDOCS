@@ -19,4 +19,4 @@ __pycache__/
 .pytest_cache/
 
 # Derived indexes (rebuildable)
-build/.MEMORY/.index/
+core/.MEMORY/.index/

@@ -2,7 +2,7 @@
 
 This roadmap defines the complete end-state for the optional AIDOCS MCP layer.
 
-`build/` remains the canonical Markdown-first AIDOCS system.
+`core/` remains the canonical Markdown-first AIDOCS system.
 `mcp/` is the optional runtime enforcement, indexing, and retrieval layer over that canonical file-backed system.
 
 ## Final Product Direction
@@ -21,7 +21,7 @@ The end goal is:
 - No second canonical memory store.
 - No opaque migration of user data.
 - No forced MCP dependency for Markdown-first users.
-- `build/` remains canonical for contracts/templates.
+- `core/` remains canonical for contracts/templates.
 - Plans must be complete and must state clearly defined production-ready end goals.
 - SQLite/index layers are derived only and must be rebuildable from files.
 
@@ -62,7 +62,7 @@ Make the MCP-backed AIDOCS runtime reliable enough for daily use on real project
 ## 2. Canonical Contract Alignment
 
 ### Goal
-Keep the MCP runtime aligned with the canonical AIDOCS contracts in `build/.MEMORY/.aidocs/` and never let MCP become a separate competing system.
+Keep the MCP runtime aligned with the canonical AIDOCS contracts in `core/.MEMORY/.aidocs/` and never let MCP become a separate competing system.
 
 ### Required capabilities
 - MCP respects:
@@ -70,7 +70,7 @@ Keep the MCP runtime aligned with the canonical AIDOCS contracts in `build/.MEMO
   - `global-instructions.aidocs` as behavior contract
   - `coding-standards.aidocs` as coding rules
   - `memory-system.aidocs` as mechanics
-- Commands in `build/.commands/` remain the single source of command task logic.
+- Commands in `core/.commands/` remain the single source of command task logic.
 - MCP methods map to the same lifecycle without contradicting the docs.
 
 ### End goal definition
@@ -279,7 +279,7 @@ Prove the system on real-world complexity, not toy examples.
 Keep AIDOCS approachable for Markdown-first users while making MCP a first-class enhancement.
 
 ### Required capabilities
-- `build/` remains a usable standalone Markdown-first system.
+- `core/` remains a usable standalone Markdown-first system.
 - `mcp/` remains optional but production-ready.
 - installation and update docs are clear.
 - package/runtime entrypoints are stable.

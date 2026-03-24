@@ -2,7 +2,7 @@
 
 ## Quick install
 
-From this `build/` directory, run:
+From this `core/` directory, run:
 
 ```powershell
 scripts\install-agent-routing.cmd

@@ -3,7 +3,7 @@
 ## Core design
 
 - Canonical source of truth:
-  - `build/` for AIDOCS contracts/templates
+  - `core/` for AIDOCS contracts/templates
   - project-local `/.MEMORY/**` for runtime and durable memory
 - MCP server:
   - validates and enforces lifecycle rules

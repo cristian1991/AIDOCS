@@ -9,12 +9,12 @@ from .service_hub import AidocsServiceHub
 
 def _resolve_templates_root() -> Path:
     repo_root = Path(__file__).resolve().parents[3]
-    return repo_root / "build" / ".MEMORY" / ".aidocs" / "templates"
+    return repo_root / "core" / ".MEMORY" / ".aidocs" / "templates"
 
 
 def _resolve_script_root() -> Path:
     repo_root = Path(__file__).resolve().parents[3]
-    return repo_root / "build" / "scripts"
+    return repo_root / "core" / "scripts"
 
 
 def _session_summary_to_dict(summary: Any) -> dict[str, Any]:

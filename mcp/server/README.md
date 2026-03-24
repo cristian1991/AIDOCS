@@ -4,7 +4,7 @@ This folder is the implementation scaffold for the optional AIDOCS MCP layer.
 
 Goals
 - Enforce the file-backed AIDOCS lifecycle
-- Keep `build/` and project-local `/.MEMORY/**` as canonical truth
+- Keep `core/` and project-local `/.MEMORY/**` as canonical truth
 - Add structured session/memory operations without creating a second memory store
 - Keep code and memory indexes project-wide; use sessions to filter and rank retrieval results.
 - Infer useful file roles (page, layout, component, provider, service, controller, etc.) to improve retrieval quality.

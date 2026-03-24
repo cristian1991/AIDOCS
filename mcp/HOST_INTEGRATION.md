@@ -110,7 +110,7 @@ The MCP server already provides the required primitives. This document describes
 
 ## Claude Code Implementation
 
-- AIDOCS now ships a Claude Code hook entry script at `build/scripts/claude-hook.ps1`.
+- AIDOCS now ships a Claude Code hook entry script at `core/scripts/claude-hook.ps1`.
 - The installer wires user-level Claude hooks into `~/.claude/settings.json` for:
   - `UserPromptSubmit`
   - `PreToolUse` on `Read|Edit|Write|Glob|Grep|Bash`
@@ -127,7 +127,7 @@ Current boundary:
 
 ## OpenCode Implementation
 
-- AIDOCS now ships an OpenCode plugin at `build/plugins/aidocs.js`.
+- AIDOCS now ships an OpenCode plugin at `core/plugins/aidocs.js`.
 - The installer copies it to `~/.config/opencode/plugins/aidocs.js`, which OpenCode auto-loads.
 - The plugin uses OpenCode host hooks to:
   - inject AIDOCS system context on each chat turn

@@ -2,7 +2,7 @@
 
 **v0.99-beta** — Optional MCP runtime layer for AIDOCS Core.
 
-`build/` remains the canonical Markdown-first system.
+`core/` remains the canonical Markdown-first system.
 `mcp/` adds runtime enforcement, indexing, and retrieval over that file-backed system.
 
 ## Principles
@@ -51,7 +51,7 @@ mcp/
 
 ## Runtime Model
 
-- Canonical files: `build/` templates + project-local `/.MEMORY/**`
+- Canonical files: `core/` templates + project-local `/.MEMORY/**`
 - MCP server: optional execution layer over those files
 - Local index: SQLite, derived only, rebuildable
 - Code retrieval: symbol outlines, dependency edges, context bundles

@@ -4,7 +4,7 @@ const os = require("node:os")
 const path = require("node:path")
 const test = require("node:test")
 
-const { AIDOCSPlugin } = require("../build/plugins/aidocs.js")
+const { AIDOCSPlugin } = require("../core/plugins/aidocs.js")
 
 async function seedProject(root, { managed = false, workflowActions = [] } = {}) {
   await fs.mkdir(path.join(root, ".MEMORY", ".aidocs"), { recursive: true })

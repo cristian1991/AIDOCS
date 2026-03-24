@@ -4,7 +4,7 @@
 
 ## Components
 
-### AIDOCS Core (`build/`)
+### AIDOCS Core (`core/`)
 Standalone markdown-first memory system. Works with any AI coding agent (Claude Code, OpenCode, etc.) without dependencies.
 
 - Routed memory: `index.aidocs` -> `INDEX.md` -> `SESSION.md`
@@ -32,7 +32,7 @@ Optional Python MCP server that adds runtime enforcement, indexing, and retrieva
 ```bash
 # Install global routing + commands
 build\scripts\install-agent-routing.cmd    # Windows
-bash build/scripts/install-agent-routing.sh # Linux/macOS (if available)
+bash core/scripts/install-agent-routing.sh # Linux/macOS (if available)
 
 # In any project:
 /aidocs    # Bootstrap or resume AIDOCS for the project
@@ -75,7 +75,7 @@ Inside initialized projects, the memory system lives in project-local `/.MEMORY/
 ## Canonical Layout
 
 ```
-build/                    # Standalone markdown-first system
+core/                    # Standalone markdown-first system
   .commands/              # Global command source (/aidocs, /reingest, etc.)
   .MEMORY/.aidocs/        # Canonical instruction + memory-system docs
   scripts/                # Install, check, fix scripts
@@ -111,7 +111,7 @@ mcp/                      # Optional MCP runtime layer
 
 Each release provides two packages:
 
-- **aidocs-core** — `build/` directory (standalone markdown system)
+- **aidocs-core** — `core/` directory (standalone markdown system)
 - **aidocs-mcp** — `mcp/server/` + config (Python MCP package)
 
 Download from [Releases](https://github.com/cristian1991/AIDOCS/releases).

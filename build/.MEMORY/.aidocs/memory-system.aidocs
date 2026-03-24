@@ -51,11 +51,14 @@ Session model
 - Each active task stream gets its own session folder under `/.MEMORY/sessions/`.
 - Use session ids shaped like `YYYY-MM-DD-<topic>`; append `-02`, `-03`, etc. when needed.
 - `SESSION.md` should contain at minimum: Title, Status, Owner, Goal, Scope, Key Memory Links, Local Session Links, State, Upcoming, Blockers, Last Updated.
+- `SESSION.md` should contain at minimum: Title, Status, Owner, Goal, Scope, Key Memory Links, Local Session Links, Active Claims, State, Upcoming, Blockers, Last Updated.
 - `SESSION.md` is a router/status file, not a place for long examples, scratch notes, or reasoning logs.
 - `context.md` holds factual session-local context only: relevant file references, narrowed findings, concrete snippets/examples, commands, and constraints for the active task.
 - Do not store temporary reasoning, hypotheses, or chain-of-thought style notes in session files.
 - Valid status values are `active`, `paused`, `blocked`, and `done`.
 - Sessions persist by default even after task completion; setting a session to `done` does not archive or delete it.
+- `Active Claims` are advisory only, not locking. Multiple agent sessions may appear in the same domain session.
+- Claims should be treated as stale after a timeout and should not block session use automatically.
 - If multiple plausible active sessions exist, issue STOP and ask which one to use.
 - If no suitable session exists, issue STOP and ask whether to create a new one.
 - Do not execute task work without a selected session.
@@ -64,6 +67,7 @@ Planning and artifacts
 - Active implementation plans live in `/.MEMORY/sessions/<session-id>/plans/`.
 - Never write plans to temp locations, random paths, or tool-generated plan paths.
 - Plan files use `/.MEMORY/sessions/<session-id>/plans/<descriptive-name>.md`.
+- Plans should be complete and should state clearly defined production-ready end goals.
 - Reference active plan files from the selected `SESSION.md` while they are in progress.
 - Completed plan files stay with the session and archive when the session is explicitly deleted/archived.
 - Spawned-agent plans and investigations live in `/.MEMORY/sessions/<session-id>/agents/`.
@@ -94,8 +98,7 @@ Archive flow
 - Move processed logs to `/.MEMORY/archive/`.
 - `/archive` does not move session-local plans.
 - `/archive` does not archive or delete session folders.
-- Session folders remain in `/.MEMORY/sessions/` until an explicit `/delete-session` flow archives or removes them.
-- `TODO.md`, `DONE.md`, and `NOW.md` are not part of the active system.
+- Session folders remain in `/.MEMORY/sessions/` until the user manually archives or removes them.
 
 Initialization
 - Initialize memory from the shipped `/.MEMORY/**` scaffold at the runtime/public AIDOCS root.

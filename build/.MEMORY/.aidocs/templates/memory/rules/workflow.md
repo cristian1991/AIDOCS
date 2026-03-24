@@ -13,3 +13,13 @@ Last verified: YYYY-MM-DD
 - `/archive` behavior: create/update `/.MEMORY/CHANGELOG.md`, merge completed items from completed session files plus selected daily logs, and move processed daily logs to `/.MEMORY/archive/`.
 - Session folders persist by default and are archived/deleted only via an explicit `/delete-session` flow.
 - Memory write efficiency: keep memory entries as token-lean as possible while preserving exact user intent and constraints.
+
+## Automation Rules
+
+- Add project-specific enforceable workflow rules here using the format `After <trigger>, <action>.`
+- Use one workflow rule per bullet so `/aidocs` can compile it deterministically into `/.MEMORY/config/workflow-actions.json`.
+- Supported triggers: after each completed task/change, after push, after GitHub workflow success, after deploy success.
+- Supported actions: commit, push, commit and push, check git status, check GitHub Actions/workflow status, check deploy/VPS status, run `<local command>`, ssh `<host>` `<remote command>`.
+- Use backticks around commands and SSH host/remote command values, for example: `After each completed task, run `python tools/blink.py`` and `After deploy success, ssh `prod` `systemctl status app``.
+- Unsupported automation rules stay as human guidance until the workflow compiler/runtime supports them.
+-

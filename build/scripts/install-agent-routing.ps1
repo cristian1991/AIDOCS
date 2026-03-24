@@ -10,10 +10,21 @@ if (-not $RootPath -or $RootPath.Trim() -eq "") {
 }
 
 $root = (Resolve-Path $RootPath).Path
+$projectRoot = $root
 $sourceRoot = $root
 $buildCandidate = Join-Path $root "build"
 if (Test-Path (Join-Path $buildCandidate ".MEMORY\.aidocs\index.aidocs")) {
   $sourceRoot = (Resolve-Path $buildCandidate).Path
+}
+elseif ($root -like "*\build" -and (Test-Path (Join-Path (Split-Path -Parent $root) "mcp\server"))) {
+  $projectRoot = (Resolve-Path (Split-Path -Parent $root)).Path
+}
+
+if (-not (Test-Path (Join-Path $projectRoot "mcp\server"))) {
+  $candidateParent = Split-Path -Parent $root
+  if ($candidateParent -and (Test-Path (Join-Path $candidateParent "mcp\server"))) {
+    $projectRoot = (Resolve-Path $candidateParent).Path
+  }
 }
 
 $indexFile = Join-Path $sourceRoot ".MEMORY\.aidocs\index.aidocs"
@@ -32,13 +43,51 @@ if (Test-Path $versionFile) {
 
 $opencodeDir = Join-Path $env:USERPROFILE ".config\opencode"
 $opencodeCommandsDir = Join-Path $opencodeDir "commands"
+$opencodePluginsDir = Join-Path $opencodeDir "plugins"
+$opencodeSettingsPath = Join-Path $opencodeDir "opencode.json"
 $claudeDir = Join-Path $env:USERPROFILE ".claude"
 $claudeCommandsDir = Join-Path $claudeDir "commands"
+$claudeSettingsPath = Join-Path $claudeDir "settings.json"
 
 New-Item -ItemType Directory -Force -Path $opencodeDir | Out-Null
 New-Item -ItemType Directory -Force -Path $opencodeCommandsDir | Out-Null
+New-Item -ItemType Directory -Force -Path $opencodePluginsDir | Out-Null
 New-Item -ItemType Directory -Force -Path $claudeDir | Out-Null
 New-Item -ItemType Directory -Force -Path $claudeCommandsDir | Out-Null
+
+function Normalize-HookGroups {
+  param([object]$Value)
+
+  if ($null -eq $Value) {
+    return @()
+  }
+
+  if ($Value -is [System.Array]) {
+    return @($Value)
+  }
+
+  return @($Value)
+}
+
+function Remove-AidocsHookGroups {
+  param([object[]]$Groups)
+
+  $result = @()
+  foreach ($group in (Normalize-HookGroups $Groups)) {
+    $isAidocsGroup = $false
+    foreach ($hook in (Normalize-HookGroups $group.hooks)) {
+      if (($hook.command -and $hook.command -match "claude-hook\.ps1") -or ($hook.statusMessage -and $hook.statusMessage -like "AIDOCS *")) {
+        $isAidocsGroup = $true
+        break
+      }
+    }
+    if (-not $isAidocsGroup) {
+      $result += $group
+    }
+  }
+
+  return ,$result
+}
 
 $header = [System.Char]::ConvertFromUtf32(0x1F6D1) + " STOP"
 
@@ -97,6 +146,104 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText((Join-Path $opencodeDir "AGENTS.md"), $globalAgents, $utf8NoBom)
 [System.IO.File]::WriteAllText((Join-Path $claudeDir "CLAUDE.md"), $globalClaude, $utf8NoBom)
 
+$opencodePluginSource = Join-Path $sourceRoot "plugins\aidocs.js"
+if (-not (Test-Path $opencodePluginSource)) {
+  throw "Missing OpenCode plugin script: $opencodePluginSource"
+}
+$opencodePluginTarget = Join-Path $opencodePluginsDir "aidocs.js"
+[System.IO.File]::WriteAllText($opencodePluginTarget, [System.IO.File]::ReadAllText($opencodePluginSource), $utf8NoBom)
+
+if (Test-Path $opencodeSettingsPath) {
+  $opencodeSettingsRaw = [System.IO.File]::ReadAllText($opencodeSettingsPath)
+  $opencodeSettings = if ($opencodeSettingsRaw.Trim()) { $opencodeSettingsRaw | ConvertFrom-Json } else { [pscustomobject]@{} }
+} else {
+  $opencodeSettings = [pscustomobject]@{}
+}
+
+if (-not $opencodeSettings.PSObject.Properties['$schema']) {
+  $opencodeSettings | Add-Member -NotePropertyName '$schema' -NotePropertyValue 'https://opencode.ai/config.json'
+}
+
+if ((-not $opencodeSettings.PSObject.Properties['mcp']) -or $null -eq $opencodeSettings.mcp) {
+  $opencodeSettings | Add-Member -NotePropertyName mcp -NotePropertyValue ([pscustomobject]@{})
+}
+
+$pythonExecutable = "python"
+try {
+  $pythonExecutable = (Get-Command python -ErrorAction Stop).Source
+} catch {
+  try {
+    $pythonExecutable = (Get-Command py -ErrorAction Stop).Source
+  } catch {
+    $pythonExecutable = "python"
+  }
+}
+
+$aidocsMcpEntry = [pscustomobject]@{
+  type = "local"
+  enabled = $true
+  timeout = 120000
+  command = @($pythonExecutable, "-m", "aidocs_mcp.mcp_server")
+  environment = [pscustomobject]@{
+    PYTHONPATH = (Join-Path $projectRoot "mcp\server")
+  }
+}
+
+$opencodeSettings.mcp | Add-Member -Force -NotePropertyName aidocs -NotePropertyValue $aidocsMcpEntry
+
+$opencodeSettingsJson = $opencodeSettings | ConvertTo-Json -Depth 20
+[System.IO.File]::WriteAllText($opencodeSettingsPath, $opencodeSettingsJson, $utf8NoBom)
+
+$claudeHookScript = Join-Path $sourceRoot "scripts\claude-hook.ps1"
+if (-not (Test-Path $claudeHookScript)) {
+  throw "Missing Claude hook script: $claudeHookScript"
+}
+
+if (Test-Path $claudeSettingsPath) {
+  $claudeSettingsRaw = [System.IO.File]::ReadAllText($claudeSettingsPath)
+  $claudeSettings = if ($claudeSettingsRaw.Trim()) { $claudeSettingsRaw | ConvertFrom-Json } else { [pscustomobject]@{} }
+} else {
+  $claudeSettings = [pscustomobject]@{}
+}
+
+if ((-not $claudeSettings.PSObject.Properties['hooks']) -or $null -eq $claudeSettings.hooks) {
+  $claudeSettings | Add-Member -NotePropertyName hooks -NotePropertyValue ([pscustomobject]@{})
+}
+
+$claudeHookCommand = "& '$claudeHookScript'"
+$userPromptHookGroup = [pscustomobject]@{
+  hooks = @(
+    [pscustomobject]@{
+      type = "command"
+      shell = "powershell"
+      command = $claudeHookCommand
+      timeout = 30
+      statusMessage = "AIDOCS prompt routing"
+    }
+  )
+}
+$preToolHookGroup = [pscustomobject]@{
+  matcher = "Read|Edit|Write|Glob|Grep|Bash"
+  hooks = @(
+    [pscustomobject]@{
+      type = "command"
+      shell = "powershell"
+      command = $claudeHookCommand
+      timeout = 30
+      statusMessage = "AIDOCS tool guardrails"
+    }
+  )
+}
+
+$userPromptGroups = Remove-AidocsHookGroups (Normalize-HookGroups $claudeSettings.hooks.UserPromptSubmit)
+$preToolGroups = Remove-AidocsHookGroups (Normalize-HookGroups $claudeSettings.hooks.PreToolUse)
+
+$claudeSettings.hooks | Add-Member -Force -NotePropertyName UserPromptSubmit -NotePropertyValue @($userPromptGroups + $userPromptHookGroup)
+$claudeSettings.hooks | Add-Member -Force -NotePropertyName PreToolUse -NotePropertyValue @($preToolGroups + $preToolHookGroup)
+
+$claudeSettingsJson = $claudeSettings | ConvertTo-Json -Depth 20
+[System.IO.File]::WriteAllText($claudeSettingsPath, $claudeSettingsJson, $utf8NoBom)
+
 $skipGlobalCommands = @("doctor.md")
 
 $sharedCommandsDir = Join-Path $sourceRoot ".commands"
@@ -136,7 +283,10 @@ Get-ChildItem -Path $sharedCommandsDir -Filter "*.md" -File | ForEach-Object {
 
 Write-Host "Installed global routing files:"
 Write-Host "-" (Join-Path $opencodeDir "AGENTS.md")
+Write-Host "-" $opencodeSettingsPath
+Write-Host "-" $opencodePluginTarget
 Write-Host "-" (Join-Path $claudeDir "CLAUDE.md")
+Write-Host "-" $claudeSettingsPath
 foreach ($k in $copied.Keys) {
   Write-Host "-" $k
 }
@@ -147,13 +297,9 @@ Write-Host "AIDOCS source wired to:" $sourceRoot
 Write-Host "Command pack version:" $commandPackVersion
 
 $requiredCommandFiles = @(
-  "memstart.md",
-  "project-init.md",
-  "project-update.md",
-  "legacy-update.md",
+  "aidocs.md",
   "reingest.md",
   "archive.md",
-  "delete-session.md",
   "personality.md",
   "clean.md"
 )

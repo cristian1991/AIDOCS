@@ -85,13 +85,9 @@ Installed commands:
 
 | Command | Description |
 |---------|-------------|
-| `/memstart` | Load startup context from the project memory routers |
-| `/project-init` | Initialize a project with routed `/.MEMORY/` scaffolding |
-| `/project-update` | Refresh already-migrated session-based projects to current contracts |
-| `/legacy-update` | Upgrade legacy `NOW.md` / root-plan projects into the session-based model |
+| `/aidocs` | Bootstrap or connect a project to AIDOCS, then select or create a session |
 | `/reingest` | Refresh memory by user-selected scope |
 | `/archive` | Promote completed work into `/.MEMORY/CHANGELOG.md` and archive logs |
-| `/delete-session` | Explicitly archive or delete a selected session |
 | `/personality` | Set or clear user-facing communication personality |
 | `/clean` | Run cleanup by user-selected scope (`file-clean`, `dead-code-clean`, `dedupe-clean`, `structural-clean`) |
 

@@ -481,6 +481,7 @@ function Test-MemoryIndex {
         $_.Name -ne 'NOW.md' -and
         $_.Name -ne 'TODO.md' -and
         $_.Name -ne 'DONE.md' -and
+        $_.FullName -notmatch '\.MEMORY\\\.index\\' -and
         $_.FullName -notmatch '\.MEMORY\\.aidocs\\' -and
         $_.FullName -notmatch '\.MEMORY\\agents\\' -and
         $_.FullName -notmatch '\.MEMORY\\plans\\' -and

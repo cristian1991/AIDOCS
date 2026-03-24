@@ -4,10 +4,17 @@ Baseline
 - Prefer existing patterns and reuse over new abstractions.
 - KISS: keep it stupidly simple.
 
+Abstraction discipline
+- The purpose of abstracting is not to be vague, but to create a new semantic level in which one can be absolutely precise.
+
 Data-driven design
 - Do not hardcode business rules or tenant/customer-specific fields in general/shared code.
 - Prefer generalized domain entities/config (for example tenant/org/workspace plus role/level definitions) as data.
 - If you find yourself adding special-case fields or branches for one tenant/customer, issue STOP.
+
+Frontend and styling context
+- When non-Tailwind classes appear in a class string, identify any CSS styling connected to that element before changing the markup or related styles.
+- Check the relevant stylesheet, component-scoped style, or custom selector definitions that influence that element.
 
 Reuse over reinvent
 - Prefer reusing existing project interfaces (CLI/server APIs/tools) over adding new parallel implementations.

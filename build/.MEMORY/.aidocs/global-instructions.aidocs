@@ -9,6 +9,12 @@ Startup discipline
 - On session start, fresh project entry, or resume-after-compaction, re-read the required memory entry files before acting.
 - On a new task inside the current session, re-read the selected `SESSION.md` and any newly relevant linked files before acting.
 
+MCP preference
+- When the `aidocs` MCP server is available, prefer it for: project bootstrap/resume, session selection, task lifecycle, deterministic memory reads/writes, project check/fix, status evaluation, and indexed code/schema retrieval.
+- Use direct file reads mainly for: user-explicit file inspection, exact source verification after MCP narrows the target, and cases where MCP does not yet provide the needed depth.
+- User-explicit file or error inspection may happen before broader MCP grounding, but broader execution, edits, or migration should return to the MCP/session flow.
+- When `/aidocs` has activated AIDOCS-managed mode for the project, normal user prompts should go through MCP-first orchestration by default.
+
 Priority model
 - `!` = low-priority note. Log in daily; promote only if repeated/useful.
 - `!!` = task-priority. Add to the active session `Upcoming` list + daily.

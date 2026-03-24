@@ -1,0 +1,31 @@
+[project]
+name = "aidocs-mcp"
+version = "0.1.0"
+description = "Optional file-backed MCP layer for AIDOCS"
+requires-python = ">=3.11"
+dependencies = [
+  "fastmcp>=2.0.0"
+]
+
+[project.scripts]
+aidocs-mcp = "aidocs_mcp.mcp_server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0"
+]
+ast = [
+  "tree-sitter>=0.23.0",
+  "tree-sitter-javascript>=0.23.0",
+  "tree-sitter-typescript>=0.23.0"
+]
+
+[tool.setuptools]
+package-dir = {"" = "server"}
+
+[tool.setuptools.packages.find]
+where = ["server"]

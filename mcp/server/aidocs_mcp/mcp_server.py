@@ -896,6 +896,7 @@ def create_server() -> Any:
 
         This is the MCP equivalent of running the install script's fix mode on a project.
         Safe to call on already-initialized projects (idempotent).
+        Also ensures the project has a .mcp.json with the aidocs MCP server entry for Claude Code.
         After initialization, call project_bootstrap_or_resume to activate managed mode.
         """
         root = Path(project_root)
@@ -906,11 +907,22 @@ def create_server() -> Any:
                 "reason": fix_result.get("stderr") or "Fix script failed",
                 "fix_result": fix_result,
             }
+        mcp_config_result = runtime.ensure_claude_mcp_config(root)
         return {
             "initialized": True,
             "fix_result": fix_result,
+            "mcp_config": mcp_config_result,
             "next_step": "Call project_bootstrap_or_resume to activate managed mode and select a session.",
         }
+
+    @server.tool()
+    def project_ensure_mcp_config(project_root: str) -> dict[str, Any]:
+        """Ensure the target project has a .mcp.json with the aidocs MCP server entry for Claude Code.
+
+        Idempotent — safe to call repeatedly. Creates or updates .mcp.json as needed.
+        Preserves any existing non-aidocs MCP server entries.
+        """
+        return runtime.ensure_claude_mcp_config(Path(project_root))
 
     @server.tool()
     def project_check(project_root: str) -> dict[str, Any]:

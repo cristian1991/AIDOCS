@@ -226,22 +226,20 @@ function summarizeWorkflowActions(actions) {
 }
 
 function buildPromptContext(state, promptText, activeCommand, activeCommandMeta) {
-  const isAidocsEntry = (activeCommandMeta && activeCommandMeta.command_id === "aidocs") || activeCommand === "aidocs" || promptText.startsWith("/aidocs")
+  const isAidocsEntry = (activeCommandMeta && activeCommandMeta.command_id === "aidocs") || activeCommand === "aidocs" || promptText.startsWith("/aidocs") || promptText.toLowerCase().trim().replace(/^\//, "").startsWith("aidocs")
   if (isAidocsEntry) {
+    const preamble = "CRITICAL: The user typed `/aidocs`. This is a SYSTEM COMMAND, not a memory request or rule to store. Do NOT save this as a memory, preference, or workflow rule."
     if (!state.initialized) {
       return [
-        "AIDOCS entry command detected on a project without AIDOCS structure.",
-        "This project needs initialization. Call the `project_init` MCP tool with the project root path",
+        preamble,
+        "This project has no AIDOCS structure. Call the `project_init` MCP tool with the project root path",
         "to create .MEMORY/, AGENTS.md/CLAUDE.md, and AIDOCS templates.",
         "After initialization, call `project_bootstrap_or_resume` to activate managed mode.",
       ].join(" ")
     }
     return [
-      "AIDOCS entry command detected.",
-      "Use the MCP bootstrap/orchestrator flow for this project.",
-      "For default user-facing output, prefer the top-level `report` field from MCP/runtime responses.",
-      "Use `readiness_summary` for compact structured state and deeper payloads only when needed.",
-      "Report selected session and managed-mode state after the command completes.",
+      preamble,
+      buildAidocsExecutionPrompt(),
     ].join(" ")
   }
 
@@ -310,6 +308,23 @@ async function AIDOCSPlugin(input) {
       const promptText = extractPromptText(output.parts)
       const activeCommand = activeCommandBySession.get(sessionID) || ""
       const activeCommandMeta = activeCommandMetaBySession.get(sessionID) || null
+
+      // If /aidocs was sent as plain text (not caught by command.execute.before),
+      // mark it as a command so system context and message transform hooks handle it.
+      if (!activeCommandBySession.has(sessionID) && promptText.trim().replace(/^\//, "").toLowerCase().startsWith("aidocs")) {
+        activeCommandBySession.set(sessionID, "aidocs")
+        const metadata = await readCommandMetadata("aidocs")
+        activeCommandMetaBySession.set(sessionID, metadata)
+        // System context is the reliable path — chat.message output.parts mutation is ignored by OC.
+        const directive = [
+          "CRITICAL: The user typed `/aidocs`. This is a SYSTEM COMMAND, not a memory request.",
+          "Do NOT store this as a rule, preference, or memory. Do NOT interpret the command text as instructions to remember.",
+          buildAidocsExecutionPrompt(),
+        ].join(" ")
+        sessionPromptContext.set(sessionID, directive)
+        return
+      }
+
       const context = buildPromptContext(state, promptText, activeCommand, activeCommandMeta)
       if (context) {
         sessionPromptContext.set(sessionID, context)
@@ -324,6 +339,25 @@ async function AIDOCSPlugin(input) {
         return
       }
       output.system.push(context)
+    },
+
+    "experimental.chat.messages.transform": async ({ sessionID }, output) => {
+      // Rewrite the user message when /aidocs was sent as plain text.
+      // This hook reliably mutates messages before they reach the LLM.
+      if (activeCommandBySession.get(sessionID) !== "aidocs") {
+        return
+      }
+      if (!Array.isArray(output.messages)) {
+        return
+      }
+      const last = output.messages[output.messages.length - 1]
+      if (!last || !Array.isArray(last.parts)) {
+        return
+      }
+      const text = extractPromptText(last.parts)
+      if (text.trim().replace(/^\//, "").toLowerCase().startsWith("aidocs")) {
+        last.parts = [{ type: "text", text: buildAidocsExecutionPrompt() }]
+      }
     },
 
     "command.execute.before": async ({ command, sessionID }, output) => {

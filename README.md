@@ -1,8 +1,6 @@
 # AIDOCS
 
-**v1.0.0** — Portable AI coding-agent toolkit with a routed memory system, session-based runtime, and optional MCP enforcement layer.
-
-`1.0.0` is ready to ship.
+**v1.0.1** — Portable AI coding-agent toolkit with a routed memory system, session-based runtime, and optional MCP enforcement layer.
 
 ## Components
 
@@ -47,9 +45,8 @@ bash core/scripts/install-agent-routing.sh  # Linux/macOS
 cd mcp
 pip install -e .
 
-# Configure your agent to use the MCP server:
-# Claude Code: add to ~/.claude/settings.json mcpServers
-# OpenCode: add to opencode.jsonc mcp section
+# Claude Code: /aidocs auto-creates .mcp.json in your project
+# OpenCode: installer configures opencode.jsonc automatically
 
 # In any project:
 /aidocs    # Now uses MCP-backed session/memory/retrieval
@@ -109,12 +106,9 @@ mcp/                      # Optional MCP runtime layer
 - [MCP Tools & Architecture](mcp/README.md) — Full MCP tool list, install, architecture
 - [Install Guide](README_INSTALL.md) — Detailed installation steps
 
-## OpenCode Caveats
+## Multilingual Support
 
-- OpenCode does not yet have Claude-style per-prompt MCP hook execution inside the plugin path.
-- The OpenCode plugin currently mirrors `action_tokens` locally for advisory action-kind hints; it does not yet replace MCP runtime routing.
-- `/aidocs` is improved in OpenCode by rewriting the slash-command prompt into a shorter execution prompt, but command handling is still not fully host-owned.
-- The installer exposes multilingual token files under `mcp/server/aidocs_mcp/action_tokens/opencode/` so users can inspect the language packs that OpenCode mirrors.
+Action classification supports English, Italian, Spanish, Japanese, Portuguese, and German out of the box. Token files live in `mcp/server/aidocs_mcp/action_tokens/` — add a new `xx.yaml` to support any language, no code changes needed.
 
 ## Releases
 
@@ -125,7 +119,7 @@ Each release provides two packages:
 
 Current release:
 
-- **`1.0.0`** — ready to ship
+- **`1.0.1`** — multilingual classifier, lightweight hook path, auto MCP config
 
 Download from [Releases](https://github.com/cristian1991/AIDOCS/releases).
 

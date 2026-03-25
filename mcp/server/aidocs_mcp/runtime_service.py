@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
+import shutil
+import sys
 from pathlib import Path
 
 from .service_hub import AidocsServiceHub
@@ -67,6 +70,66 @@ class RuntimeService:
         if self._action_token_mapping is None:
             self._action_token_mapping = _load_action_tokens()
         return self._action_token_mapping
+
+    def ensure_claude_mcp_config(self, project_root: Path) -> dict[str, object]:
+        """Ensure the target project has a .mcp.json with the aidocs MCP server entry.
+
+        Idempotent: if the entry already exists and points to a valid path, no change is made.
+        Returns a dict describing what happened.
+        """
+        mcp_json_path = project_root / ".mcp.json"
+        aidocs_source_root = Path(__file__).resolve().parents[3]
+        mcp_server_dir = aidocs_source_root / "mcp" / "server"
+
+        # Resolve the python executable — prefer the one running this process
+        python_bin = sys.executable or shutil.which("python") or shutil.which("python3") or "python"
+
+        new_entry = {
+            "type": "stdio",
+            "command": python_bin,
+            "args": ["-m", "aidocs_mcp.mcp_server"],
+            "env": {
+                "PYTHONPATH": str(mcp_server_dir),
+            },
+        }
+
+        # Read existing .mcp.json if present
+        existing: dict[str, object] = {}
+        if mcp_json_path.is_file():
+            try:
+                existing = json.loads(mcp_json_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                logger.warning("Failed to parse existing .mcp.json: %s", exc)
+                existing = {}
+
+        servers = existing.get("mcpServers")
+        if not isinstance(servers, dict):
+            servers = {}
+            existing["mcpServers"] = servers
+
+        # Check if aidocs entry already exists and is correct
+        current = servers.get("aidocs")
+        if isinstance(current, dict):
+            current_pythonpath = (current.get("env") or {}).get("PYTHONPATH", "")
+            if current_pythonpath == str(mcp_server_dir):
+                return {
+                    "action": "no_change",
+                    "path": str(mcp_json_path),
+                    "reason": "aidocs MCP entry already present and correct",
+                }
+
+        servers["aidocs"] = new_entry
+        existing["mcpServers"] = servers
+        mcp_json_path.write_text(
+            json.dumps(existing, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        action = "updated" if current else "created"
+        return {
+            "action": action,
+            "path": str(mcp_json_path),
+            "entry": new_entry,
+        }
 
     def session_start(
         self,
@@ -389,6 +452,12 @@ class RuntimeService:
             }
             result["report"] = self._build_bootstrap_report(result)
             return result
+
+        # Ensure .mcp.json is present for Claude Code (idempotent)
+        try:
+            self.ensure_claude_mcp_config(project_root)
+        except Exception as exc:
+            logger.debug("Failed to ensure .mcp.json: %s", exc)
 
         sync_result = self._sync_bootstrap_indexes(project_root, include_tests=include_tests)
 

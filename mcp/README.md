@@ -1,8 +1,6 @@
 # AIDOCS MCP
 
-**v1.0.0** — Optional MCP runtime layer for AIDOCS Core.
-
-`1.0.0` is ready to ship.
+**v1.0.1** — Optional MCP runtime layer for AIDOCS Core.
 
 `core/` remains the canonical Markdown-first system.
 `mcp/` adds runtime enforcement, indexing, and retrieval over that file-backed system.
@@ -60,7 +58,7 @@ mcp/
 
 ## Release Status
 
-- Current release: `1.0.0`
+- Current release: `1.0.1`
 
 ## OpenCode Caveats
 

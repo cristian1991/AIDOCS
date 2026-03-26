@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/version-1.1.0-blue" alt="version">
   <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="license">
   <img src="https://img.shields.io/badge/python-3.11%2B-yellow" alt="python">
-  <img src="https://img.shields.io/badge/tests-182%20passing-brightgreen" alt="tests">
+  <img src="https://img.shields.io/badge/tests-194%20passing-brightgreen" alt="tests">
 </p>
 
 <p align="center">
@@ -60,8 +60,9 @@ AIDOCS gives AI coding agents **persistent memory, session management, and index
 
 - **Routed memory** — `index.aidocs` -> `INDEX.md` -> `SESSION.md` — agents follow a routing chain, not a flat file dump
 - **Session isolation** — parallel workstreams with their own plans, context, and artifacts
-- **130+ MCP tools** — code outlines, symbol search, CSS tracing, schema analysis, dependency edges, module detection
-- **`code_investigate`** — single entry point that probes symbols/files/schema/CSS/modules and tells the agent what to call next
+- **6 unified MCP entry points** — `code_investigate`, `code_find` (21 modes), `code_trace` (8 modes), `code_bundle` (13 modes), `schema_query` (5 modes) + specialists
+- **`code_investigate`** — "start here" tool: probes symbols/files/schema/CSS/modules, returns what was found + what to call next
+- **Git analysis** — `git_fork_status`, `git_merge_plan`, `git_conflict_analysis`, `git_upstream_changes` for fork/merge workflows
 - **Session journal** — rolling log of significant decisions, auto-evicts to archive when full
 - **Multilingual classification** — English, Italian, Spanish, Japanese, Portuguese, German out of the box
 - **Monorepo detection** — npm/pnpm/Cargo workspaces, .NET projects, informal module boundaries
@@ -109,7 +110,7 @@ core/                      # Standalone markdown-first system (zero dependencies
 
 mcp/                        # Optional MCP runtime layer
   server/aidocs_mcp/        # Python MCP server (21 service modules)
-  tests/                    # 182 tests (private repo only)
+  tests/                    # 194 tests (private repo only)
 ```
 
 ## Memory Model
@@ -162,13 +163,13 @@ enabled = "en"
 
 - [MCP Tools & Architecture](mcp/README.md) — Full tool list, install, runtime model
 - [Install Guide](README_INSTALL.md) — Detailed installation steps
-- [Tool Consolidation Roadmap](mcp/ROADMAP.md) — v1.1.0 plan (128 -> ~30 tools)
+- [Roadmap](mcp/ROADMAP.md) — v1.2.0 plan (PyPI packaging, CLI tool, benchmarks)
 
 ## Releases
 
 | Version | Highlights |
 |---------|------------|
-| **1.1.0** | Tool consolidation: 4 unified dispatchers (`code_find`, `code_trace`, `code_bundle`, `schema_query`), 47 legacy tools deprecated, agent directives use unified API |
+| **1.1.0** | Tool consolidation (6 unified entry points), git analysis tools, project_init rewrite (no shell deps), MCP subprocess fix for Windows, 194 tests |
 | 1.0.2 | Index hardening (16 languages, monorepo modules, os.walk pruning), `code_investigate` entry tool, CSS compound+HTML tracing, CamelCase search, session journal, `aidocs.toml` config |
 | 1.0.1 | Multilingual classifier, lightweight hook path, auto MCP config |
 | 1.0.0 | Initial release |

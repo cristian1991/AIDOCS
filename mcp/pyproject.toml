@@ -1,14 +1,37 @@
 [project]
 name = "aidocs-mcp"
 version = "1.1.0"
-description = "Optional file-backed MCP layer for AIDOCS"
+description = "Portable AI coding-agent toolkit — MCP server with indexed code retrieval, session management, and persistent memory"
+readme = "README.md"
+license = {text = "Apache-2.0"}
 requires-python = ">=3.11"
+authors = [
+  {name = "CodeNexus", email = "hello@codenexus.cloud"}
+]
+keywords = ["ai", "mcp", "coding-agent", "memory", "session", "code-index", "claude", "opencode"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = [
   "fastmcp>=2.0.0"
 ]
 
+[project.urls]
+Homepage = "https://codenexus.cloud"
+Repository = "https://github.com/cristian1991/AIDOCS"
+Issues = "https://github.com/cristian1991/AIDOCS/issues"
+Documentation = "https://github.com/cristian1991/AIDOCS#readme"
+
 [project.scripts]
 aidocs-mcp = "aidocs_mcp.mcp_server:main"
+aidocs = "aidocs_mcp.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

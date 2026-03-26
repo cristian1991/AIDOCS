@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import sys
@@ -11,7 +12,21 @@ from .service_hub import AidocsServiceHub
 
 logger = logging.getLogger("aidocs.runtime")
 
-_ACTION_TOKENS_DIR = Path(__file__).resolve().parent / "action_tokens"
+def _resolve_action_tokens_dir() -> Path:
+    """Find action_tokens directory: project root first, then legacy MCP location."""
+    candidates = [
+        Path(__file__).resolve().parents[3] / "action_tokens",  # project root
+        Path(__file__).resolve().parent / "action_tokens",       # legacy: inside MCP package
+    ]
+    env_path = os.environ.get("AIDOCS_PATH")
+    if env_path:
+        candidates.insert(1, Path(env_path) / "action_tokens")
+    for c in candidates:
+        if c.is_dir():
+            return c
+    return candidates[0]  # fallback to project root even if missing
+
+_ACTION_TOKENS_DIR = _resolve_action_tokens_dir()
 
 
 def _load_action_tokens(directory: Path | None = None) -> list[tuple[str, tuple[str, ...]]]:
@@ -26,8 +41,18 @@ def _load_action_tokens(directory: Path | None = None) -> list[tuple[str, tuple[
         logger.warning("action_tokens directory not found: %s", root)
         return []
 
+    # Filter by configured languages
+    from .config import LANGUAGES_ENABLED
+    enabled = LANGUAGES_ENABLED.lower().strip()
+    if enabled != "all":
+        enabled_set = {lang.strip() for lang in enabled.split(",") if lang.strip()}
+    else:
+        enabled_set = None  # load all
+
     merged: dict[str, list[str]] = {}
     for yaml_file in sorted(root.glob("*.yaml")):
+        if enabled_set is not None and yaml_file.stem not in enabled_set:
+            continue
         current_key: str | None = None
         try:
             for raw_line in yaml_file.read_text(encoding="utf-8").splitlines():
@@ -79,6 +104,10 @@ class RuntimeService:
         """
         mcp_json_path = project_root / ".mcp.json"
         aidocs_source_root = Path(__file__).resolve().parents[3]
+        # Prefer AIDOCS_PATH env var if set (installed by installer)
+        env_aidocs_path = os.environ.get("AIDOCS_PATH")
+        if env_aidocs_path and Path(env_aidocs_path).is_dir():
+            aidocs_source_root = Path(env_aidocs_path)
         mcp_server_dir = aidocs_source_root / "mcp" / "server"
 
         # Resolve the python executable — prefer the one running this process
@@ -224,7 +253,7 @@ class RuntimeService:
         )
         return {
             "memory": self.hub.index.sync_all(project_root),
-            "code_manifest": {"code_files": self.hub.code.sync_code_files(project_root, include_tests=include_tests)},
+            "code_manifest": {"code_files": self.hub.code.sync_code_files(project_root, include_tests=include_tests), "modules": self.hub.code.sync_modules(project_root)},
             "schema": self.hub.schema.sync_schema(project_root),
             "workflow": workflow,
             "capabilities": {"capability_definitions": capabilities},
@@ -904,6 +933,18 @@ class RuntimeService:
             "State": self._as_bullets(existing_state),
         }
         updated = self.hub.sessions.update_session(project_root, session_id, session_patch)
+
+        # Auto-journal the task completion
+        try:
+            self.hub.sessions.write_journal_entry(
+                project_root, session_id,
+                action_kind="task_complete",
+                intent=result_summary[:120],
+                outcome=f"completed → {next_status}",
+            )
+        except Exception:
+            pass  # journal is best-effort, never block task_complete
+
         result: dict[str, object] = {
             "session": {"session_id": updated.session_id, "path": str(updated.path), "sections": updated.sections}
         }

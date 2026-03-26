@@ -129,6 +129,7 @@ class ClaudeHookHandler:
 
         session_id = str(managed.get("session_id") or "").strip()
         tool_name = str(payload.get("tool_name") or "").strip()
+        tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
         workflow_summary = self._build_compiled_workflow_summary(self.runtime.hub.workflow.read_compiled(project_root))
         additional_context = (
             "AIDOCS-managed mode is active"
@@ -138,6 +139,11 @@ class ClaudeHookHandler:
         )
         if workflow_summary:
             additional_context += f" Compiled workflow actions: {workflow_summary}."
+
+        # Nudge toward MCP alternatives when raw tools are used for code exploration
+        mcp_nudge = self._suggest_mcp_alternative(tool_name, tool_input)
+        if mcp_nudge:
+            additional_context += f" {mcp_nudge}"
 
         # Surface pending post-action workflow items for edit-type tools
         if tool_name.lower() in {"edit", "write", "bash"}:
@@ -150,6 +156,69 @@ class ClaudeHookHandler:
                 "additionalContext": additional_context,
             }
         }
+
+    _MCP_ALTERNATIVES: dict[str, list[tuple[str, str]]] = {
+        "grep": [
+            ("code_search_symbols", "Find symbols by name, kind, or role"),
+            ("code_find_references", "Find all usages of a symbol across the codebase"),
+            ("schema_find_field", "Find a DB field/column across all entities"),
+            ("code_get_style_bundle", "Find CSS rules matching class names"),
+        ],
+        "read": [
+            ("code_get_outline", "Understand file structure without reading the whole file"),
+            ("code_get_symbol_snippet", "Read just one symbol's code at a known location"),
+            ("code_get_file_bundle", "Get file outline + deps + schema hints in one call"),
+        ],
+        "glob": [
+            ("code_search", "Find files by path/summary keywords"),
+            ("code_find_partial_group", "Find all partial class files for a C# type"),
+        ],
+    }
+
+    def _suggest_mcp_alternative(self, tool_name: str, tool_input: dict[str, object]) -> str:
+        """Suggest an MCP tool when a raw tool is used for code exploration."""
+        lower = tool_name.lower()
+        alternatives = self._MCP_ALTERNATIVES.get(lower)
+        if not alternatives:
+            return ""
+
+        # Build a contextual suggestion based on what the tool appears to be doing
+        parts = ["WARNING: You are using a raw tool. AIDOCS MCP tools should be used first. Try these instead:"]
+
+        if lower == "grep":
+            pattern = str(tool_input.get("pattern", "")).strip()
+            if pattern:
+                # Detect common grep patterns that have MCP equivalents
+                if any(kw in pattern.lower() for kw in ("class ", "interface ", "def ", "function ", "enum ")):
+                    parts.append("`code_search_symbols` — search indexed outlines by name/kind/role.")
+                elif any(kw in pattern.lower() for kw in (".css", "class=", "className")):
+                    parts.append("`code_get_style_bundle` — find CSS rules matching class names.")
+                elif "." in pattern and not pattern.startswith("."):
+                    parts.append("`code_find_references` — find all usages of a symbol.")
+                else:
+                    parts.append("`code_search_symbols` for symbol search, `code_find_references` for usage tracing.")
+            else:
+                parts.append(", ".join(f"`{name}` ({desc})" for name, desc in alternatives[:2]))
+
+        elif lower == "read":
+            path = str(tool_input.get("file_path", "")).strip()
+            offset = tool_input.get("offset")
+            if path and not offset:
+                # Reading a whole file — suggest outline first
+                parts.append("`code_get_outline` to understand structure, `code_get_file_bundle` for full context.")
+            elif path and offset:
+                # Reading a specific section — suggest snippet
+                parts.append("`code_get_symbol_snippet` to read a specific symbol by name.")
+            else:
+                parts.append(", ".join(f"`{name}` ({desc})" for name, desc in alternatives[:2]))
+
+        elif lower == "glob":
+            parts.append("`code_search` for indexed file search by keywords.")
+
+        else:
+            parts.append(", ".join(f"`{name}` ({desc})" for name, desc in alternatives[:2]))
+
+        return " ".join(parts)
 
     def _record_hook_event(self, project_root: Path, event_name: str, payload: dict[str, object]) -> None:
         try:
@@ -294,50 +363,55 @@ class ClaudeHookHandler:
         parts.append("Avoid ad-hoc broad repo scanning when the MCP routing result already provides the path forward.")
         return " ".join(parts)
 
+    _TOOL_FIRST_PREAMBLE = (
+        "MANDATORY: Use AIDOCS MCP tools FIRST. Fall back to raw Read/Grep only if MCP returns empty."
+    )
+
     _ACTION_DIRECTIVES: dict[str, str] = {
         "write_memory": (
-            "IMPORTANT: Use the `memory_capture` MCP tool to persist this memory. "
-            "Do NOT write memory files manually or use Claude auto-memory (~/.claude/projects/*/memory/). "
-            "Always provide a `target_hint` parameter to route to the correct file: "
-            "'workflow' for task/git/deploy rules, 'coding-standards' for code style, "
-            "'communication' for response style, 'design' for UI/visual preferences, "
-            "'security' for auth/credentials, 'project-state' for project decisions, "
-            "'user-profile' for user info. This works regardless of the user's language."
+            "Use `memory_capture` with `target_hint` (workflow/coding-standards/security/project-state/user-profile). "
+            "Do NOT write memory files manually."
         ),
-        "task_begin": (
-            "Use the `task_begin` MCP tool to register the task before starting work."
-        ),
-        "task_complete": (
-            "Use the `task_complete` MCP tool to finalize the task."
-        ),
-        "task_update": (
-            "Use the `task_update` MCP tool to record progress on the current task."
-        ),
+        "task_begin": "Use `task_begin` to register the task before starting work.",
+        "task_complete": "Use `task_complete` to finalize the task.",
+        "task_update": "Use `task_update` to record progress on the current task.",
         "trace": (
-            "Use MCP `code_trace_*` and `code_find_*` tools to trace references and data flow. "
-            "Prefer indexed retrieval over manual grep."
+            "`code_find_references` (symbol usages) → `code_trace_field_flow` (cross-layer) → "
+            "`code_trace_css_class` (CSS defs + HTML usages). "
+            "For DB: `schema_trace_relationship_path`. For API→UI: `code_trace_api_to_ui`."
         ),
         "understand": (
-            "Use MCP retrieval tools (`code_get_*_bundle`, `schema_get_entity`, `memory_read`) "
-            "for context-aware analysis before answering."
+            "`code_get_outline` (structure) → `code_search_symbols` (find symbol) → "
+            "`code_get_symbol_snippet` (read it). "
+            "For broad context: `code_get_subsystem_bundle`. For DB: `schema_get_entity`."
         ),
         "code_bundle": (
-            "Use MCP `code_get_context_bundle` or `code_get_session_bundle` for session-guided code retrieval."
+            "`code_get_context_bundle` (session-guided) or `code_get_file_bundle` (single file)."
         ),
         "edit": (
-            "This is an edit task. Use `task_begin` before starting work and `task_complete` when done. "
-            "Prefer MCP retrieval for context before making changes."
+            "`task_begin` → `code_get_outline` → `code_search_symbols` → Edit → `task_complete`. "
+            "CSS: add `code_trace_css_class`. API: add `code_trace_api_to_ui`. DB: add `schema_get_entity`."
         ),
         "inspect": (
-            "Use MCP retrieval tools to inspect the target. Prefer indexed data over raw file reads."
+            "`code_get_outline` → `code_get_dependencies` / `code_find_dependents` → "
+            "`code_get_modules` (project boundaries). Read only after narrowing."
         ),
         "read_error": (
-            "Analyze the error. Use MCP tools to find related code, then explain the root cause."
+            "`code_search_symbols` (find failing symbol) → `code_find_references` (trace usages) → "
+            "`code_get_symbol_snippet` (read the method). DB errors: add `schema_get_entity`."
+        ),
+        "investigate": (
+            "`code_get_subsystem_bundle` (broad analysis) → narrow with "
+            "`code_find_mutation_points` / `code_find_validation_surfaces` / `code_find_policy_surfaces`. "
+            "Or use `code_investigate` for a guided navigation plan."
         ),
     }
 
     def _action_directive(self, action_kind: str) -> str:
-        return self._ACTION_DIRECTIVES.get(action_kind, "")
+        directive = self._ACTION_DIRECTIVES.get(action_kind, "")
+        if directive and action_kind not in ("write_memory", "task_begin", "task_complete", "task_update"):
+            return f"{self._TOOL_FIRST_PREAMBLE} {directive}"
+        return directive
 
     def _build_compiled_workflow_summary(self, workflow: dict[str, object] | None) -> str:
         if not isinstance(workflow, dict):

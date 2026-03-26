@@ -108,20 +108,35 @@ fi
 OPENCODE_PLUGIN_TARGET="$OPENCODE_PLUGINS_DIR/aidocs.js"
 cp "$OPENCODE_PLUGIN_SOURCE" "$OPENCODE_PLUGIN_TARGET"
 
-ACTION_TOKENS_ROOT="$PROJECT_ROOT/mcp/server/aidocs_mcp/action_tokens"
+# Copy plugin config JSON next to plugin
+PLUGIN_CONFIG_SOURCE="$PROJECT_ROOT/aidocs-plugin.json"
+if [[ -f "$PLUGIN_CONFIG_SOURCE" ]]; then
+  cp "$PLUGIN_CONFIG_SOURCE" "$OPENCODE_PLUGINS_DIR/aidocs-plugin.json"
+fi
+
+ACTION_TOKENS_ROOT="$PROJECT_ROOT/action_tokens"
 if [[ ! -d "$ACTION_TOKENS_ROOT" ]]; then
-  ACTION_TOKENS_ROOT="$SOURCE_ROOT/server/aidocs_mcp/action_tokens"
+  ACTION_TOKENS_ROOT="$PROJECT_ROOT/mcp/server/aidocs_mcp/action_tokens"
 fi
 if [[ ! -d "$ACTION_TOKENS_ROOT" ]]; then
   echo "Missing action_tokens directory: $ACTION_TOKENS_ROOT" >&2
   exit 1
 fi
 
-OPENCODE_ACTION_TOKENS_DIR="$ACTION_TOKENS_ROOT/opencode"
-mkdir -p "$OPENCODE_ACTION_TOKENS_DIR"
-find "$OPENCODE_ACTION_TOKENS_DIR" -maxdepth 1 -type f -name '*.yaml' -delete
+# Copy action_tokens next to plugin (primary runtime path)
+PLUGIN_ACTION_TOKENS_DIR="$OPENCODE_PLUGINS_DIR/action_tokens"
+mkdir -p "$PLUGIN_ACTION_TOKENS_DIR"
+find "$PLUGIN_ACTION_TOKENS_DIR" -maxdepth 1 -type f -name '*.yaml' -delete
 
 declare -a OPENCODE_ACTION_TOKEN_EXPORTS=()
+for token_file in "$ACTION_TOKENS_ROOT"/*.yaml; do
+  [[ -f "$token_file" ]] || continue
+  target="$PLUGIN_ACTION_TOKENS_DIR/$(basename "$token_file")"
+  cp "$token_file" "$target"
+  OPENCODE_ACTION_TOKEN_EXPORTS+=("$target (copy)")
+done
+
+# Also maintain legacy opencode/ subdir for backward compat
 link_or_copy() {
   local source="$1"
   local target="$2"
@@ -133,6 +148,10 @@ link_or_copy() {
     OPENCODE_ACTION_TOKEN_EXPORTS+=("$target (copy)")
   fi
 }
+
+OPENCODE_ACTION_TOKENS_DIR="$ACTION_TOKENS_ROOT/opencode"
+mkdir -p "$OPENCODE_ACTION_TOKENS_DIR"
+find "$OPENCODE_ACTION_TOKENS_DIR" -maxdepth 1 -type f -name '*.yaml' -delete
 
 for token_file in "$ACTION_TOKENS_ROOT"/*.yaml; do
   [[ -f "$token_file" ]] || continue
@@ -312,6 +331,31 @@ done
 for export_file in "${OPENCODE_ACTION_TOKEN_EXPORTS[@]}"; do
   echo "- $export_file"
 done
+# Set AIDOCS_PATH in shell profile
+AIDOCS_EXPORT_LINE="export AIDOCS_PATH=\"$PROJECT_ROOT\""
+SHELL_PROFILE=""
+if [[ -f "$HOME/.zshrc" ]]; then
+  SHELL_PROFILE="$HOME/.zshrc"
+elif [[ -f "$HOME/.bashrc" ]]; then
+  SHELL_PROFILE="$HOME/.bashrc"
+elif [[ -f "$HOME/.profile" ]]; then
+  SHELL_PROFILE="$HOME/.profile"
+fi
+
+if [[ -n "$SHELL_PROFILE" ]]; then
+  # Remove any existing AIDOCS_PATH line and add the new one
+  if grep -q "^export AIDOCS_PATH=" "$SHELL_PROFILE" 2>/dev/null; then
+    sed -i.bak '/^export AIDOCS_PATH=/d' "$SHELL_PROFILE"
+    rm -f "${SHELL_PROFILE}.bak"
+  fi
+  echo "$AIDOCS_EXPORT_LINE" >> "$SHELL_PROFILE"
+  export AIDOCS_PATH="$PROJECT_ROOT"
+  echo "Set AIDOCS_PATH=$PROJECT_ROOT in $SHELL_PROFILE"
+else
+  echo "WARNING: Could not find shell profile (.zshrc/.bashrc/.profile)."
+  echo "Add manually: $AIDOCS_EXPORT_LINE"
+fi
+
 echo "AIDOCS source wired to: $SOURCE_ROOT"
 echo "Command pack version: $COMMAND_PACK_VERSION"
 

@@ -307,6 +307,29 @@ class SchemaIndexStore:
                 "SELECT source_entity, target_entity, relation_kind, relationship_family, source_path, line_number FROM schema_relationships"
             ).fetchall()
 
+        # Build case-insensitive entity name lookup
+        entity_names: dict[str, str] = {}  # lowercase -> canonical
+        for row in rows:
+            for name in (row["source_entity"], row["target_entity"]):
+                lower = name.lower()
+                if lower not in entity_names:
+                    entity_names[lower] = name
+
+        # Resolve source/target to canonical names (case-insensitive + pluralization)
+        def resolve_name(name: str) -> str:
+            lower = name.lower()
+            if lower in entity_names:
+                return entity_names[lower]
+            # Try singular/plural
+            if lower.endswith("s") and lower[:-1] in entity_names:
+                return entity_names[lower[:-1]]
+            if lower + "s" in entity_names:
+                return entity_names[lower + "s"]
+            return name
+
+        source = resolve_name(source)
+        target = resolve_name(target)
+
         graph: dict[str, list[dict[str, object]]] = {}
         for row in rows:
             graph.setdefault(row["source_entity"], []).append(dict(row))
@@ -324,6 +347,9 @@ class SchemaIndexStore:
                 continue
             for edge in graph.get(current, []):
                 next_node = edge["target_entity"]
+                # Skip self-referential edges (e.g., Document -> Document)
+                if next_node == current:
+                    continue
                 candidate = path + [edge]
                 key = (next_node, tuple((item["source_entity"], item["target_entity"]) for item in candidate))
                 if key in seen:
@@ -408,6 +434,11 @@ class SchemaIndexStore:
                         nav_rel = self._detect_nav_relationship(prop_type, prop_name, current_entity)
                         if nav_rel:
                             nav_relationships.append((*nav_rel, rel, line_number))
+                    # Convention-based FK: PropertyNameId → PropertyName entity
+                    elif prop_name.endswith("Id") and len(prop_name) > 2 and prop_type.rstrip("?") in ("Guid", "int", "long", "Guid?", "int?", "long?"):
+                        target = prop_name[:-2]  # Strip "Id" suffix
+                        if target[:1].isupper():
+                            nav_relationships.append((current_entity, target, "fk_convention", rel, line_number))
 
                 fm = field_pattern.match(line)
                 if fm and current_kind != "enum":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MethodType
@@ -464,6 +465,44 @@ def create_server() -> Any:
         )
 
     @server.tool()
+    def session_journal_read(
+        project_root: str,
+        session_id: str,
+        last_n: int | None = None,
+    ) -> list[dict[str, str]]:
+        """Read the session journal — a rolling log of significant decisions and outcomes.
+
+        Use this to refresh your memory when resuming a stale session.
+
+        Args:
+            last_n: Only return the last N entries. None returns all.
+        """
+        return hub.sessions.read_journal(Path(project_root), session_id, last_n=last_n)
+
+    @server.tool()
+    def session_journal_log(
+        project_root: str,
+        session_id: str,
+        action_kind: str,
+        intent: str,
+        outcome: str,
+    ) -> dict[str, Any]:
+        """Log a significant decision or outcome to the session journal.
+
+        Only log meaningful work — not greetings, trivial commands, or minor edits.
+        The journal auto-evicts oldest entries to archive when full (default: 100 entries).
+
+        Args:
+            action_kind: The type of action (edit, trace, investigate, read_error, etc.).
+            intent: What the user asked for (1-2 sentences, max 120 chars).
+            outcome: What happened (1-2 sentences, max 120 chars).
+        """
+        return hub.sessions.write_journal_entry(
+            Path(project_root), session_id,
+            action_kind=action_kind, intent=intent, outcome=outcome,
+        )
+
+    @server.tool()
     def runtime_preflight(
         project_root: str,
         action_kind: str,
@@ -550,7 +589,31 @@ def create_server() -> Any:
     @server.tool()
     def code_index_sync(project_root: str, include_tests: bool = False) -> dict[str, int]:
         """Rebuild the derived code file manifest and summary index."""
-        return {"code_files": hub.code.sync_code_files(Path(project_root), include_tests=include_tests)}
+        return {
+            "code_files": hub.code.sync_code_files(Path(project_root), include_tests=include_tests),
+            "modules": hub.code.sync_modules(Path(project_root)),
+        }
+
+    @server.tool()
+    def code_get_modules(project_root: str, kind: str | None = None) -> list[dict[str, Any]]:
+        """List detected project modules (workspaces, subprojects, informal modules).
+
+        Detects formal workspaces (npm, Cargo, .csproj) and informal monorepo
+        boundaries (directories with entry points or well-known module names).
+
+        Args:
+            kind: Filter by module kind ('workspace', 'subproject', 'project', 'module'). None returns all.
+        """
+        return hub.code.get_modules(Path(project_root), kind=kind)
+
+    @server.tool()
+    def code_get_module_files(project_root: str, module_path: str, limit: int = 200) -> list[dict[str, Any]]:
+        """List all indexed source files belonging to a specific module.
+
+        Args:
+            module_path: The module's relative path (e.g., 'cli', 'server', 'src/Web').
+        """
+        return hub.code.get_module_files(Path(project_root), module_path=module_path, limit=limit)
 
     @server.tool()
     def code_index_status(project_root: str) -> dict[str, Any]:
@@ -699,6 +762,32 @@ def create_server() -> Any:
         )
 
     @server.tool()
+    def code_find_partial_consumers(project_root: str, partial_name: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Find all pages/views that reference a Razor partial by name.
+
+        Args:
+            partial_name: Partial name (with or without underscore prefix, e.g., '_PageHeader' or 'PageHeader').
+        """
+        return hub.code.find_partial_consumers(Path(project_root), partial_name=partial_name, limit=limit)
+
+    @server.tool()
+    def code_find_api_consumers(project_root: str, endpoint: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Find all pages/scripts that call an API endpoint.
+
+        Args:
+            endpoint: API path to search for (e.g., '/api/forms/submissions' or 'submissions').
+        """
+        return hub.code.find_api_consumers(Path(project_root), endpoint=endpoint, limit=limit)
+
+    @server.tool()
+    def code_trace_css_class(project_root: str, class_name: str, limit: int = 50) -> dict[str, Any]:
+        """Find CSS class definitions AND HTML/Razor template usages across the codebase.
+
+        Returns both where the class is defined (CSS files) and which templates likely use it.
+        """
+        return hub.code.trace_css_class_usage(Path(project_root), class_name=class_name, limit=limit)
+
+    @server.tool()
     def code_find_transition_points(project_root: str, concept: str | None = None, limit: int = 50) -> dict[str, Any]:
         """Find likely migration seams, adapters, compatibility layers, and transition hotspots."""
         return hub.code.find_transition_points(Path(project_root), concept=concept, limit=limit)
@@ -788,6 +877,20 @@ def create_server() -> Any:
         return hub.code.get_subsystem_bundle(Path(project_root), concept=concept, limit=limit)
 
     @server.tool()
+    def code_investigate(project_root: str, concept: str, limit: int = 5) -> dict[str, Any]:
+        """START HERE — investigate a concept, feature, or bug area.
+
+        Returns a navigation guide: what was found across symbols, files, schema, CSS, and modules,
+        plus which specific tools to call next with reasons why.
+
+        Use this FIRST when you don't know where to start. It replaces guessing with Grep.
+
+        Args:
+            concept: The thing to investigate (e.g., "PDF generation", "authorization", "field-input", "Patient").
+        """
+        return hub.code.investigate(Path(project_root), concept=concept, limit=limit)
+
+    @server.tool()
     def code_get_partial_bundle(project_root: str, symbol: str, limit: int = 50) -> list[dict[str, Any]]:
         """Return snippet bundles for all indexed partial definitions of a C# symbol."""
         return hub.code.get_partial_bundle(Path(project_root), symbol=symbol, limit=limit)
@@ -823,8 +926,23 @@ def create_server() -> Any:
         return hub.code.get_component_tree(Path(project_root), path=path, depth=depth, limit=limit)
 
     @server.tool()
-    def code_get_style_bundle(project_root: str, class_names: list[str], limit: int = 100) -> dict[str, Any]:
-        """Return CSS selector matches for a set of class names."""
+    def code_get_style_bundle(project_root: str, class_names: str | list[str], limit: int = 100) -> dict[str, Any]:
+        """Return CSS selector matches for a set of class names.
+
+        Args:
+            class_names: One or more CSS class names. Accepts a single string (comma or space separated), or a list.
+        """
+        if isinstance(class_names, str):
+            # Handle JSON string arrays, comma-separated, or space-separated
+            stripped = class_names.strip()
+            if stripped.startswith("["):
+                import json as _json
+                try:
+                    class_names = _json.loads(stripped)
+                except (ValueError, TypeError):
+                    class_names = [s.strip().strip('"').strip("'") for s in stripped.strip("[]").split(",") if s.strip()]
+            else:
+                class_names = [s.strip() for s in re.split(r"[,\s]+", stripped) if s.strip()]
         return hub.code.get_style_bundle(Path(project_root), class_names=class_names, limit=limit)
 
     @server.tool()
@@ -1274,6 +1392,94 @@ def create_server() -> Any:
     def legacy_build_session_proposal(project_root: str, session_id: str | None = None) -> dict[str, Any]:
         """Build a non-destructive session proposal from legacy NOW/plans state."""
         return hub.legacy.build_session_proposal(Path(project_root), session_id=session_id)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Database Query Tool
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @server.tool()
+    def db_query(
+        project_root: str,
+        sql: str,
+        connection_string: str | None = None,
+    ) -> dict[str, Any]:
+        """Execute a read-only SQL query against the project's PostgreSQL database.
+
+        Safety: Only SELECT statements are allowed. DDL/DML (INSERT, UPDATE, DELETE, DROP, etc.) is blocked.
+
+        Args:
+            project_root: Project root path (used to auto-detect connection string from appsettings.json).
+            sql: SQL query to execute (SELECT only).
+            connection_string: Override connection string (format: 'Host=...;Database=...;Username=...;Password=...').
+                             If not provided, reads from appsettings.json or defaults to localhost/dentalapp.
+        """
+        import subprocess, json as json_mod
+
+        # Safety: block non-SELECT statements
+        stripped = sql.strip().lstrip("(").strip()
+        first_word = stripped.split()[0].upper() if stripped.split() else ""
+        if first_word not in ("SELECT", "WITH", "EXPLAIN"):
+            return {"error": f"Only SELECT/WITH/EXPLAIN queries allowed, got: {first_word}", "rows": []}
+
+        # Resolve connection params
+        root = Path(project_root)
+        host = "localhost"
+        port = "5432"
+        database = "dentalapp"
+        username = "postgres"
+        password = "admin"
+
+        if connection_string:
+            # Parse .NET-style connection string
+            for part in connection_string.split(";"):
+                kv = part.strip().split("=", 1)
+                if len(kv) == 2:
+                    key, val = kv[0].strip().lower(), kv[1].strip()
+                    if key == "host": host = val
+                    elif key in ("database", "db"): database = val
+                    elif key in ("username", "user id", "user"): username = val
+                    elif key == "password": password = val
+                    elif key == "port": port = val
+        else:
+            # Try to read from appsettings.json
+            for settings_file in ["appsettings.Development.json", "appsettings.json"]:
+                candidates = list(root.rglob(settings_file))
+                for candidate in candidates:
+                    try:
+                        settings = json_mod.loads(candidate.read_text(encoding="utf-8", errors="ignore"))
+                        conn_str = (settings.get("ConnectionStrings") or {}).get("DefaultConnection")
+                        if conn_str:
+                            for part in conn_str.split(";"):
+                                kv = part.strip().split("=", 1)
+                                if len(kv) == 2:
+                                    key, val = kv[0].strip().lower(), kv[1].strip()
+                                    if key == "host": host = val
+                                    elif key in ("database", "db"): database = val
+                                    elif key in ("username", "user id", "user"): username = val
+                                    elif key == "password": password = val
+                                    elif key == "port": port = val
+                            break
+                    except Exception:
+                        continue
+
+        env = {**__import__("os").environ, "PGPASSWORD": password}
+        try:
+            result = subprocess.run(
+                ["psql", "-h", host, "-p", port, "-U", username, "-d", database,
+                 "-t", "-A", "-F", "\t", "-c", sql],
+                capture_output=True, text=True, timeout=30, env=env,
+            )
+            if result.returncode != 0:
+                return {"error": result.stderr.strip(), "rows": []}
+
+            lines = [line for line in result.stdout.strip().split("\n") if line.strip()]
+            return {"row_count": len(lines), "rows": lines[:200]}  # Cap at 200 rows
+        except FileNotFoundError:
+            return {"error": "psql not found — install PostgreSQL client tools", "rows": []}
+        except subprocess.TimeoutExpired:
+            return {"error": "Query timed out after 30 seconds", "rows": []}
+        except Exception as exc:
+            return {"error": str(exc), "rows": []}
 
     return server
 

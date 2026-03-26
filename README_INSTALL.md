@@ -1,6 +1,6 @@
 # AIDOCS Install
 
-This install path targets the `1.0.1` release line. Rerun the installer after local AIDOCS updates to refresh the global command pack, OpenCode plugin, and Claude hook wiring.
+This install path targets the `1.0.2` release line. Rerun the installer after local AIDOCS updates to refresh the global command pack, OpenCode plugin, and Claude hook wiring.
 
 Current installer status: Windows and Linux/macOS installer paths are shipped.
 

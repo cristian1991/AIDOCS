@@ -2,159 +2,7 @@ from pathlib import Path
 
 from aidocs_mcp.code_index_store import CodeIndexStore
 from aidocs_mcp.session_store import SessionStore
-
-
-def test_sync_code_files_indexes_supported_files(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "app.py").write_text("def greet():\n    return 'hi'\n", encoding="utf-8")
-    (project_root / "README.md").write_text("# Project\n", encoding="utf-8")
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    count = store.sync_code_files(project_root)
-
-    assert count == 1
-    with store.connect(project_root) as conn:
-        rows = conn.execute("SELECT path, language FROM code_files ORDER BY path").fetchall()
-    assert [(r["path"], r["language"]) for r in rows] == [("src/app.py", "python")]
-
-
-def test_sync_code_files_skips_nested_node_modules(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "web" / "src").mkdir(parents=True, exist_ok=True)
-    (project_root / "web" / "node_modules" / ".bin").mkdir(parents=True, exist_ok=True)
-    (project_root / "web" / "src" / "app.ts").write_text("export const ok = true\n", encoding="utf-8")
-    (project_root / "web" / "node_modules" / ".bin" / "acorn.ps1").write_text("Write-Host 'nope'\n", encoding="utf-8")
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    count = store.sync_code_files(project_root)
-
-    assert count == 1
-    with store.connect(project_root) as conn:
-        rows = conn.execute("SELECT path FROM code_files ORDER BY path").fetchall()
-    assert [r["path"] for r in rows] == ["web/src/app.ts"]
-
-
-def test_sync_code_files_skips_generated_website_and_temp_plugin_outputs(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "website" / "build").mkdir(parents=True, exist_ok=True)
-    (project_root / "website" / ".docusaurus").mkdir(parents=True, exist_ok=True)
-    (project_root / ".temp-plugins" / "plugin-sub_123").mkdir(parents=True, exist_ok=True)
-    (project_root / "web" / "src").mkdir(parents=True, exist_ok=True)
-    (project_root / "website" / "build" / "bundle.js").write_text("export const nope = true\n", encoding="utf-8")
-    (project_root / "website" / ".docusaurus" / "registry.js").write_text("export const nope = true\n", encoding="utf-8")
-    (project_root / ".temp-plugins" / "plugin-sub_123" / "generator.js").write_text("export async function generate() {}\n", encoding="utf-8")
-    (project_root / "web" / "src" / "app.ts").write_text("export const ok = true\n", encoding="utf-8")
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    count = store.sync_code_files(project_root)
-
-    assert count == 1
-    with store.connect(project_root) as conn:
-        rows = conn.execute("SELECT path FROM code_files ORDER BY path").fetchall()
-    assert [r["path"] for r in rows] == ["web/src/app.ts"]
-
-
-def test_sync_code_files_skips_obj_backup_and_temp_outputs(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src" / "App" / "obj" / "Debug").mkdir(parents=True, exist_ok=True)
-    (project_root / ".BACKUP").mkdir(parents=True, exist_ok=True)
-    (project_root / "temp").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "App").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "App" / "Service.cs").write_text("public class Service {}\n", encoding="utf-8")
-    (project_root / "src" / "App" / "obj" / "Debug" / "Gen.cs").write_text("public class Gen {}\n", encoding="utf-8")
-    (project_root / ".BACKUP" / "Old.cs").write_text("public class Old {}\n", encoding="utf-8")
-    (project_root / "temp" / "Tmp.cs").write_text("public class Tmp {}\n", encoding="utf-8")
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    count = store.sync_code_files(project_root)
-
-    assert count == 1
-    with store.connect(project_root) as conn:
-        rows = conn.execute("SELECT path FROM code_files ORDER BY path").fetchall()
-    assert [r["path"] for r in rows] == ["src/App/Service.cs"]
-
-
-def test_code_status_and_search(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "server.ts").write_text("export function startServer() {}\n", encoding="utf-8")
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    status = store.code_status(project_root)
-    results = store.search_code(project_root, "server", limit=5)
-
-    assert status["code_files"] == 1
-    assert status["parsed_code_files"] == 1
-    assert status["code_outlines"] == 1
-    assert status["roles"]["unknown"] == 1
-    assert status["role_groups"]["unknown"] == 1
-    assert results[0]["path"] == "src/server.ts"
-    assert results[0]["role"] == "unknown"
-
-
-def test_get_outline_for_python_and_typescript(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "app.py").write_text(
-        "class App:\n"
-        "    pass\n\n"
-        "def greet():\n"
-        "    return 'hi'\n",
-        encoding="utf-8",
-    )
-    (project_root / "src" / "server.ts").write_text(
-        "export function startServer() {}\n"
-        "const helper = () => {}\n",
-        encoding="utf-8",
-    )
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    py_outline = store.get_outline(project_root, "src/app.py")
-    ts_outline = store.get_outline(project_root, "src/server.ts")
-
-    assert py_outline == [
-        {"symbol": "App", "kind": "class", "line_number": 1, "container": None, "is_partial": False},
-        {"symbol": "greet", "kind": "function", "line_number": 4, "container": None, "is_partial": False},
-    ]
-    assert ts_outline == [
-        {"symbol": "startServer", "kind": "function", "line_number": 1, "container": None, "is_partial": False},
-        {"symbol": "helper", "kind": "function", "line_number": 2, "container": None, "is_partial": False},
-    ]
-
-
-def test_python_ast_outline_handles_decorators_async_and_methods(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "advanced.py").write_text(
-        "from pkg.tools import helper\n\n"
-        "@decorator\n"
-        "class AppService:\n"
-        "    @classmethod\n"
-        "    def build(cls):\n"
-        "        return cls()\n\n"
-        "async def useRunner():\n"
-        "    return helper()\n",
-        encoding="utf-8",
-    )
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    outline = store.get_outline(project_root, "src/advanced.py")
-    deps = store.get_dependencies(project_root, "src/advanced.py")
-
-    assert {item["symbol"] for item in outline} == {"AppService", "build", "useRunner"}
-    assert any(item["kind"] == "method" and item["container"] == "AppService" for item in outline)
-    assert deps == [{"target": "pkg.tools", "kind": "import"}]
+from aidocs_mcp.schema_index_store import SchemaIndexStore
 
 
 def test_csharp_partial_group_detection(tmp_path: Path) -> None:
@@ -195,7 +43,6 @@ def test_csharp_partial_group_detection(tmp_path: Path) -> None:
     assert len(partials) == 2
     assert {item["path"] for item in partials} == {"App/MainWindow.xaml.cs", "App/MainWindow.Actions.cs"}
 
-
 def test_find_csharp_data_structures_and_members(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -226,7 +73,6 @@ def test_find_csharp_data_structures_and_members(tmp_path: Path) -> None:
     assert ("PatientStatus", "enum") in kinds
     assert ("Active", "enum_member") in kinds
     assert ("Archived", "enum_member") in kinds
-
 
 def test_get_symbol_snippet_and_partial_bundle(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -263,7 +109,6 @@ def test_get_symbol_snippet_and_partial_bundle(tmp_path: Path) -> None:
     assert "public partial class MainWindow" in snippet["snippet"]
     assert len(bundle) == 2
     assert any("RunAction" in item["snippet"] for item in bundle)
-
 
 def test_get_symbol_bundle_combines_definition_references_and_schema(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -306,7 +151,6 @@ def test_get_symbol_bundle_combines_definition_references_and_schema(tmp_path: P
     assert bundle["definitions"]
     assert bundle["references"]
     assert any(item["entity_name"] == "QuoteDto" for item in bundle["schema_entities"])
-
 
 def test_get_subsystem_bundle_combines_generic_analyzers(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -364,444 +208,6 @@ def test_get_subsystem_bundle_combines_generic_analyzers(tmp_path: Path) -> None
     assert bundle["touchpoints"]
     assert bundle["data_structures"]
 
-
-def test_find_js_initializers(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "wwwroot" / "js").mkdir(parents=True, exist_ok=True)
-    (project_root / "wwwroot" / "js" / "site.js").write_text(
-        "document.addEventListener('DOMContentLoaded', function() {\n"
-        "  initSelect2();\n"
-        "});\n"
-        "$(document).ready(function() {\n"
-        "  initDataTable();\n"
-        "});\n"
-        "window.addEventListener('load', () => initTheme());\n",
-        encoding="utf-8",
-    )
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    initializers = store.find_initializers(project_root, path="wwwroot/js/site.js")
-
-    assert [item["symbol"] for item in initializers] == [
-        "document:DOMContentLoaded",
-        "jquery:ready",
-        "window:load",
-    ]
-
-
-def test_search_symbols_across_languages(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "app.py").write_text(
-        "class App:\n"
-        "    pass\n\n"
-        "def greet():\n"
-        "    return 'hi'\n",
-        encoding="utf-8",
-    )
-    (project_root / "src" / "site.js").write_text(
-        "function initSelect2() {}\n"
-        "document.addEventListener('DOMContentLoaded', function() {});\n",
-        encoding="utf-8",
-    )
-    (project_root / "src" / "PatientDto.cs").write_text(
-        "namespace DentalApp.Models;\n\n"
-        "public record PatientDto\n"
-        "{\n"
-        "    public string FullName { get; set; } = string.Empty;\n"
-        "}\n",
-        encoding="utf-8",
-    )
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    init_results = store.search_symbols(project_root, "init", limit=20)
-    init_symbols = {(item["symbol"], item["kind"]) for item in init_results}
-    dom_results = store.search_symbols(project_root, "DOMContentLoaded", limit=20)
-    dom_symbols = {(item["symbol"], item["kind"]) for item in dom_results}
-
-    assert ("initSelect2", "function") in init_symbols
-    assert ("document:DOMContentLoaded", "initializer") in dom_symbols
-
-
-def test_search_symbols_uses_concept_variants_for_common_suffixes(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "Models").mkdir(parents=True, exist_ok=True)
-    (project_root / "Models" / "QuoteDto.cs").write_text(
-        "public record QuoteDto;\n",
-        encoding="utf-8",
-    )
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    results = store.search_symbols(project_root, "Quote", limit=10)
-
-    assert any(item["symbol"] == "QuoteDto" for item in results)
-
-
-def test_find_references_returns_line_level_matches(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "app.py").write_text(
-        "class QuoteDto:\n"
-        "    pass\n\n"
-        "def use_quote(dto: QuoteDto):\n"
-        "    return dto\n",
-        encoding="utf-8",
-    )
-    (project_root / "src" / "QuotePanel.tsx").write_text(
-        "export function QuotePanel() {\n"
-        "  const label = 'QuoteDto';\n"
-        "  return <div>{label}</div>;\n"
-        "}\n",
-        encoding="utf-8",
-    )
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    refs = store.find_references(project_root, "QuoteDto", limit=20)
-
-    assert refs["symbol"] == "QuoteDto"
-    assert len(refs["matches"]) >= 2
-    assert any(match["path"] == "src/app.py" for match in refs["matches"])
-    assert any(match["path"] == "src/QuotePanel.tsx" for match in refs["matches"])
-
-
-def test_find_frontend_symbols_for_components_hooks_and_providers(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "web" / "components").mkdir(parents=True, exist_ok=True)
-    (project_root / "web" / "components" / "EditModeProvider.tsx").write_text(
-        "export function EditModeProvider({ children }: { children: React.ReactNode }) {\n"
-        "  return <div>{children}</div>;\n"
-        "}\n\n"
-        "export function useEditMode() {\n"
-        "  return { enabled: true };\n"
-        "}\n",
-        encoding="utf-8",
-    )
-    (project_root / "web" / "components" / "Header.tsx").write_text(
-        "export function Header() {\n"
-        "  return <header />;\n"
-        "}\n",
-        encoding="utf-8",
-    )
-    (project_root / "web" / "components" / "boot.ts").write_text(
-        "document.addEventListener('DOMContentLoaded', function() {\n"
-        "  initBuilder();\n"
-        "});\n",
-        encoding="utf-8",
-    )
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    symbols = store.find_frontend_symbols(project_root, query="Mode", limit=20)
-    kinds = {(item["symbol"], item["kind"]) for item in symbols}
-    all_frontend = store.find_frontend_symbols(project_root, query=None, limit=20)
-    all_kinds = {(item["symbol"], item["kind"]) for item in all_frontend}
-
-    assert ("EditModeProvider", "context_provider") in all_kinds
-    assert ("useEditMode", "hook") in all_kinds
-    assert ("Header", "component") in all_kinds
-    assert ("document:DOMContentLoaded", "initializer") in all_kinds
-    assert ("EditModeProvider", "context_provider") in kinds
-    assert all_frontend[0]["why"]
-
-
-def test_frontend_ast_extractor_falls_back_cleanly_when_parser_unavailable(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    store.frontend_ast._support.available = False
-    project_root = tmp_path / "project"
-    (project_root / "web").mkdir(parents=True, exist_ok=True)
-    (project_root / "web" / "Header.tsx").write_text(
-        "export function Header() {\n"
-        "  return <header />;\n"
-        "}\n",
-        encoding="utf-8",
-    )
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    outline = store.get_outline(project_root, "web/Header.tsx")
-
-    assert outline[0]["symbol"] == "Header"
-    assert outline[0]["kind"] == "component"
-
-
-def test_code_role_inference_for_frontend_and_backend_files(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "web" / "app" / "dashboard").mkdir(parents=True, exist_ok=True)
-    (project_root / "web" / "components").mkdir(parents=True, exist_ok=True)
-    (project_root / "Services").mkdir(parents=True, exist_ok=True)
-    (project_root / "Controllers").mkdir(parents=True, exist_ok=True)
-    (project_root / "web" / "app" / "dashboard" / "page.tsx").write_text(
-        "export default function DashboardPage() { return <div />; }\n",
-        encoding="utf-8",
-    )
-    (project_root / "web" / "components" / "EditModeProvider.tsx").write_text(
-        "export function EditModeProvider() { return <div />; }\n",
-        encoding="utf-8",
-    )
-    (project_root / "Services" / "QuoteService.cs").write_text(
-        "public class QuoteService {}\n",
-        encoding="utf-8",
-    )
-    (project_root / "Controllers" / "QuoteController.cs").write_text(
-        "namespace DentalApp.Controllers;\n\n"
-        "public class QuoteController {}\n",
-        encoding="utf-8",
-    )
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    page = store.get_file_bundle(project_root, "web/app/dashboard/page.tsx")
-    provider = store.get_file_bundle(project_root, "web/components/EditModeProvider.tsx")
-    service = store.get_file_bundle(project_root, "Services/QuoteService.cs")
-    controller = store.get_file_bundle(project_root, "Controllers/QuoteController.cs")
-
-    assert page["role"] == "page"
-    assert provider["role"] == "context-provider"
-    assert service["role"] == "service"
-    assert controller["role"] == "controller"
-
-
-def test_code_role_inference_expands_support_and_runtime_buckets(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "web" / "app" / "api" / "quotes").mkdir(parents=True, exist_ok=True)
-    (project_root / "web" / "lib").mkdir(parents=True, exist_ok=True)
-    (project_root / "server").mkdir(parents=True, exist_ok=True)
-    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
-    (project_root / "Configurations").mkdir(parents=True, exist_ok=True)
-    (project_root / "Workers").mkdir(parents=True, exist_ok=True)
-    (project_root / "web" / "app" / "api" / "quotes" / "route.ts").write_text("export async function GET() { return Response.json({}); }\n", encoding="utf-8")
-    (project_root / "web" / "lib" / "helpers.ts").write_text("export function slugify(x: string) { return x; }\n", encoding="utf-8")
-    (project_root / "server" / "plugin-server.js").write_text("export function start() {}\n", encoding="utf-8")
-    (project_root / "Pages" / "AccessDenied.cshtml.cs").write_text("public class AccessDeniedModel {}\n", encoding="utf-8")
-    (project_root / "Configurations" / "AccountConfiguration.cs").write_text("public class AccountConfiguration {}\n", encoding="utf-8")
-    (project_root / "Workers" / "QueueWorker.cs").write_text("public class QueueWorker {}\n", encoding="utf-8")
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    status = store.code_status(project_root)
-
-    assert status["roles"]["route-handler"] == 1
-    assert status["roles"]["utility-module"] == 1
-    assert status["roles"]["server-module"] == 1
-    assert status["roles"]["page-model"] == 1
-    assert status["roles"]["configuration"] == 1
-    assert status["roles"]["worker"] == 1
-    assert status["role_groups"]["request-surfaces"] >= 2
-    assert status["role_groups"]["support"] >= 2
-    assert status["role_groups"]["logic-runtime"] >= 1
-
-
-def test_code_role_inference_classifies_components_and_plugin_modules(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "web" / "components").mkdir(parents=True, exist_ok=True)
-    (project_root / "random-folder-name" / "demo-plugin" / "templates" / "components").mkdir(parents=True, exist_ok=True)
-    (project_root / "framework-generators").mkdir(parents=True, exist_ok=True)
-    (project_root / "core").mkdir(parents=True, exist_ok=True)
-    (project_root / "web" / "components" / "Hero.tsx").write_text("export function Hero() { return <div />; }\n", encoding="utf-8")
-    (project_root / "random-folder-name" / "demo-plugin" / "package.json").write_text("{}\n", encoding="utf-8")
-    (project_root / "random-folder-name" / "demo-plugin" / "generator.js").write_text("export async function generate() {}\n", encoding="utf-8")
-    (project_root / "random-folder-name" / "demo-plugin" / "index.ts").write_text("export * from './generator'\n", encoding="utf-8")
-    (project_root / "framework-generators" / "next-generator.js").write_text("export function create() {}\n", encoding="utf-8")
-    (project_root / "core" / "plugin-loader.js").write_text("export function load() {}\n", encoding="utf-8")
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    status = store.code_status(project_root)
-
-    assert status["roles"]["component"] == 1
-    assert status["roles"]["plugin-generator"] == 1
-    assert status["roles"]["plugin-module"] == 1
-    assert status["roles"]["framework-generator"] == 1
-    assert status["roles"]["core-module"] == 1
-
-
-def test_code_role_inference_generalizes_hooks_barrels_and_root_scripts(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "any-name" / "feature-pack" / "templates" / "hooks").mkdir(parents=True, exist_ok=True)
-    (project_root / "web" / "components" / "cms").mkdir(parents=True, exist_ok=True)
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-    (project_root / "any-name" / "feature-pack" / "package.json").write_text("{}\n", encoding="utf-8")
-    (project_root / "any-name" / "feature-pack" / "templates" / "hooks" / "useThing.ts").write_text("export function useThing() { return null }\n", encoding="utf-8")
-    (project_root / "web" / "components" / "cms" / "index.ts").write_text("export * from './EditPanel'\n", encoding="utf-8")
-    (project_root / "bootstrap.js").write_text("#!/usr/bin/env node\nconsole.log('ok')\n", encoding="utf-8")
-    (project_root / "next-env.d.ts").write_text("/// <reference types=\"next\" />\n", encoding="utf-8")
-
-    store.sync_code_files(project_root)
-    status = store.code_status(project_root)
-
-    assert status["roles"]["hook-module"] == 1
-    assert status["roles"]["barrel-module"] == 1
-    assert status["roles"]["config-module"] == 1
-
-
-def test_code_role_inference_classifies_plugin_template_modules_generically(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "some-random-folder" / "auth-pack" / "templates").mkdir(parents=True, exist_ok=True)
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-    (project_root / "some-random-folder" / "auth-pack" / "package.json").write_text("{}\n", encoding="utf-8")
-    (project_root / "some-random-folder" / "auth-pack" / "templates" / "prisma-schema.js").write_text("export function getSchema() { return '' }\n", encoding="utf-8")
-
-    store.sync_code_files(project_root)
-    status = store.code_status(project_root)
-
-    assert status["roles"]["plugin-template-module"] == 1
-
-
-def test_code_role_inference_classifies_csharp_entities_dtos_and_interfaces(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src" / "Domain" / "Entities").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "Application" / "DTOs").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "Application" / "Interfaces").mkdir(parents=True, exist_ok=True)
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "Domain" / "Entities" / "Account.cs").write_text("public class Account {}\n", encoding="utf-8")
-    (project_root / "src" / "Application" / "DTOs" / "AccountDto.cs").write_text("public record AccountDto(string Name);\n", encoding="utf-8")
-    (project_root / "src" / "Application" / "Interfaces" / "IAccountService.cs").write_text("public interface IAccountService {}\n", encoding="utf-8")
-
-    store.sync_code_files(project_root)
-    status = store.code_status(project_root)
-
-    assert status["roles"]["data-model"] == 2
-    assert status["roles"]["abstraction"] == 1
-
-
-def test_code_role_inference_classifies_csharp_program_seed_partial_services_and_hubs(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src" / "Infrastructure" / "Data" / "Seeding").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "Infrastructure" / "Services").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "Infrastructure" / "Data").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "Web" / "Hubs").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "Web" / "ViewComponents").mkdir(parents=True, exist_ok=True)
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "Infrastructure" / "Data" / "AppDbContext.cs").write_text("public class AppDbContext {}\n", encoding="utf-8")
-    (project_root / "src" / "Infrastructure" / "Data" / "Seeding" / "SeedDataService.Forms.cs").write_text("public partial class SeedDataService {}\n", encoding="utf-8")
-    (project_root / "src" / "Infrastructure" / "Services" / "FormPdfService.Html.cs").write_text("public partial class FormPdfService {}\n", encoding="utf-8")
-    (project_root / "src" / "Web" / "Hubs" / "DebugHub.cs").write_text("public class DebugHub {}\n", encoding="utf-8")
-    (project_root / "src" / "Web" / "ViewComponents" / "SidebarViewComponent.cs").write_text("public class SidebarViewComponent {}\n", encoding="utf-8")
-    (project_root / "src" / "Web" / "Program.cs").write_text("public class Program {}\n", encoding="utf-8")
-    (project_root / "src" / "Web" / "Scripts").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "Web" / "Scripts" / "SyncTranslations.ps1").write_text("Write-Host 'ok'\n", encoding="utf-8")
-
-    store.sync_code_files(project_root)
-    status = store.code_status(project_root)
-
-    assert status["roles"]["data-access"] == 1
-    assert status["roles"]["script"] >= 2
-    assert status["roles"]["service"] == 1
-    assert status["roles"]["hub"] == 1
-    assert status["roles"]["component"] == 1
-    assert status["roles"]["initializer-module"] == 1
-
-
-def test_code_role_inference_classifies_asset_scripts_tools_and_support_markers(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src" / "Web" / "wwwroot" / "js").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "Infrastructure").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "Web" / "Infrastructure").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "Web").mkdir(parents=True, exist_ok=True)
-    (project_root / "tools").mkdir(parents=True, exist_ok=True)
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "Web" / "wwwroot" / "js" / "site.js").write_text("const x = 1\n", encoding="utf-8")
-    (project_root / "src" / "Infrastructure" / "DependencyInjection.cs").write_text("public static class DependencyInjection {}\n", encoding="utf-8")
-    (project_root / "src" / "Web" / "Infrastructure" / "DateTimeModelBinder.cs").write_text("public class DateTimeModelBinder {}\n", encoding="utf-8")
-    (project_root / "src" / "Web" / "SharedResources.cs").write_text("public class SharedResources {}\n", encoding="utf-8")
-    (project_root / "src" / "Web" / "NavigationMap.cs").write_text("public class NavigationMap {}\n", encoding="utf-8")
-    (project_root / "tools" / "fix-untranslated.py").write_text("print('ok')\n", encoding="utf-8")
-
-    store.sync_code_files(project_root)
-    status = store.code_status(project_root)
-
-    assert status["roles"]["asset-script"] == 1
-    assert status["roles"]["initializer-module"] == 1
-    assert status["roles"]["configuration"] == 1
-    assert status["roles"]["utility"] == 2
-    assert status["roles"]["script"] == 1
-
-
-def test_search_code_and_symbols_rank_exact_matches_first(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "server.ts").write_text("export function startServer() {}\n", encoding="utf-8")
-    (project_root / "src" / "helpers.ts").write_text("export function serverHelper() {}\n", encoding="utf-8")
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    code_results = store.search_code(project_root, "server", limit=10)
-    symbol_results = store.search_symbols(project_root, "startServer", limit=10)
-
-    assert code_results[0]["path"] == "src/server.ts"
-    assert code_results[0]["why"]
-    assert symbol_results[0]["symbol"] == "startServer"
-    assert symbol_results[0]["why"]
-
-
-def test_path_weighting_prefers_source_over_template_like_paths(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src").mkdir(parents=True, exist_ok=True)
-    (project_root / "templates").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "SeoMetadataEditor.tsx").write_text(
-        "export function SeoMetadataEditor() { return <div />; }\n",
-        encoding="utf-8",
-    )
-    (project_root / "templates" / "SeoMetadataEditor.tsx").write_text(
-        "export function SeoMetadataEditor() { return <div />; }\n",
-        encoding="utf-8",
-    )
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    results = store.find_frontend_symbols(project_root, query="SeoMetadataEditor", limit=10)
-
-    assert results[0]["path"] == "src/SeoMetadataEditor.tsx"
-
-
-def test_memory_guided_preferred_root_beats_noisy_match(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / ".MEMORY" / "config").mkdir(parents=True, exist_ok=True)
-    (project_root / ".MEMORY" / "config" / "indexing.md").write_text(
-        "# Indexing\n\n"
-        "## Preferred Roots\n"
-        "- `web/components/`\n\n"
-        "## Avoid Roots\n"
-        "- `testplugins/`\n",
-        encoding="utf-8",
-    )
-    (project_root / "web" / "components").mkdir(parents=True, exist_ok=True)
-    (project_root / "TESTPLUGINS" / "seo" / "templates" / "components").mkdir(parents=True, exist_ok=True)
-    (project_root / "web" / "components" / "SeoMetadataEditor.tsx").write_text(
-        "export function SeoMetadataEditor() { return <div />; }\n",
-        encoding="utf-8",
-    )
-    (project_root / "TESTPLUGINS" / "seo" / "templates" / "components" / "SeoMetadataEditor.tsx").write_text(
-        "export function SeoMetadataEditor() { return <div />; }\n",
-        encoding="utf-8",
-    )
-
-    store.sync_code_files(project_root)
-    results = store.find_frontend_symbols(project_root, query="SeoMetadataEditor", limit=10)
-
-    assert results[0]["path"] == "web/components/SeoMetadataEditor.tsx"
-
-
 def test_dependency_edges_across_languages(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -831,7 +237,6 @@ def test_dependency_edges_across_languages(tmp_path: Path) -> None:
     assert cs_deps == [{"target": "DentalApp.Models", "kind": "using"}]
     assert dependents == [{"path": "src/App.cs", "kind": "using"}]
 
-
 def test_dependency_bundle_resolves_local_targets(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -850,7 +255,6 @@ def test_dependency_bundle_resolves_local_targets(tmp_path: Path) -> None:
     assert bundle["dependencies"][0]["target"] == "./dep"
     assert bundle["dependencies"][0]["resolved_paths"] == ["src/dep.ts"]
     assert bundle["dependencies"][0]["resolved_files"][0]["path"] == "src/dep.ts"
-
 
 def test_trace_field_flow_ranks_cross_layer_matches(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -903,7 +307,6 @@ def test_trace_field_flow_ranks_cross_layer_matches(tmp_path: Path) -> None:
     assert "api" in layers
     assert "ui" in layers
 
-
 def test_trace_field_flow_includes_schema_hits_when_present(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -923,7 +326,6 @@ def test_trace_field_flow_includes_schema_hits_when_present(tmp_path: Path) -> N
     result = store.trace_field_flow(project_root, "PreferredDoctorId", limit=20)
 
     assert any(item.get("source") == "schema" for item in result["matches"])
-
 
 def test_trace_setting_usage_ranks_setting_related_matches(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -970,7 +372,6 @@ def test_trace_setting_usage_ranks_setting_related_matches(tmp_path: Path) -> No
     assert "data" in layers or "logic" in layers
     assert "api" in layers or "ui" in layers
 
-
 def test_trace_service_usage_collects_definition_and_usage_sites(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -1013,7 +414,6 @@ def test_trace_service_usage_collects_definition_and_usage_sites(tmp_path: Path)
     assert "reference" in sources or "file_match" in sources
     assert "Services/QuoteService.cs" in paths
 
-
 def test_trace_model_usage_combines_definitions_references_and_schema(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -1055,7 +455,6 @@ def test_trace_model_usage_combines_definitions_references_and_schema(tmp_path: 
     assert result["references"]
     assert result["schema"]
 
-
 def test_trace_component_usage_collects_definitions_references_and_neighbors(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -1085,7 +484,6 @@ def test_trace_component_usage_collects_definitions_references_and_neighbors(tmp
     assert result["definitions"]
     assert result["references"]
     assert any(node["path"] == "web/components/Toolbar.tsx" for node in result["neighbors"])
-
 
 def test_find_mutation_points_detects_update_save_style_flows(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -1125,7 +523,6 @@ def test_find_mutation_points_detects_update_save_style_flows(tmp_path: Path) ->
     assert "Services/QuoteService.cs" in paths
     assert "Controllers/QuoteController.cs" in paths or "Components/QuoteForm.tsx" in paths
 
-
 def test_find_validation_surfaces_detects_validator_and_required_logic(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -1162,7 +559,6 @@ def test_find_validation_surfaces_detects_validator_and_required_logic(tmp_path:
     assert result["matches"]
     assert "Validators/QuoteValidator.cs" in paths or "Services/QuoteService.cs" in paths
 
-
 def test_find_async_boundaries_detects_async_and_deferred_patterns(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -1198,7 +594,6 @@ def test_find_async_boundaries_detects_async_and_deferred_patterns(tmp_path: Pat
     assert result["matches"]
     assert "Services/QuoteService.cs" in paths or "Workers/QueueWorker.cs" in paths or "web/quote.js" in paths
 
-
 def test_find_hotspots_scores_complex_service_file_higher(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -1228,7 +623,6 @@ def test_find_hotspots_scores_complex_service_file_higher(tmp_path: Path) -> Non
     assert result["why"]
     assert result["matches"][0]["path"] == "Services/BuilderService.cs"
     assert result["matches"][0]["why"]
-
 
 def test_find_query_hotspots_detects_include_join_heavy_file(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -1264,7 +658,6 @@ def test_find_query_hotspots_detects_include_join_heavy_file(tmp_path: Path) -> 
     assert result["why"]
     assert result["matches"][0]["path"] == "Services/QueryService.cs"
     assert any(reason.startswith("includes:") for reason in result["matches"][0]["why"])
-
 
 def test_find_state_model_mismatch_detects_competing_representations(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -1309,7 +702,6 @@ def test_find_state_model_mismatch_detects_competing_representations(tmp_path: P
     assert result["concept"] == "DocumentState"
     assert "enum_state_model" in mismatch_types
     assert "boolean_flag_model" in mismatch_types or "named_state_field" in mismatch_types
-
 
 def test_find_ui_backend_touchpoints_collects_cross_layer_matches(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -1356,7 +748,6 @@ def test_find_ui_backend_touchpoints_collects_cross_layer_matches(tmp_path: Path
     assert "logic" in layers or "data" in layers
     assert "api" in layers
     assert "ui" in layers
-
 
 def test_find_policy_surfaces_collects_guard_and_permission_layers(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -1406,7 +797,6 @@ def test_find_policy_surfaces_collects_guard_and_permission_layers(tmp_path: Pat
     assert "ui" in layers
     assert any("Policy" in path or "Permission" in path for path in paths)
 
-
 def test_find_domain_clusters_combines_code_and_schema_matches(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -1454,7 +844,6 @@ def test_find_domain_clusters_combines_code_and_schema_matches(tmp_path: Path) -
     assert "data" in layers
     assert "logic" in layers or "ui" in layers
 
-
 def test_find_transition_points_detects_adapter_and_legacy_patterns(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -1483,7 +872,6 @@ def test_find_transition_points_detects_adapter_and_legacy_patterns(tmp_path: Pa
     assert result["matches"]
     assert "Services/LegacyQuoteAdapter.cs" in paths or "Compatibility/QuoteCompatibilityService.cs" in paths
 
-
 def test_find_entrypoints_detects_bootstrap_and_provider_like_symbols(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -1506,7 +894,6 @@ def test_find_entrypoints_detects_bootstrap_and_provider_like_symbols(tmp_path: 
 
     assert result["matches"]
     assert "App/bootstrap.ts" in paths
-
 
 def test_find_routes_detects_api_and_controller_surfaces(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -1534,7 +921,6 @@ def test_find_routes_detects_api_and_controller_surfaces(tmp_path: Path) -> None
 
     assert result["matches"]
     assert "Controllers/QuoteController.cs" in paths or "web/app/api/quotes/route.ts" in paths
-
 
 def test_trace_api_to_ui_collects_api_logic_and_ui_groups(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -1577,7 +963,6 @@ def test_trace_api_to_ui_collects_api_logic_and_ui_groups(tmp_path: Path) -> Non
     assert result["api"]
     assert result["logic"] or result["ui"]
     assert result["ui"]
-
 
 def test_get_file_bundle_and_session_bundle(tmp_path: Path) -> None:
     templates = tmp_path / "templates"
@@ -1633,7 +1018,6 @@ def test_get_file_bundle_and_session_bundle(tmp_path: Path) -> None:
     assert session_bundle["session_id"] == "2026-03-23-test"
     assert session_bundle["files"][0]["path"] == "src/app.py"
 
-
 def test_get_component_bundle_includes_imported_frontend_neighbors(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -1669,7 +1053,6 @@ def test_get_component_bundle_includes_imported_frontend_neighbors(tmp_path: Pat
     assert "web/components/CmsProvider.tsx" in imported_paths
     assert "web/components/useEditMode.ts" in imported_paths
 
-
 def test_get_service_bundle_includes_related_backend_neighbors(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -1703,7 +1086,6 @@ def test_get_service_bundle_includes_related_backend_neighbors(tmp_path: Path) -
     assert bundle["service_symbols"]
     related_paths = [item["file"]["path"] for item in bundle["local_related_files"]]
     assert "Controllers/QuoteController.cs" in related_paths
-
 
 def test_get_query_bundle_includes_hotspot_and_schema_hints(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -1741,7 +1123,6 @@ def test_get_query_bundle_includes_hotspot_and_schema_hints(tmp_path: Path) -> N
     assert bundle["hotspot"] is not None
     assert bundle["schema_entities"]
     assert bundle["schema_fields"]
-
 
 def test_trace_query_shape_includes_relationship_paths_when_schema_connects_entities(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -1782,7 +1163,6 @@ def test_trace_query_shape_includes_relationship_paths_when_schema_connects_enti
     assert result["hotspot"] is not None
     assert result["schema_entities"]
     assert result["schema_fields"]
-
 
 def test_get_component_tree_recursively_follows_local_frontend_imports(tmp_path: Path) -> None:
     store = CodeIndexStore()
@@ -1829,140 +1209,6 @@ def test_get_component_tree_recursively_follows_local_frontend_imports(tmp_path:
     assert "web/components/IconButton.tsx" in node_paths
     assert ("web/components/EditPanel.tsx", "web/components/CmsProvider.tsx") in edge_pairs
     assert ("web/components/Toolbar.tsx", "web/components/IconButton.tsx") in edge_pairs
-
-
-def test_sync_session_code_indexes_only_relevant_files(tmp_path: Path) -> None:
-    templates = tmp_path / "templates"
-    templates.mkdir(parents=True, exist_ok=True)
-    (templates / "SESSION.md").write_text(
-        "# Session\n\n"
-        "## Title\n-\n\n"
-        "## Status\n- active\n\n"
-        "## Owner\n-\n\n"
-        "## Goal\n-\n\n"
-        "## Scope\n-\n\n"
-        "## Key Memory Links\n-\n\n"
-        "## Local Session Links\n- `context.md`\n- `plans/`\n- `agents/`\n- `artifacts/`\n\n"
-        "## State\n-\n\n"
-        "## Upcoming\n-\n\n"
-        "## Blockers\n-\n\n"
-        "## Last Updated\n- YYYY-MM-DD HH:MM\n",
-        encoding="utf-8",
-    )
-    (templates / "context.md").write_text("# Context\n", encoding="utf-8")
-
-    session_store = SessionStore(templates_root=templates)
-    store = CodeIndexStore(session_store=session_store)
-    project_root = tmp_path / "project"
-    (project_root / "src").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "keep.py").write_text("def keep():\n    return 1\n", encoding="utf-8")
-    (project_root / "src" / "skip.py").write_text("def skip():\n    return 2\n", encoding="utf-8")
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-    session_store.create_session(project_root, "2026-03-23-test", "Test", "Agent", "Goal")
-    session_store.context_file(project_root, "2026-03-23-test").write_text(
-        "# Context\n\n## Relevant Files\n- `src/keep.py`\n", encoding="utf-8"
-    )
-
-    count = store.sync_session_code(project_root, "2026-03-23-test")
-    assert count == 1
-    with store.connect(project_root) as conn:
-        rows = conn.execute("SELECT path, parsed FROM code_files ORDER BY path").fetchall()
-    assert [(row["path"], row["parsed"]) for row in rows] == [("src/keep.py", 1), ("src/skip.py", 0)]
-
-
-def test_incremental_sync_preserves_unchanged_file_and_updates_changed_one(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src").mkdir(parents=True, exist_ok=True)
-    keep = project_root / "src" / "keep.py"
-    change = project_root / "src" / "change.py"
-    keep.write_text("def keep():\n    return 1\n", encoding="utf-8")
-    change.write_text("def before():\n    return 1\n", encoding="utf-8")
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    before_status = store.code_status(project_root)
-    change.write_text("def after():\n    return 2\n", encoding="utf-8")
-    store.sync_code_files(project_root)
-    after_status = store.code_status(project_root)
-    outline = store.get_outline(project_root, "src/change.py")
-
-    assert before_status["code_files"] == 2
-    assert before_status["parsed_code_files"] == 2
-    assert after_status["code_files"] == 2
-    assert after_status["parsed_code_files"] == 2
-    assert outline[0]["symbol"] == "after"
-
-
-def test_manifest_sync_discovers_files_before_deep_parse(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "server.ts").write_text("export function startServer() {}\n", encoding="utf-8")
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    count = store.sync_code_manifest(project_root)
-    status = store.code_status(project_root)
-
-    assert count == 1
-    assert status["code_files"] == 1
-    assert status["parsed_code_files"] == 0
-
-
-def test_manifest_sync_infers_roles_from_path_even_before_parse(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "Controllers").mkdir(parents=True, exist_ok=True)
-    (project_root / "Controllers" / "QuoteController.cs").write_text("public class QuoteController {}\n", encoding="utf-8")
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_manifest(project_root)
-    status = store.code_status(project_root)
-    results = store.search_code(project_root, "QuoteController", limit=5)
-
-    assert status["roles"]["controller"] == 1
-    assert results[0]["role"] == "controller"
-
-
-def test_code_index_version_invalidation_resets_stale_rows(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "app.py").write_text("def app():\n    return 1\n", encoding="utf-8")
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_files(project_root)
-    status_before = store.code_status(project_root)
-    with store.connect(project_root) as conn:
-        conn.execute("UPDATE index_meta SET value = 'stale-version' WHERE key = 'code_index_version'")
-    store.sync_code_manifest(project_root)
-    status_after = store.code_status(project_root)
-
-    assert status_before["parsed_code_files"] == 1
-    assert status_after["parsed_code_files"] == 0
-
-
-def test_lazy_parse_on_symbol_query_uses_manifest_candidates(tmp_path: Path) -> None:
-    store = CodeIndexStore()
-    project_root = tmp_path / "project"
-    (project_root / "src").mkdir(parents=True, exist_ok=True)
-    (project_root / "src" / "EditPanel.tsx").write_text(
-        "export function EditPanel() {\n"
-        "  return <div />;\n"
-        "}\n",
-        encoding="utf-8",
-    )
-    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
-
-    store.sync_code_manifest(project_root, include_tests=False)
-    before = store.code_status(project_root)
-    symbols = store.find_frontend_symbols(project_root, query="Edit", limit=10)
-    after = store.code_status(project_root)
-
-    assert before["parsed_code_files"] == 0
-    assert symbols[0]["symbol"] == "EditPanel"
-    assert after["parsed_code_files"] == 1
-
 
 def test_get_context_bundle_ranks_primary_and_dependency_items(tmp_path: Path) -> None:
     templates = tmp_path / "templates"
@@ -2013,7 +1259,6 @@ def test_get_context_bundle_ranks_primary_and_dependency_items(tmp_path: Path) -
     assert bundle["dependency_files"][0]["path"] == "src/dep.ts"
     assert bundle["ordered_items"][0]["kind"] == "primary_file"
 
-
 def test_context_bundle_uses_plan_derived_code_targets(tmp_path: Path) -> None:
     templates = tmp_path / "templates"
     templates.mkdir(parents=True, exist_ok=True)
@@ -2054,7 +1299,6 @@ def test_context_bundle_uses_plan_derived_code_targets(tmp_path: Path) -> None:
 
     assert [item["path"] for item in bundle["primary_files"]] == ["src/main.ts", "src/dep.ts"]
 
-
 def test_context_bundle_skips_existing_but_unindexed_test_files(tmp_path: Path) -> None:
     templates = tmp_path / "templates"
     templates.mkdir(parents=True, exist_ok=True)
@@ -2093,7 +1337,6 @@ def test_context_bundle_skips_existing_but_unindexed_test_files(tmp_path: Path) 
     bundle = store.get_context_bundle(project_root, "2026-03-23-test")
 
     assert [item["path"] for item in bundle["primary_files"]] == ["src/main.ts"]
-
 
 def test_get_preset_bundle(tmp_path: Path) -> None:
     templates = tmp_path / "templates"

@@ -366,3 +366,136 @@ class SessionStore:
 
     def _format_claim_line(self, claim: dict[str, object]) -> str:
         return f"- `{claim['agent_id']} | {claim['run_id']} | {claim['mode']} | {claim['last_seen']}`"
+
+    # ── Session journal ──────────────────────────────────────────────
+
+    JOURNAL_FILENAME = "journal.md"
+
+    @staticmethod
+    def _journal_config() -> tuple[int, int, set[str], int]:
+        """Load journal config from aidocs.toml (cached at import time)."""
+        from .config import JOURNAL_MAX_ENTRIES, JOURNAL_EVICT_BATCH, JOURNAL_TRIVIAL_ACTIONS, JOURNAL_MIN_INTENT_LENGTH
+        return JOURNAL_MAX_ENTRIES, JOURNAL_EVICT_BATCH, JOURNAL_TRIVIAL_ACTIONS, JOURNAL_MIN_INTENT_LENGTH
+
+    def journal_path(self, project_root: Path, session_id: str) -> Path:
+        return self.session_path(project_root, session_id) / self.JOURNAL_FILENAME
+
+    def journal_archive_path(self, project_root: Path, session_id: str) -> Path:
+        return project_root / ".MEMORY" / "archive" / "sessions" / session_id / "journal-archive.md"
+
+    def read_journal(self, project_root: Path, session_id: str, last_n: int | None = None) -> list[dict[str, str]]:
+        """Read journal entries. Returns list of {timestamp, intent, outcome, action_kind}."""
+        path = self.journal_path(project_root, session_id)
+        if not path.is_file():
+            return []
+        entries: list[dict[str, str]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            parsed = self._parse_journal_line(line)
+            if parsed:
+                entries.append(parsed)
+        if last_n is not None:
+            entries = entries[-last_n:]
+        return entries
+
+    def write_journal_entry(
+        self,
+        project_root: Path,
+        session_id: str,
+        action_kind: str,
+        intent: str,
+        outcome: str,
+        max_entries: int | None = None,
+    ) -> dict[str, object]:
+        """Append a journal entry. Auto-evicts oldest entries to archive when full.
+
+        Returns {logged: bool, evicted: int, reason: str}.
+        """
+        max_ent, evict_batch, trivial_actions, min_intent_len = self._journal_config()
+
+        # Significance filter — skip trivial actions
+        if action_kind in trivial_actions:
+            return {"logged": False, "evicted": 0, "reason": f"trivial action: {action_kind}"}
+
+        # Skip very short intents (greetings, single-word commands)
+        clean_intent = intent.strip()
+        if len(clean_intent) < min_intent_len:
+            return {"logged": False, "evicted": 0, "reason": "intent too short"}
+
+        limit = max_entries or max_ent
+        path = self.journal_path(project_root, session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Read existing entries
+        existing_lines: list[str] = []
+        if path.is_file():
+            existing_lines = [l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+        # Evict if at capacity
+        evicted = 0
+        if len(existing_lines) >= limit:
+            evicted = self._evict_journal_entries(project_root, session_id, existing_lines)
+            # Re-read after eviction
+            existing_lines = [l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+        # Append new entry
+        timestamp = self._timestamp()
+        # Truncate intent and outcome to keep entries concise
+        short_intent = clean_intent[:120].replace("|", "/").replace("\n", " ")
+        short_outcome = outcome.strip()[:120].replace("|", "/").replace("\n", " ")
+        entry_line = f"- `{timestamp} | {action_kind} | {short_intent} | {short_outcome}`"
+
+        existing_lines.append(entry_line)
+        path.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
+
+        return {"logged": True, "evicted": evicted, "reason": "ok"}
+
+    def _evict_journal_entries(
+        self,
+        project_root: Path,
+        session_id: str,
+        lines: list[str],
+    ) -> int:
+        """Move oldest entries to archive. Returns number evicted."""
+        _, evict_batch, _, _ = self._journal_config()
+        batch = min(evict_batch, len(lines))
+        if batch <= 0:
+            return 0
+
+        to_archive = lines[:batch]
+        remaining = lines[batch:]
+
+        # Compress archived entries: group by date, keep just the count + key intents
+        archive_path = self.journal_archive_path(project_root, session_id)
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Append raw entries to archive (they're already concise 1-liners)
+        existing_archive = ""
+        if archive_path.is_file():
+            existing_archive = archive_path.read_text(encoding="utf-8")
+        archive_block = "\n".join(to_archive)
+        archive_path.write_text(
+            (existing_archive.rstrip() + "\n" + archive_block + "\n").lstrip(),
+            encoding="utf-8",
+        )
+
+        # Rewrite journal with remaining entries
+        journal_path = self.journal_path(project_root, session_id)
+        journal_path.write_text("\n".join(remaining) + "\n" if remaining else "", encoding="utf-8")
+
+        return batch
+
+    def _parse_journal_line(self, line: str) -> dict[str, str] | None:
+        """Parse a journal line: ``- `timestamp | action_kind | intent | outcome` ``."""
+        stripped = line.strip()
+        if not stripped.startswith("- `") or not stripped.endswith("`"):
+            return None
+        inner = stripped[3:-1]
+        parts = inner.split(" | ", 3)
+        if len(parts) < 4:
+            return None
+        return {
+            "timestamp": parts[0].strip(),
+            "action_kind": parts[1].strip(),
+            "intent": parts[2].strip(),
+            "outcome": parts[3].strip(),
+        }

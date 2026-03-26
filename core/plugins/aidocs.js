@@ -6,6 +6,38 @@ const GUARDED_TOOLS = new Set(["read", "edit", "write", "glob", "grep", "bash", 
 const COMMANDS_DIR = path.join(__dirname, "..", ".commands")
 
 let _cachedActionTokens = null
+let _pluginConfig = null
+
+function loadPluginConfig() {
+  if (_pluginConfig) {
+    return _pluginConfig
+  }
+  const defaults = {
+    inject_message_directives: true,
+    directive_style: "short",
+  }
+  const candidates = [
+    path.join(__dirname, "aidocs-plugin.json"),
+    path.join(__dirname, "..", "..", "aidocs-plugin.json"),
+  ]
+  const aidocsPath = process.env.AIDOCS_PATH
+  if (aidocsPath) {
+    candidates.push(path.join(aidocsPath, "aidocs-plugin.json"))
+  }
+  for (const candidate of candidates) {
+    try {
+      if (fsSync.existsSync(candidate)) {
+        const raw = JSON.parse(fsSync.readFileSync(candidate, "utf8"))
+        _pluginConfig = { ...defaults, ...raw }
+        return _pluginConfig
+      }
+    } catch {
+      // ignore
+    }
+  }
+  _pluginConfig = defaults
+  return _pluginConfig
+}
 
 function readAidocsSourceRoot() {
   const agentsPath = path.join(__dirname, "..", "AGENTS.md")
@@ -20,13 +52,23 @@ function readAidocsSourceRoot() {
 
 function resolveActionTokensDir() {
   const candidates = [
-    path.join(__dirname, "..", "..", "mcp", "server", "aidocs_mcp", "action_tokens"),
+    // Colocated with plugin (installed by installer next to aidocs.js)
+    path.join(__dirname, "action_tokens"),
+    // Dev: project root action_tokens/
+    path.join(__dirname, "..", "..", "action_tokens"),
   ]
+
+  // From AIDOCS_PATH env var (set by installer)
+  const aidocsPath = process.env.AIDOCS_PATH
+  if (aidocsPath) {
+    candidates.push(path.join(aidocsPath, "action_tokens"))
+  }
 
   const sourceRoot = readAidocsSourceRoot()
   if (sourceRoot) {
+    candidates.push(path.join(sourceRoot, "..", "action_tokens"))
+    // Legacy: inside MCP package
     candidates.push(path.join(sourceRoot, "mcp", "server", "aidocs_mcp", "action_tokens"))
-    candidates.push(path.join(sourceRoot, "server", "aidocs_mcp", "action_tokens"))
   }
 
   for (const candidate of candidates) {
@@ -52,9 +94,18 @@ function loadActionTokens() {
     return _cachedActionTokens
   }
   const merged = new Map()
+  // Filter by configured languages
+  const config = loadPluginConfig()
+  const langEnabled = (config.languages_enabled || "all").toLowerCase().trim()
+  const enabledSet = langEnabled === "all" ? null : new Set(langEnabled.split(",").map((s) => s.trim()).filter(Boolean))
+
   let files
   try {
-    files = fsSync.readdirSync(actionTokensDir).filter((f) => f.endsWith(".yaml")).sort()
+    files = fsSync.readdirSync(actionTokensDir).filter((f) => {
+      if (!f.endsWith(".yaml")) return false
+      if (enabledSet && !enabledSet.has(f.replace(".yaml", ""))) return false
+      return true
+    }).sort()
   } catch {
     _cachedActionTokens = []
     return _cachedActionTokens
@@ -260,16 +311,26 @@ function buildPromptContext(state, promptText, activeCommand, activeCommandMeta)
   const parts = [
     "AIDOCS-managed mode is active for this project.",
     state.sessionID ? `Bound session: \`${state.sessionID}\`.` : "",
-    `AIDOCS suggests action kind: \`${classification.action_kind}\` (advisory — use your judgment if the classification seems wrong).`,
-    "Prefer session-guided memory and MCP-first workflows when they materially improve retrieval, routing, or task lifecycle handling.",
-    "When MCP/runtime responses include a top-level `report`, prefer it for default user-facing summaries.",
-    "Use `readiness_summary` only when compact structured state helps, and use deeper payloads only for advanced inspection.",
-    "For edit tasks, maintain `task_begin` and `task_complete` discipline.",
+    `Action: \`${classification.action_kind}\`.`,
+    "MANDATORY: Use AIDOCS MCP tools FIRST. Fall back to raw Read/Grep only if MCP returns empty.",
   ].filter(Boolean)
   if (workflowSummary) {
     parts.push(`Compiled workflow actions: ${workflowSummary}.`)
   }
   return parts.join(" ")
+}
+
+const ACTION_TOOL_DIRECTIVES = {
+  edit: "`task_begin` → `code_get_outline` → `code_search_symbols` → Edit → `task_complete`. CSS: add `code_trace_css_class`. API: add `code_trace_api_to_ui`. DB: add `schema_get_entity`.",
+  trace: "`code_find_references` (usages) → `code_trace_field_flow` (cross-layer) → `code_trace_css_class` (CSS+HTML). DB: `schema_trace_relationship_path`. API→UI: `code_trace_api_to_ui`.",
+  understand: "`code_get_outline` (structure) → `code_search_symbols` (find) → `code_get_symbol_snippet` (read). Broad: `code_get_subsystem_bundle`. DB: `schema_get_entity`.",
+  read_error: "`code_search_symbols` (find failing symbol) → `code_find_references` (trace) → `code_get_symbol_snippet` (read method). DB: add `schema_get_entity`.",
+  investigate: "`code_get_subsystem_bundle` (broad) → narrow with `code_find_mutation_points` / `code_find_validation_surfaces` / `code_find_policy_surfaces`. Or: `code_investigate` for guided plan.",
+  inspect: "`code_get_outline` → `code_get_dependencies` / `code_find_dependents` → `code_get_modules`. Read only after narrowing.",
+}
+
+function getActionDirective(actionKind) {
+  return ACTION_TOOL_DIRECTIVES[actionKind] || ""
 }
 
 function buildAidocsExecutionPrompt() {
@@ -292,6 +353,7 @@ function normalizeCommandName(command) {
 async function AIDOCSPlugin(input) {
   const projectRoot = input.worktree || input.directory
   const sessionPromptContext = new Map()
+  const sessionClassification = new Map()
   const activeCommandBySession = new Map()
   const activeCommandMetaBySession = new Map()
 
@@ -328,8 +390,14 @@ async function AIDOCSPlugin(input) {
       const context = buildPromptContext(state, promptText, activeCommand, activeCommandMeta)
       if (context) {
         sessionPromptContext.set(sessionID, context)
+        // Store classification for message transform injection
+        if (state.managed) {
+          const cls = classifyPromptAction(promptText)
+          sessionClassification.set(sessionID, cls.action_kind)
+        }
       } else {
         sessionPromptContext.delete(sessionID)
+        sessionClassification.delete(sessionID)
       }
     },
 
@@ -342,11 +410,6 @@ async function AIDOCSPlugin(input) {
     },
 
     "experimental.chat.messages.transform": async ({ sessionID }, output) => {
-      // Rewrite the user message when /aidocs was sent as plain text.
-      // This hook reliably mutates messages before they reach the LLM.
-      if (activeCommandBySession.get(sessionID) !== "aidocs") {
-        return
-      }
       if (!Array.isArray(output.messages)) {
         return
       }
@@ -354,10 +417,34 @@ async function AIDOCSPlugin(input) {
       if (!last || !Array.isArray(last.parts)) {
         return
       }
-      const text = extractPromptText(last.parts)
-      if (text.trim().replace(/^\//, "").toLowerCase().startsWith("aidocs")) {
-        last.parts = [{ type: "text", text: buildAidocsExecutionPrompt() }]
+
+      // Rewrite the user message when /aidocs was sent as plain text.
+      if (activeCommandBySession.get(sessionID) === "aidocs") {
+        const text = extractPromptText(last.parts)
+        if (text.trim().replace(/^\//, "").toLowerCase().startsWith("aidocs")) {
+          last.parts = [{ type: "text", text: buildAidocsExecutionPrompt() }]
+        }
+        return
       }
+
+      // Inject action-specific tool directive into the last user message.
+      // This is more effective than system prompt alone — closer to model attention.
+      const config = loadPluginConfig()
+      if (!config.inject_message_directives) {
+        return
+      }
+      const actionKind = sessionClassification.get(sessionID)
+      if (!actionKind) {
+        return
+      }
+      const directive = getActionDirective(actionKind)
+      if (!directive) {
+        return
+      }
+      last.parts.push({
+        type: "text",
+        text: `\n<tool-directive action="${actionKind}">\n${directive}\n</tool-directive>`,
+      })
     },
 
     "command.execute.before": async ({ command, sessionID }, output) => {
@@ -442,5 +529,8 @@ module.exports = {
     resolveActionTokensDir,
     loadActionTokens,
     classifyPromptAction,
+    getActionDirective,
+    ACTION_TOOL_DIRECTIVES,
+    loadPluginConfig,
   },
 }

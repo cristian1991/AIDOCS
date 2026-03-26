@@ -1,0 +1,33 @@
+# AIDOCS MCP Configuration
+# Edit this file to customize AIDOCS behavior. Changes take effect on MCP server restart.
+
+[journal]
+# Maximum journal entries per session before eviction kicks in
+max_entries = 100
+# How many oldest entries to archive when journal is full
+evict_batch = 20
+# Action kinds too trivial to journal (comma-separated)
+trivial_actions = "task_begin, task_update, project_update"
+# Minimum intent length to be journaled (filters greetings, single words)
+min_intent_length = 10
+
+[index]
+# Directories to never descend into during code indexing (comma-separated)
+# These are in addition to the built-in skip list (.git, node_modules, dist, etc.)
+extra_skip_dirs = ""
+# Directories that hint at being a project module (comma-separated)
+# These are in addition to the built-in hint list (app, cli, core, lib, etc.)
+extra_module_hints = ""
+# Maximum JSON file size in bytes before skipping (0 = no limit)
+max_json_size = 100000
+
+[languages]
+# Which language files to load for prompt classification (comma-separated, no .yaml extension)
+# Examples: "en" (English only, fastest), "en, it" (English + Italian), "all" (every .yaml)
+enabled = "all"
+
+[agent]
+# How action directives are delivered: "short" (3-step chains) or "detailed" (full lists)
+directive_style = "short"
+# Whether to inject tool directives into user messages (OpenCode only)
+inject_message_directives = true

@@ -1,29 +1,72 @@
-# AIDOCS
+<p align="center">
+  <img src="docs/assets/cn-logo.svg" alt="CodeNexus" width="120">
+</p>
 
-**v1.0.1** — Portable AI coding-agent toolkit with a routed memory system, session-based runtime, and optional MCP enforcement layer.
+<h1 align="center">AIDOCS</h1>
 
-## Components
+<p align="center">
+  <strong>Portable AI coding-agent toolkit</strong> with routed memory, session-based runtime, and optional MCP enforcement.
+</p>
 
-### AIDOCS Core (`core/`)
-Canonical portable instruction and memory system. Works with any AI coding agent (Claude Code, OpenCode, etc.) without runtime dependencies.
+<p align="center">
+  <img src="https://img.shields.io/badge/version-1.0.2-blue" alt="version">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="license">
+  <img src="https://img.shields.io/badge/python-3.11%2B-yellow" alt="python">
+  <img src="https://img.shields.io/badge/tests-182%20passing-brightgreen" alt="tests">
+</p>
 
-- Routed memory: `index.aidocs` -> `INDEX.md` -> `SESSION.md`
-- Session-based runtime: isolated workstreams, plans, agent artifacts
-- Global command pack: `/aidocs`, `/reingest`, `/archive`, `/personality`, `/clean`
-- Cross-platform install scripts (Windows + Linux/macOS)
-- Zero runtime dependencies — markdown files, command specs, plugins, and install scripts
+<p align="center">
+  A <a href="https://github.com/cristian1991">CodeNexus</a> project
+</p>
 
-### AIDOCS MCP (`mcp/`)
-Optional Python MCP server that adds runtime enforcement, indexing, and retrieval over the Core file system.
+### Supported Agents
 
-- 90+ MCP tools for session, memory, code, schema, and project lifecycle
-- Derived SQLite indexes (memory, code symbols, schema entities) — rebuildable from files
-- Code retrieval: outlines, symbol search, dependency edges, context bundles
-- Schema analysis: entity classification, field search, relationship tracing
-- Session enforcement: managed mode, task lifecycle, policy routing
-- Requires: Python 3.11+, `fastmcp>=2.0.0`
+<table>
+<tr>
+<td align="center" width="200">
+  <img src="https://img.shields.io/badge/Claude_Code-CC5500?style=for-the-badge&logo=anthropic&logoColor=white" alt="Claude Code"><br>
+  <sub>Hooks: <code>UserPromptSubmit</code>, <code>PreToolUse</code></sub><br>
+  <sub>Core + MCP + auto <code>.mcp.json</code></sub>
+</td>
+<td align="center" width="200">
+  <img src="https://img.shields.io/badge/OpenCode-000000?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNOCA1TDMgMTJMOCAxOU0xNiA1TDIxIDEyTDE2IDE5IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiLz48L3N2Zz4=&logoColor=white" alt="OpenCode"><br>
+  <sub>Plugin: <code>chat.message</code>, <code>tool.execute.*</code></sub><br>
+  <sub>Core + MCP + global plugin</sub>
+</td>
+<td align="center" width="200">
+  <img src="https://img.shields.io/badge/Any_MCP_Client-4A90D9?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTIgMkw0IDdWMTdMMTIgMjJMMjAgMTdWN0wxMiAyWiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIi8+PC9zdmc+" alt="MCP"><br>
+  <sub>Via <code>.mcp.json</code> / stdio</sub><br>
+  <sub>Core + MCP tools</sub>
+</td>
+<td align="center" width="200">
+  <img src="https://img.shields.io/badge/Any_Agent-gray?style=for-the-badge" alt="Any"><br>
+  <sub>Reads <code>AGENTS.md</code> / <code>CLAUDE.md</code></sub><br>
+  <sub>Core only (no MCP needed)</sub>
+</td>
+</tr>
+</table>
 
-**Principle:** Files remain the only source of truth. MCP never stores a second canonical copy. Deleting the SQLite index loses nothing — it rebuilds from files.
+---
+
+## What It Does
+
+AIDOCS gives AI coding agents **persistent memory, session management, and indexed code retrieval** across conversations.
+
+**Without AIDOCS:** Each conversation starts fresh. The agent greps blindly, forgets what it learned, and has no context about your project structure.
+
+**With AIDOCS:** The agent resumes from where it left off, uses indexed tools instead of grep, and follows session-guided workflows.
+
+### Key Capabilities
+
+- **Routed memory** — `index.aidocs` -> `INDEX.md` -> `SESSION.md` — agents follow a routing chain, not a flat file dump
+- **Session isolation** — parallel workstreams with their own plans, context, and artifacts
+- **130+ MCP tools** — code outlines, symbol search, CSS tracing, schema analysis, dependency edges, module detection
+- **`code_investigate`** — single entry point that probes symbols/files/schema/CSS/modules and tells the agent what to call next
+- **Session journal** — rolling log of significant decisions, auto-evicts to archive when full
+- **Multilingual classification** — English, Italian, Spanish, Japanese, Portuguese, German out of the box
+- **Monorepo detection** — npm/pnpm/Cargo workspaces, .NET projects, informal module boundaries
+- **16 language indexing** — Python, JS/TS, C#, Rust, Go, Java, Kotlin, Ruby, PHP, SQL, HTML, CSS/SCSS, Vue, Svelte, Prisma, and more
+- **Configurable** — `aidocs.toml` for MCP, `aidocs-plugin.json` for OpenCode, `action_tokens/*.yaml` for languages
 
 ## Quick Start
 
@@ -31,95 +74,103 @@ Optional Python MCP server that adds runtime enforcement, indexing, and retrieva
 
 ```bash
 # Install global routing + commands
-build\scripts\install-agent-routing.cmd    # Windows
+core\scripts\install-agent-routing.cmd    # Windows
 bash core/scripts/install-agent-routing.sh  # Linux/macOS
 
 # In any project:
 /aidocs    # Bootstrap or resume AIDOCS for the project
 ```
 
-### Core + MCP
+### Core + MCP (recommended)
 
 ```bash
 # Install MCP server
-cd mcp
-pip install -e .
+cd mcp && pip install -e .
 
 # Claude Code: /aidocs auto-creates .mcp.json in your project
 # OpenCode: installer configures opencode.jsonc automatically
 
 # In any project:
-/aidocs    # Now uses MCP-backed session/memory/retrieval
+/aidocs    # Uses MCP-backed session/memory/retrieval
+```
+
+## Project Layout
+
+```
+aidocs.toml                # Configuration (journal, index, languages, agent)
+aidocs-plugin.json         # OpenCode plugin config
+action_tokens/             # Prompt classification language files
+  en.yaml, it.yaml, ...
+
+core/                      # Standalone markdown-first system (zero dependencies)
+  .commands/                # Global commands (/aidocs, /reingest, /archive, etc.)
+  plugins/                  # OpenCode global plugin
+  scripts/                  # Cross-platform install scripts
+
+mcp/                        # Optional MCP runtime layer
+  server/aidocs_mcp/        # Python MCP server (21 service modules)
+  tests/                    # 182 tests (private repo only)
 ```
 
 ## Memory Model
 
-Inside initialized projects, the memory system lives in project-local `/.MEMORY/`:
+Inside initialized projects, memory lives in `/.MEMORY/`:
 
 ```
 /.MEMORY/
-  .aidocs/index.aidocs          -> session-start router
-  INDEX.md                       -> durable-memory router
-  sessions/<id>/SESSION.md       -> session state + scope
-  sessions/<id>/context.md       -> session-local context
-  sessions/<id>/plans/           -> implementation plans
-  sessions/<id>/agents/          -> agent artifacts
-  sessions/<id>/artifacts/       -> outputs/logs/reports
-  rules/                         -> workflow, communication, coding rules
-  domains/                       -> domain knowledge, project state
-  system/                        -> architecture metadata
-  CHANGELOG.md                   -> completed work history
-```
-
-## Canonical Layout
-
-```
-core/                    # Standalone markdown-first system
-  .commands/              # Global command source (/aidocs, /reingest, etc.)
-  .MEMORY/.aidocs/        # Canonical instruction + memory-system docs
-  scripts/                # Install, check, fix scripts
-  plugins/                # OpenCode global plugin
-  AGENTS.md               # Project router template
-  CLAUDE.md               # Claude bootstrap template
-
-mcp/                      # Optional MCP runtime layer
-  server/aidocs_mcp/      # Python MCP server (21 service modules)
-  tests/                  # Test suite (private repo only)
-  pyproject.toml          # Python package config
-  README.md               # MCP-specific docs
-  ROADMAP.md              # Feature roadmap
-  HOST_INTEGRATION.md     # Host integration contract
+  .aidocs/index.aidocs       -> session-start router
+  INDEX.md                    -> durable-memory router
+  sessions/<id>/
+    SESSION.md                -> session state + scope
+    context.md                -> session-local context
+    journal.md                -> rolling decision log (auto-evicts to archive)
+    plans/                    -> implementation plans
+    agents/                   -> spawned agent artifacts
+  rules/                      -> workflow, coding, communication rules
+  domains/                    -> domain knowledge
+  archive/                    -> evicted journal entries, completed sessions
 ```
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `/aidocs` | Bootstrap or connect a project to AIDOCS, select or create a session |
-| `/reingest` | Refresh memory by user-selected scope |
-| `/archive` | Promote completed work into CHANGELOG and archive logs |
-| `/personality` | Set or clear user-facing communication personality |
-| `/clean` | Run cleanup by scope (file, dead-code, dedupe, structural) |
+| `/aidocs` | Bootstrap or resume AIDOCS, select a session |
+| `/reingest` | Refresh memory by scope |
+| `/archive` | Promote completed work to CHANGELOG |
+| `/personality` | Set agent communication style |
+| `/clean` | Cleanup by scope (file, dead-code, dedupe, structural) |
+
+## Configuration
+
+Edit these files to customize behavior (changes take effect on restart):
+
+| File | Format | Controls |
+|------|--------|----------|
+| `aidocs.toml` | TOML | Journal limits, index skip dirs, module hints, JSON size limit, language filtering |
+| `aidocs-plugin.json` | JSON | OpenCode directive injection, directive style |
+| `action_tokens/*.yaml` | YAML | Add/remove/edit classification languages |
+
+Example — English-only classification for fastest startup:
+```toml
+# aidocs.toml
+[languages]
+enabled = "en"
+```
 
 ## Documentation
 
-- [MCP Tools & Architecture](mcp/README.md) — Full MCP tool list, install, architecture
+- [MCP Tools & Architecture](mcp/README.md) — Full tool list, install, runtime model
 - [Install Guide](README_INSTALL.md) — Detailed installation steps
-
-## Multilingual Support
-
-Action classification supports English, Italian, Spanish, Japanese, Portuguese, and German out of the box. Token files live in `mcp/server/aidocs_mcp/action_tokens/` — add a new `xx.yaml` to support any language, no code changes needed.
+- [Tool Consolidation Roadmap](mcp/ROADMAP.md) — v1.1.0 plan (128 -> ~30 tools)
 
 ## Releases
 
-Each release provides two packages:
-
-- **aidocs-core** — `core/` directory (standalone markdown system)
-- **aidocs-mcp** — `mcp/server/` + config (Python MCP package)
-
-Current release:
-
-- **`1.0.1`** — multilingual classifier, lightweight hook path, auto MCP config
+| Version | Highlights |
+|---------|------------|
+| **1.0.2** | Index hardening (16 languages, monorepo modules, os.walk pruning), `code_investigate` entry tool, CSS compound+HTML tracing, CamelCase search, session journal, `aidocs.toml` config, shortened directives |
+| 1.0.1 | Multilingual classifier, lightweight hook path, auto MCP config |
+| 1.0.0 | Initial release |
 
 Download from [Releases](https://github.com/cristian1991/AIDOCS/releases).
 

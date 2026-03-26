@@ -173,19 +173,38 @@ if (-not (Test-Path $opencodePluginSource)) {
 $opencodePluginTarget = Join-Path $opencodePluginsDir "aidocs.js"
 [System.IO.File]::WriteAllText($opencodePluginTarget, [System.IO.File]::ReadAllText($opencodePluginSource), $utf8NoBom)
 
-$actionTokensRoot = Join-Path $projectRoot "mcp\server\aidocs_mcp\action_tokens"
+# Copy plugin config JSON next to plugin
+$pluginConfigSource = Join-Path $projectRoot "aidocs-plugin.json"
+if (Test-Path $pluginConfigSource) {
+  Copy-Item -Path $pluginConfigSource -Destination (Join-Path $opencodePluginsDir "aidocs-plugin.json") -Force
+}
+
+# Copy action_tokens next to the plugin so it can find them at runtime
+$actionTokensRoot = Join-Path $projectRoot "action_tokens"
 if (-not (Test-Path $actionTokensRoot)) {
-  $actionTokensRoot = Join-Path $sourceRoot "server\aidocs_mcp\action_tokens"
+  $actionTokensRoot = Join-Path $projectRoot "mcp\server\aidocs_mcp\action_tokens"
 }
 if (-not (Test-Path $actionTokensRoot)) {
   throw "Missing action_tokens directory: $actionTokensRoot"
 }
 
+# Copy action_tokens next to plugin (primary runtime path)
+$pluginActionTokensDir = Join-Path $opencodePluginsDir "action_tokens"
+New-Item -ItemType Directory -Force -Path $pluginActionTokensDir | Out-Null
+Get-ChildItem -Path $pluginActionTokensDir -Filter "*.yaml" -File -ErrorAction SilentlyContinue | Remove-Item -Force
+
+$opencodeActionTokenExports = @{}
+Get-ChildItem -Path $actionTokensRoot -Filter "*.yaml" -File | ForEach-Object {
+  $target = Join-Path $pluginActionTokensDir $_.Name
+  Copy-Item -Path $_.FullName -Destination $target -Force
+  $opencodeActionTokenExports[$target] = "copy"
+}
+
+# Also maintain legacy opencode/ subdir for backward compat
 $opencodeActionTokensDir = Join-Path $actionTokensRoot "opencode"
 New-Item -ItemType Directory -Force -Path $opencodeActionTokensDir | Out-Null
 Get-ChildItem -Path $opencodeActionTokensDir -Filter "*.yaml" -File -ErrorAction SilentlyContinue | Remove-Item -Force
 
-$opencodeActionTokenExports = @{}
 Get-ChildItem -Path $actionTokensRoot -Filter "*.yaml" -File | ForEach-Object {
   $target = Join-Path $opencodeActionTokensDir $_.Name
   $mode = New-LinkOrCopy -Source $_.FullName -Target $target
@@ -335,6 +354,16 @@ foreach ($k in $claudeCopied.Keys) {
 foreach ($k in $opencodeActionTokenExports.Keys) {
   Write-Host "-" $k "(" $opencodeActionTokenExports[$k] ")"
 }
+# Set AIDOCS_PATH as a persistent user environment variable
+$currentAidocsPath = [System.Environment]::GetEnvironmentVariable("AIDOCS_PATH", "User")
+if ($currentAidocsPath -ne $projectRoot) {
+  [System.Environment]::SetEnvironmentVariable("AIDOCS_PATH", $projectRoot, "User")
+  $env:AIDOCS_PATH = $projectRoot
+  Write-Host "Set AIDOCS_PATH=$projectRoot (user env, persisted)"
+} else {
+  Write-Host "AIDOCS_PATH already set to $projectRoot"
+}
+
 Write-Host "AIDOCS source wired to:" $sourceRoot
 Write-Host "Command pack version:" $commandPackVersion
 

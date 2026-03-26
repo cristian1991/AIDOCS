@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -13,7 +14,7 @@ from .session_store import SessionStore
 class CodeIndexStore:
     """Derived SQLite index for repository code files and lightweight summaries."""
 
-    INDEX_VERSION = "code-index-v5"
+    INDEX_VERSION = "code-index-v7"
 
     def __init__(self, session_store: SessionStore | None = None) -> None:
         self.session_store = session_store
@@ -71,12 +72,23 @@ class CodeIndexStore:
                     PRIMARY KEY (source_path, target, kind)
                 );
 
+                CREATE TABLE IF NOT EXISTS code_modules (
+                    module_path TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    stack TEXT,
+                    entry_point TEXT,
+                    file_count INTEGER NOT NULL DEFAULT 0,
+                    description TEXT
+                );
+
                 """
             )
             self._ensure_column(conn, "code_files", "role", "TEXT")
             self._ensure_column(conn, "code_files", "size_bytes", "INTEGER")
             self._ensure_column(conn, "code_files", "mtime_ns", "INTEGER")
             self._ensure_column(conn, "code_files", "parsed", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "code_files", "module", "TEXT")
             self._ensure_column(conn, "code_outlines", "container", "TEXT")
             self._ensure_column(conn, "code_outlines", "is_partial", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_index_version(conn)
@@ -97,15 +109,470 @@ class CodeIndexStore:
             (self.INDEX_VERSION,),
         )
 
+    # ── Module detection ────────────────────────────────────────────────
+
+    # Manifest files that indicate a directory is a self-contained module.
+    _MODULE_MANIFESTS: dict[str, str] = {
+        "package.json": "javascript",
+        "Cargo.toml": "rust",
+        "pyproject.toml": "python",
+        "setup.py": "python",
+        "go.mod": "go",
+        "pom.xml": "java",
+        "build.gradle": "java",
+        "build.gradle.kts": "kotlin",
+        "mix.exs": "elixir",
+        "Gemfile": "ruby",
+        "composer.json": "php",
+    }
+
+    # Entry-point files that hint at a module boundary even without a manifest.
+    _ENTRY_POINT_PATTERNS: list[tuple[str, str]] = [
+        ("index.ts", "typescript"),
+        ("index.js", "javascript"),
+        ("index.tsx", "tsx"),
+        ("index.jsx", "jsx"),
+        ("main.py", "python"),
+        ("__init__.py", "python"),
+        ("main.rs", "rust"),
+        ("lib.rs", "rust"),
+        ("main.go", "go"),
+        ("mod.rs", "rust"),
+        ("Program.cs", "csharp"),
+        ("Startup.cs", "csharp"),
+        ("server.js", "javascript"),
+        ("server.ts", "typescript"),
+        ("app.js", "javascript"),
+        ("app.ts", "typescript"),
+        ("app.py", "python"),
+    ]
+
+    # Directories that are never modules even if they have entry points.
+    _MODULE_SKIP_DIRS: set[str] = {
+        "node_modules", "dist", "build", "coverage", "obj", "bin",
+        "__pycache__", ".venv", "venv", ".git", ".MEMORY", ".opencode",
+        ".claude", ".github", ".next", ".docusaurus", "vendor", "vendors",
+        "tmp", "temp", ".BACKUP", ".backups", "compiled", "target",
+    }
+
+    # Well-known top-level directory names that strongly suggest a module.
+    _MODULE_HINT_DIRS_BASE: set[str] = {
+        "app", "cli", "core", "lib", "server", "web", "website", "api",
+        "frontend", "backend", "services", "packages", "plugins", "analyzer",
+        "worker", "workers", "gateway", "proxy", "admin", "dashboard",
+        "mobile", "desktop", "console", "docs", "sdk", "engine",
+        "database-generators", "feature-generators", "framework-generators",
+        "archetypes", "templates", "schemas",
+        # Common project dirs that hold meaningful source
+        "scripts", "components", "pages", "views", "layouts",
+        "prisma", "config", "configs", "models", "entities",
+        "middleware", "hooks", "utils", "helpers", "tools",
+        "examples", "demo", "assets", "public", "static",
+        "infra", "infrastructure", "deploy", "ci",
+        "shared", "common", "internal",
+    }
+
+    def detect_modules(self, project_root: Path) -> list[dict[str, str | int | None]]:
+        """Detect logical modules in a project (formal workspaces + informal monorepo heuristics).
+
+        Returns a list of dicts with: module_path, name, kind, stack, entry_point, description.
+        """
+        modules: list[dict[str, str | int | None]] = []
+        seen: set[str] = set()
+
+        # 1. Formal workspaces (package.json workspaces, Cargo workspace members, etc.)
+        self._detect_formal_workspaces(project_root, modules, seen)
+
+        # 2. .csproj / .sln based modules (.NET)
+        self._detect_dotnet_projects(project_root, modules, seen)
+
+        # 3. Informal modules: top-level dirs with manifests or entry points
+        self._detect_informal_modules(project_root, modules, seen)
+
+        # 4. Nested workspaces: subprojects that themselves declare workspaces
+        self._detect_nested_workspaces(project_root, modules, seen)
+
+        return modules
+
+    def _detect_formal_workspaces(
+        self,
+        project_root: Path,
+        modules: list[dict[str, str | int | None]],
+        seen: set[str],
+    ) -> None:
+        """Detect npm/bun workspaces, Cargo workspaces, etc."""
+        import json as json_mod
+
+        # npm/bun/pnpm workspaces
+        pkg_json = project_root / "package.json"
+        if pkg_json.is_file():
+            try:
+                pkg = json_mod.loads(pkg_json.read_text(encoding="utf-8", errors="ignore"))
+                workspaces = pkg.get("workspaces", [])
+                if isinstance(workspaces, dict):
+                    workspaces = workspaces.get("packages", [])
+                if isinstance(workspaces, list):
+                    import glob as glob_mod
+                    for pattern in workspaces:
+                        for match in glob_mod.glob(str(project_root / pattern)):
+                            match_path = Path(match)
+                            if match_path.is_dir() and (match_path / "package.json").is_file():
+                                rel = match_path.relative_to(project_root).as_posix()
+                                if rel not in seen:
+                                    seen.add(rel)
+                                    modules.append(self._build_module_entry(
+                                        project_root, rel, "workspace", "javascript",
+                                        self._find_entry_point(match_path),
+                                    ))
+            except (json_mod.JSONDecodeError, OSError):
+                pass
+
+        # pnpm workspaces (pnpm-workspace.yaml)
+        pnpm_ws = project_root / "pnpm-workspace.yaml"
+        if pnpm_ws.is_file():
+            try:
+                text = pnpm_ws.read_text(encoding="utf-8", errors="ignore")
+                import glob as glob_mod
+                in_packages = False
+                for line in text.splitlines():
+                    stripped = line.strip()
+                    if stripped == "packages:" or stripped.startswith("packages:"):
+                        in_packages = True
+                        continue
+                    if in_packages and stripped.startswith("- "):
+                        pattern = stripped[2:].strip().strip("'\"")
+                        if pattern:
+                            for match in glob_mod.glob(str(project_root / pattern)):
+                                match_path = Path(match)
+                                if match_path.is_dir() and (match_path / "package.json").is_file():
+                                    rel = match_path.relative_to(project_root).as_posix()
+                                    if rel not in seen:
+                                        seen.add(rel)
+                                        modules.append(self._build_module_entry(
+                                            project_root, rel, "workspace", "javascript",
+                                            self._find_entry_point(match_path),
+                                        ))
+                    elif in_packages and not stripped.startswith("-") and not stripped.startswith("#"):
+                        in_packages = False
+            except OSError:
+                pass
+
+        # Cargo workspaces
+        cargo_toml = project_root / "Cargo.toml"
+        if cargo_toml.is_file():
+            try:
+                text = cargo_toml.read_text(encoding="utf-8", errors="ignore")
+                # Simple TOML parsing for workspace members
+                in_workspace = False
+                in_members = False
+                for line in text.splitlines():
+                    stripped = line.strip()
+                    if stripped == "[workspace]":
+                        in_workspace = True
+                        continue
+                    if in_workspace and stripped.startswith("members"):
+                        in_members = True
+                        continue
+                    if in_workspace and stripped.startswith("[") and stripped != "[workspace]":
+                        in_workspace = False
+                        in_members = False
+                        continue
+                    if in_members:
+                        member_match = re.match(r'\s*"([^"]+)"', stripped)
+                        if member_match:
+                            member_pattern = member_match.group(1)
+                            import glob as glob_mod
+                            for match in glob_mod.glob(str(project_root / member_pattern)):
+                                match_path = Path(match)
+                                if match_path.is_dir():
+                                    rel = match_path.relative_to(project_root).as_posix()
+                                    if rel not in seen:
+                                        seen.add(rel)
+                                        modules.append(self._build_module_entry(
+                                            project_root, rel, "workspace", "rust",
+                                            self._find_entry_point(match_path),
+                                        ))
+                        if stripped == "]":
+                            in_members = False
+            except OSError:
+                pass
+
+    def _detect_nested_workspaces(
+        self,
+        project_root: Path,
+        modules: list[dict[str, str | int | None]],
+        seen: set[str],
+    ) -> None:
+        """Check detected subprojects for their own workspace declarations (nested monorepos)."""
+        import json as json_mod
+
+        # Collect subprojects that were already found
+        subproject_paths = [m["module_path"] for m in modules if m["kind"] in ("subproject", "workspace")]
+        for sp in subproject_paths:
+            sp_dir = project_root / sp
+
+            # Check for npm/bun workspaces in nested package.json
+            pkg_json = sp_dir / "package.json"
+            if pkg_json.is_file():
+                try:
+                    pkg = json_mod.loads(pkg_json.read_text(encoding="utf-8", errors="ignore"))
+                    workspaces = pkg.get("workspaces", [])
+                    if isinstance(workspaces, dict):
+                        workspaces = workspaces.get("packages", [])
+                    if isinstance(workspaces, list) and workspaces:
+                        import glob as glob_mod
+                        for pattern in workspaces:
+                            for match in glob_mod.glob(str(sp_dir / pattern)):
+                                match_path = Path(match)
+                                if match_path.is_dir() and (match_path / "package.json").is_file():
+                                    rel = match_path.relative_to(project_root).as_posix()
+                                    if rel not in seen:
+                                        seen.add(rel)
+                                        modules.append(self._build_module_entry(
+                                            project_root, rel, "workspace", "javascript",
+                                            self._find_entry_point(match_path),
+                                        ))
+                except (json_mod.JSONDecodeError, OSError):
+                    pass
+
+            # Check for pnpm workspaces in nested pnpm-workspace.yaml
+            pnpm_ws = sp_dir / "pnpm-workspace.yaml"
+            if pnpm_ws.is_file():
+                try:
+                    text = pnpm_ws.read_text(encoding="utf-8", errors="ignore")
+                    import glob as glob_mod
+                    in_packages = False
+                    for line in text.splitlines():
+                        stripped = line.strip()
+                        if stripped == "packages:" or stripped.startswith("packages:"):
+                            in_packages = True
+                            continue
+                        if in_packages and stripped.startswith("- "):
+                            pat = stripped[2:].strip().strip("'\"")
+                            if pat:
+                                for match in glob_mod.glob(str(sp_dir / pat)):
+                                    match_path = Path(match)
+                                    if match_path.is_dir() and (match_path / "package.json").is_file():
+                                        rel = match_path.relative_to(project_root).as_posix()
+                                        if rel not in seen:
+                                            seen.add(rel)
+                                            modules.append(self._build_module_entry(
+                                                project_root, rel, "workspace", "javascript",
+                                                self._find_entry_point(match_path),
+                                            ))
+                        elif in_packages and not stripped.startswith("-") and not stripped.startswith("#"):
+                            in_packages = False
+                except OSError:
+                    pass
+
+    def _detect_dotnet_projects(
+        self,
+        project_root: Path,
+        modules: list[dict[str, str | int | None]],
+        seen: set[str],
+    ) -> None:
+        """Detect .NET projects from .csproj files (up to 3 levels deep)."""
+        for depth_pattern in ["*.csproj", "*/*.csproj", "*/*/*.csproj"]:
+            for csproj in project_root.glob(depth_pattern):
+                module_dir = csproj.parent
+                rel = module_dir.relative_to(project_root).as_posix()
+                if rel == ".":
+                    continue
+                if rel not in seen and not any(skip in rel.lower().split("/") for skip in self._MODULE_SKIP_DIRS):
+                    seen.add(rel)
+                    modules.append(self._build_module_entry(
+                        project_root, rel, "project", "csharp",
+                        csproj.relative_to(project_root).as_posix(),
+                    ))
+
+    def _detect_informal_modules(
+        self,
+        project_root: Path,
+        modules: list[dict[str, str | int | None]],
+        seen: set[str],
+    ) -> None:
+        """Detect modules from top-level directories that look like independent modules."""
+        for child in sorted(project_root.iterdir()):
+            if not child.is_dir():
+                continue
+            name_lower = child.name.lower()
+            if name_lower in self._MODULE_SKIP_DIRS or name_lower.startswith("."):
+                continue
+            rel = child.relative_to(project_root).as_posix()
+            if rel in seen:
+                continue
+
+            # Check for manifest files
+            for manifest_name, stack in self._MODULE_MANIFESTS.items():
+                manifest = child / manifest_name
+                if manifest.is_file():
+                    # Skip if this is the root package.json's node_modules or similar
+                    seen.add(rel)
+                    modules.append(self._build_module_entry(
+                        project_root, rel, "subproject", stack,
+                        self._find_entry_point(child),
+                    ))
+                    break
+
+            if rel in seen:
+                continue
+
+            # Check for entry point files
+            entry = self._find_entry_point(child)
+            if entry:
+                stack = self._stack_from_entry(entry)
+                seen.add(rel)
+                modules.append(self._build_module_entry(
+                    project_root, rel, "module", stack, entry,
+                ))
+                continue
+
+            # Check if this is a well-known module-like directory with source files
+            if name_lower in self._module_hint_dirs():
+                source_count = sum(1 for _ in child.rglob("*") if _.is_file() and self._language_for(_) is not None)
+                if source_count > 0:
+                    stack = self._guess_stack_from_dir(child)
+                    seen.add(rel)
+                    modules.append(self._build_module_entry(
+                        project_root, rel, "module", stack,
+                        self._find_entry_point(child),
+                    ))
+                    continue
+
+            # Fallback: any top-level dir with 2+ source files is an informal module
+            source_count = 0
+            checked = 0
+            for f in child.rglob("*"):
+                checked += 1
+                if checked > 500:
+                    break  # cap walk to avoid deep traversals
+                if f.is_file() and self._language_for(f) is not None:
+                    if not any(skip in f.relative_to(child).as_posix().lower().split("/") for skip in self._MODULE_SKIP_DIRS):
+                        source_count += 1
+                        if source_count >= 2:
+                            break
+            if source_count >= 2:
+                stack = self._guess_stack_from_dir(child)
+                seen.add(rel)
+                modules.append(self._build_module_entry(
+                    project_root, rel, "module", stack,
+                    self._find_entry_point(child),
+                ))
+
+    def _build_module_entry(
+        self,
+        project_root: Path,
+        rel_path: str,
+        kind: str,
+        stack: str | None,
+        entry_point: str | None,
+    ) -> dict[str, str | int | None]:
+        name = rel_path.rsplit("/", 1)[-1]
+        module_dir = project_root / rel_path
+        # Count source files (fast — no deep parsing)
+        file_count = 0
+        try:
+            for f in module_dir.rglob("*"):
+                if f.is_file() and self._language_for(f) is not None:
+                    if not self._should_skip(project_root, f, include_tests=False):
+                        file_count += 1
+        except OSError:
+            pass
+        description = self._describe_module(name, kind, stack, file_count)
+        return {
+            "module_path": rel_path,
+            "name": name,
+            "kind": kind,
+            "stack": stack,
+            "entry_point": entry_point,
+            "file_count": file_count,
+            "description": description,
+        }
+
+    def _find_entry_point(self, directory: Path) -> str | None:
+        for pattern, _ in self._ENTRY_POINT_PATTERNS:
+            candidate = directory / pattern
+            if candidate.is_file():
+                return candidate.name
+        return None
+
+    def _stack_from_entry(self, entry: str) -> str | None:
+        for pattern, stack in self._ENTRY_POINT_PATTERNS:
+            if entry == pattern:
+                return stack
+        return None
+
+    def _guess_stack_from_dir(self, directory: Path) -> str | None:
+        """Guess the primary stack of a directory by counting file extensions."""
+        counts: dict[str, int] = {}
+        try:
+            for f in directory.rglob("*"):
+                if f.is_file():
+                    lang = self._language_for(f)
+                    if lang:
+                        counts[lang] = counts.get(lang, 0) + 1
+        except OSError:
+            return None
+        if not counts:
+            return None
+        return max(counts, key=lambda k: counts[k])
+
+    def _describe_module(self, name: str, kind: str, stack: str | None, file_count: int) -> str:
+        stack_label = f" ({stack})" if stack else ""
+        return f"{kind}: {name}{stack_label}, {file_count} source files"
+
+    def sync_modules(self, project_root: Path) -> int:
+        """Detect and persist module boundaries into the code_modules table."""
+        self.init_db(project_root)
+        modules = self.detect_modules(project_root)
+        with self.connect(project_root) as conn:
+            conn.execute("DELETE FROM code_modules")
+            conn.executemany(
+                "INSERT INTO code_modules (module_path, name, kind, stack, entry_point, file_count, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (m["module_path"], m["name"], m["kind"], m["stack"], m["entry_point"], m["file_count"], m["description"])
+                    for m in modules
+                ],
+            )
+            # Reset and re-tag all code_files with their module
+            conn.execute("UPDATE code_files SET module = NULL")
+            for m in modules:
+                module_prefix = m["module_path"] + "/"
+                conn.execute(
+                    "UPDATE code_files SET module = ? WHERE path LIKE ?",
+                    (m["module_path"], module_prefix + "%"),
+                )
+        return len(modules)
+
+    def get_modules(self, project_root: Path, kind: str | None = None) -> list[dict[str, object]]:
+        """Query detected modules."""
+        self.init_db(project_root)
+        with self.connect(project_root) as conn:
+            if kind:
+                rows = conn.execute(
+                    "SELECT * FROM code_modules WHERE kind = ? ORDER BY module_path", (kind,)
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM code_modules ORDER BY module_path").fetchall()
+        return [dict(r) for r in rows]
+
+    def get_module_files(self, project_root: Path, module_path: str, limit: int = 200) -> list[dict[str, object]]:
+        """Get all indexed files belonging to a module."""
+        self.init_db(project_root)
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                "SELECT path, language, role, line_count, summary FROM code_files WHERE module = ? ORDER BY path LIMIT ?",
+                (module_path, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def sync_code_manifest(self, project_root: Path, include_tests: bool = False) -> int:
         self.init_db(project_root)
         manifest_rows: list[tuple[str, str, int, int]] = []
         seen_paths: set[str] = set()
 
-        for path in sorted(project_root.rglob("*")):
+        for path in self._walk_source_files(project_root, include_tests=include_tests):
             if not path.is_file():
-                continue
-            if self._should_skip(project_root, path, include_tests=include_tests):
                 continue
             rel = path.relative_to(project_root).as_posix()
             language = self._language_for(path)
@@ -173,10 +640,8 @@ class CodeIndexStore:
                 existing_meta[row["path"]] = dict(row)
 
         seen_paths: set[str] = set()
-        for path in sorted(project_root.rglob("*")):
+        for path in self._walk_source_files(project_root, include_tests=include_tests):
             if not path.is_file():
-                continue
-            if self._should_skip(project_root, path, include_tests=include_tests):
                 continue
             rel = path.relative_to(project_root).as_posix()
             if scoped_paths is not None and rel not in scoped_paths:
@@ -346,35 +811,91 @@ class CodeIndexStore:
             if needle:
                 self._ensure_parsed_candidates(project_root, needle, limit=limit * 4)
                 variants = self._concept_variants(needle)
-                clauses = " OR ".join(["co.symbol LIKE ? OR COALESCE(co.container, '') LIKE ?" for _ in variants])
-                params: list[object] = []
+
+                # Build multi-word CamelCase variants for priority matching
+                needle_words = needle.split()
+                priority_needles: list[str] = [needle]
+                if len(needle_words) > 1:
+                    priority_needles.append("".join(w.capitalize() for w in needle_words))
+                    priority_needles.append(needle_words[0].lower() + "".join(w.capitalize() for w in needle_words[1:]))
+                priority_needles = list(dict.fromkeys(priority_needles))  # dedupe preserving order
+
+                join_clause = "JOIN code_files cf ON cf.path = co.path" if role else ""
+                kind_filter = " AND co.kind = ?" if kind else ""
+                role_filter = " AND cf.role = ?" if role else ""
+                extra_params: list[object] = []
+                if kind:
+                    extra_params.append(kind)
+                if role:
+                    extra_params.append(role)
+
+                # Phase 1: exact/prefix matches on original needle and CamelCase joins
+                seen_keys: set[tuple[str, str, int]] = set()
+                rows: list[sqlite3.Row] = []
+
+                for pn in priority_needles:
+                    pn_params: list[object] = [f"{pn}%", f"%{pn}%"]
+                    pn_params.extend(extra_params)
+                    phase1 = conn.execute(
+                        f"""
+                        SELECT co.path, co.symbol, co.kind, co.line_number, co.container, co.is_partial
+                        FROM code_outlines co
+                        {join_clause}
+                        WHERE (co.symbol LIKE ? OR co.symbol LIKE ?){kind_filter}{role_filter}
+                        LIMIT 100
+                        """,
+                        pn_params,
+                    ).fetchall()
+                    for r in phase1:
+                        key = (r["path"], r["symbol"], r["line_number"])
+                        if key not in seen_keys:
+                            seen_keys.add(key)
+                            rows.append(r)
+
+                # Phase 2: broader variant matches to fill remaining slots
+                broad_clauses = " OR ".join(["co.symbol LIKE ? OR COALESCE(co.container, '') LIKE ?" for _ in variants])
+                broad_params: list[object] = []
                 for variant in variants:
                     pattern = f"%{variant}%"
-                    params.extend([pattern, pattern])
-                where = f"({clauses})"
+                    broad_params.extend([pattern, pattern])
+                broad_params.extend(extra_params)
+
+                phase2 = conn.execute(
+                    f"""
+                    SELECT co.path, co.symbol, co.kind, co.line_number, co.container, co.is_partial
+                    FROM code_outlines co
+                    {join_clause}
+                    WHERE ({broad_clauses}){kind_filter}{role_filter}
+                    LIMIT 500
+                    """,
+                    broad_params,
+                ).fetchall()
+                for r in phase2:
+                    key = (r["path"], r["symbol"], r["line_number"])
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        rows.append(r)
             else:
+                join_clause = "JOIN code_files cf ON cf.path = co.path" if role else ""
                 where = "1=1"
-                params = []
-
-            if kind:
-                where += " AND co.kind = ?"
-                params.append(kind)
-            if role:
-                where += " AND cf.role = ?"
-                params.append(role)
-
-            join_clause = "JOIN code_files cf ON cf.path = co.path" if role else ""
-
-            rows = conn.execute(
-                f"""
-                SELECT co.path, co.symbol, co.kind, co.line_number, co.container, co.is_partial
-                FROM code_outlines co
-                {join_clause}
-                WHERE {where}
-                LIMIT 500
-                """,
-                params,
-            ).fetchall()
+                params: list[object] = []
+                if kind:
+                    where += " AND co.kind = ?"
+                    params.append(kind)
+                if role:
+                    where += " AND cf.role = ?"
+                    params.append(role)
+                rows = conn.execute(
+                    f"""
+                    SELECT co.path, co.symbol, co.kind, co.line_number, co.container, co.is_partial
+                    FROM code_outlines co
+                    {join_clause}
+                    WHERE {where}
+                    ORDER BY co.path, co.line_number
+                    LIMIT 500
+                    """,
+                    params,
+                ).fetchall()
         ranked = []
         kind_weight = {
             "class": 30,
@@ -392,10 +913,30 @@ class CodeIndexStore:
             "field": 10,
             "enum_member": 8,
         }
+        # Pre-compute CamelCase variant of needle for multi-word scoring
+        needle_words = needle.split()
+        needle_variants_for_scoring: list[str] = [needle]
+        if len(needle_words) > 1:
+            needle_variants_for_scoring.append("".join(w.capitalize() for w in needle_words))
+            needle_variants_for_scoring.append(needle_words[0].lower() + "".join(w.capitalize() for w in needle_words[1:]))
+            needle_variants_for_scoring.append("_".join(w.lower() for w in needle_words))
+        elif any(c.isupper() for c in needle[1:]):
+            # CamelCase input — also score against space-separated words
+            camel_split = re.sub(r'([a-z])([A-Z])', r'\1 \2', needle)
+            needle_variants_for_scoring.append(camel_split.lower())
+
         for row in rows:
             score = 0
             reasons: list[str] = []
-            score += self._score_text_match(needle, row["symbol"], exact=140, prefix=100, contains=70, reasons=reasons, label="symbol")
+            # Score against all needle variants, take the best
+            best_symbol_score = 0
+            for nv in needle_variants_for_scoring:
+                nv_reasons: list[str] = []
+                s = self._score_text_match(nv, row["symbol"], exact=140, prefix=100, contains=70, reasons=nv_reasons, label="symbol")
+                if s > best_symbol_score:
+                    best_symbol_score = s
+                    reasons = nv_reasons
+            score += best_symbol_score
             score += self._score_text_match(needle, row["container"] or "", exact=35, prefix=20, contains=10, reasons=reasons, label="container")
             score += kind_weight.get(row["kind"], 0)
             if kind_weight.get(row["kind"], 0):
@@ -407,6 +948,12 @@ class CodeIndexStore:
             score += path_weight
             if path_weight:
                 reasons.append(f"path_weight:{path_weight}")
+            # For kind-only queries, boost by role relevance (services > utilities > tests)
+            if not needle:
+                role_boost = self._role_relevance_boost(project_root, str(row["path"]))
+                score += role_boost
+                if role_boost:
+                    reasons.append(f"role_boost:{role_boost}")
             score -= row["path"].count("/")
             ranked.append((score, row, reasons))
         ranked.sort(key=lambda item: (-item[0], item[1]["path"], int(item[1]["line_number"])))
@@ -416,8 +963,8 @@ class CodeIndexStore:
                 "symbol": row["symbol"],
                 "kind": row["kind"],
                 "line_number": int(row["line_number"]),
-                "container": row["container"],
-                "is_partial": bool(row["is_partial"]),
+                **({"container": row["container"]} if row["container"] else {}),
+                **({"is_partial": True} if row["is_partial"] else {}),
                 "why": reasons,
             }
             for _, row, reasons in ranked[:limit]
@@ -513,7 +1060,7 @@ class CodeIndexStore:
                 "symbol": item["symbol"],
                 "kind": item["kind"],
                 "line_number": item["line_number"],
-                "container": item["container"],
+                "container": item.get("container"),
                 "snippet": snippet["snippet"] if snippet else None,
             }
             key = (path, str(item["symbol"]), int(item["line_number"]))
@@ -636,7 +1183,7 @@ class CodeIndexStore:
                     "symbol": symbol,
                     "kind": kind,
                     "line_number": item["line_number"],
-                    "container": item["container"],
+                    "container": item.get("container"),
                     "snippet": snippet["snippet"] if snippet else None,
                 }
             )
@@ -719,7 +1266,7 @@ class CodeIndexStore:
                     "symbol": symbol,
                     "kind": kind,
                     "line_number": item["line_number"],
-                    "container": item["container"],
+                    "container": item.get("container"),
                 }
             )
 
@@ -865,7 +1412,7 @@ class CodeIndexStore:
                     "symbol": symbol,
                     "kind": item["kind"],
                     "line_number": item["line_number"],
-                    "container": item["container"],
+                    "container": item.get("container"),
                     "snippet": snippet["snippet"] if snippet else None,
                 }
             )
@@ -976,7 +1523,7 @@ class CodeIndexStore:
                     "symbol": symbol,
                     "kind": item["kind"],
                     "line_number": item["line_number"],
-                    "container": item["container"],
+                    "container": item.get("container"),
                     "snippet": snippet["snippet"] if snippet else None,
                 }
             )
@@ -1062,7 +1609,7 @@ class CodeIndexStore:
                     "symbol": symbol,
                     "kind": item["kind"],
                     "line_number": item["line_number"],
-                    "container": item["container"],
+                    "container": item.get("container"),
                     "snippet": snippet["snippet"] if snippet else None,
                 }
             )
@@ -1408,7 +1955,7 @@ class CodeIndexStore:
                     "symbol": symbol,
                     "kind": kind,
                     "line_number": item["line_number"],
-                    "container": item["container"],
+                    "container": item.get("container"),
                     "layer": self._infer_layer_from_path(path),
                     "mismatch_type": mismatch_type,
                     "snippet": snippet["snippet"] if snippet else None,
@@ -1501,7 +2048,7 @@ class CodeIndexStore:
                     "symbol": symbol,
                     "kind": item["kind"],
                     "line_number": item["line_number"],
-                    "container": item["container"],
+                    "container": item.get("container"),
                     "layer": layer,
                 }
             )
@@ -1608,7 +2155,7 @@ class CodeIndexStore:
                     "symbol": symbol,
                     "kind": kind,
                     "line_number": item["line_number"],
-                    "container": item["container"],
+                    "container": item.get("container"),
                     "snippet": snippet["snippet"] if snippet else None,
                 }
             )
@@ -1704,7 +2251,7 @@ class CodeIndexStore:
                     "symbol": symbol,
                     "kind": kind,
                     "line_number": item["line_number"],
-                    "container": item["container"],
+                    "container": item.get("container"),
                     "snippet": snippet["snippet"] if snippet else None,
                 }
             )
@@ -1795,7 +2342,7 @@ class CodeIndexStore:
                     "symbol": symbol,
                     "kind": item["kind"],
                     "line_number": item["line_number"],
-                    "container": item["container"],
+                    "container": item.get("container"),
                     "layer": layer,
                 }
             )
@@ -1825,6 +2372,110 @@ class CodeIndexStore:
         return {
             "concept": concept,
             "matches": merged[:limit],
+        }
+
+    def find_partial_consumers(self, project_root: Path, partial_name: str, limit: int = 50) -> list[dict[str, object]]:
+        """Find all files that reference a partial (via partial_ref outline kind)."""
+        self.init_db(project_root)
+        needle = partial_name.strip().lstrip("_")
+        if not needle:
+            return []
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                """
+                SELECT co.path, co.symbol, co.line_number, cf.role
+                FROM code_outlines co
+                JOIN code_files cf ON cf.path = co.path
+                WHERE co.kind = 'partial_ref' AND co.symbol LIKE ?
+                ORDER BY co.path, co.line_number
+                LIMIT ?
+                """,
+                (f"%{needle}%", limit),
+            ).fetchall()
+        return [{"path": r["path"], "symbol": r["symbol"], "line_number": r["line_number"], "role": r["role"]} for r in rows]
+
+    def find_api_consumers(self, project_root: Path, endpoint: str, limit: int = 50) -> list[dict[str, object]]:
+        """Find all files that call an API endpoint (via api_call outline kind)."""
+        self.init_db(project_root)
+        needle = endpoint.strip()
+        if not needle:
+            return []
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                """
+                SELECT co.path, co.symbol, co.line_number, cf.role
+                FROM code_outlines co
+                JOIN code_files cf ON cf.path = co.path
+                WHERE co.kind = 'api_call' AND co.symbol LIKE ?
+                ORDER BY co.path, co.line_number
+                LIMIT ?
+                """,
+                (f"%{needle}%", limit),
+            ).fetchall()
+        return [{"path": r["path"], "endpoint": r["symbol"], "line_number": r["line_number"], "role": r["role"]} for r in rows]
+
+    def trace_css_class_usage(self, project_root: Path, class_name: str, limit: int = 50) -> dict[str, object]:
+        """Find CSS class definitions AND HTML/Razor template files that likely use this class."""
+        self.init_db(project_root)
+        needle = class_name.strip()
+        if not needle:
+            return {"class_name": class_name, "definitions": [], "usages": []}
+
+        with self.connect(project_root) as conn:
+            # Definitions: from CSS outlines
+            def_rows = conn.execute(
+                "SELECT co.path, co.symbol, co.line_number FROM code_outlines co WHERE co.kind = 'css_class' AND co.symbol = ? ORDER BY co.path LIMIT ?",
+                (needle, limit),
+            ).fetchall()
+
+            # Usages: search actual file content for the class name in template files
+            template_rows = conn.execute(
+                """
+                SELECT path, language, role
+                FROM code_files
+                WHERE language IN ('razor', 'html', 'jsx', 'tsx', 'vue', 'svelte', 'javascript', 'typescript')
+                ORDER BY path
+                """,
+            ).fetchall()
+
+        usages: list[dict[str, object]] = []
+        class_pattern = re.compile(rf'(?:class(?:Name)?=[\"\'][^\"\']*\b{re.escape(needle)}\b|@class\([^)]*\b{re.escape(needle)}\b|\bAddCssClass\([^)]*{re.escape(needle)})')
+        for row in template_rows:
+            if len(usages) >= limit:
+                break
+            abs_path = project_root / row["path"]
+            if not abs_path.is_file():
+                continue
+            try:
+                text = abs_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            lines_found: list[int] = []
+            for line_num, line in enumerate(text.splitlines(), start=1):
+                if needle in line:
+                    # Match: class attributes, querySelector, string references, or CSS selectors
+                    if (class_pattern.search(line)
+                        or f'"{needle}"' in line or f"'{needle}'" in line
+                        or f".{needle}" in line or f"#{needle}" in line):
+                        lines_found.append(line_num)
+                        if len(lines_found) >= 3:
+                            break
+            if lines_found:
+                usages.append({
+                    "path": row["path"],
+                    "role": row["role"],
+                    "language": row["language"],
+                    "lines": lines_found,
+                    "count": sum(1 for line in text.splitlines() if needle in line),
+                })
+
+        # Sort by usage count descending
+        usages.sort(key=lambda u: -u.get("count", 0))
+
+        return {
+            "class_name": class_name,
+            "definitions": [{"path": r["path"], "symbol": r["symbol"], "line_number": r["line_number"]} for r in def_rows],
+            "usages": usages[:limit],
         }
 
     def find_domain_clusters(self, project_root: Path, concept: str, limit: int = 50) -> dict[str, object]:
@@ -2104,7 +2755,7 @@ class CodeIndexStore:
                     "symbol": symbol,
                     "kind": item["kind"],
                     "line_number": item["line_number"],
-                    "container": item["container"],
+                    "container": item.get("container"),
                     "snippet": snippet["snippet"] if snippet else None,
                 }
             )
@@ -2162,8 +2813,8 @@ class CodeIndexStore:
                 "symbol": row["symbol"],
                 "kind": row["kind"],
                 "line_number": int(row["line_number"]),
-                "container": row["container"],
-                "is_partial": bool(row["is_partial"]),
+                **({"container": row["container"]} if row["container"] else {}),
+                **({"is_partial": True} if row["is_partial"] else {}),
             }
             for row in rows
         ]
@@ -2189,8 +2840,8 @@ class CodeIndexStore:
                 "symbol": row["symbol"],
                 "kind": row["kind"],
                 "line_number": int(row["line_number"]),
-                "container": row["container"],
-                "is_partial": bool(row["is_partial"]),
+                **({"container": row["container"]} if row["container"] else {}),
+                **({"is_partial": True} if row["is_partial"] else {}),
             }
             for row in rows
         ]
@@ -2224,8 +2875,8 @@ class CodeIndexStore:
                 "symbol": row["symbol"],
                 "kind": row["kind"],
                 "line_number": int(row["line_number"]),
-                "container": row["container"],
-                "is_partial": bool(row["is_partial"]),
+                **({"container": row["container"]} if row["container"] else {}),
+                **({"is_partial": True} if row["is_partial"] else {}),
             }
             for row in rows
         ]
@@ -2278,8 +2929,8 @@ class CodeIndexStore:
                 "symbol": row["symbol"],
                 "kind": row["kind"],
                 "line_number": int(row["line_number"]),
-                "container": row["container"],
-                "is_partial": bool(row["is_partial"]),
+                **({"container": row["container"]} if row["container"] else {}),
+                **({"is_partial": True} if row["is_partial"] else {}),
                 "why": reasons,
             }
             for _, row, reasons in ranked[:limit]
@@ -2308,8 +2959,8 @@ class CodeIndexStore:
                 "symbol": row["symbol"],
                 "kind": row["kind"],
                 "line_number": int(row["line_number"]),
-                "container": row["container"],
-                "is_partial": bool(row["is_partial"]),
+                **({"container": row["container"]} if row["container"] else {}),
+                **({"is_partial": True} if row["is_partial"] else {}),
             }
             for row in rows
         ]
@@ -2371,8 +3022,8 @@ class CodeIndexStore:
             "symbol": row["symbol"],
             "kind": row["kind"],
             "line_number": int(row["line_number"]),
-            "container": row["container"],
-            "is_partial": bool(row["is_partial"]),
+            **({"container": row["container"]} if row["container"] else {}),
+            **({"is_partial": True} if row["is_partial"] else {}),
             "language": row["language"],
             "snippet": snippet,
         }
@@ -2440,21 +3091,136 @@ class CodeIndexStore:
         }
 
     def get_subsystem_bundle(self, project_root: Path, concept: str, limit: int = 20) -> dict[str, object]:
-        domain_cluster = self.find_domain_clusters(project_root, concept=concept, limit=limit)
-        touchpoints = self.find_ui_backend_touchpoints(project_root, concept=concept, limit=limit)
-        policy = self.find_policy_surfaces(project_root, concept=concept, limit=limit)
-        transitions = self.find_transition_points(project_root, concept=concept, limit=limit)
-        data_structures = self.find_data_structures(project_root, query=concept, limit=limit)
-        entrypoints = self.find_entrypoints(project_root, concept=concept, limit=limit)
+        # Use smaller per-category limits for a concise summary
+        cat_limit = min(limit, 8)
+
+        domain_cluster = self.find_domain_clusters(project_root, concept=concept, limit=cat_limit)
+        touchpoints = self.find_ui_backend_touchpoints(project_root, concept=concept, limit=cat_limit)
+        policy = self.find_policy_surfaces(project_root, concept=concept, limit=cat_limit)
+        transitions = self.find_transition_points(project_root, concept=concept, limit=cat_limit)
+        data_structures = self.find_data_structures(project_root, query=concept, limit=cat_limit)
+        entrypoints = self.find_entrypoints(project_root, concept=concept, limit=cat_limit)
+
+        # Strip verbose snippets and low-relevance results
+        min_score = 40
+        def slim(matches: list[dict[str, object]]) -> list[dict[str, object]]:
+            return [
+                {k: v for k, v in m.items() if k != "snippet"}
+                for m in (matches or [])
+                if int(m.get("score", 0)) >= min_score
+            ]
 
         return {
             "concept": concept,
-            "domain_cluster": domain_cluster["cluster"],
-            "touchpoints": touchpoints["matches"],
-            "policy_surfaces": policy["matches"],
-            "transition_points": transitions["matches"],
-            "data_structures": data_structures,
-            "entrypoints": entrypoints["matches"],
+            "domain_cluster": slim(domain_cluster.get("cluster", [])),
+            "touchpoints": slim(touchpoints.get("matches", [])),
+            "policy_surfaces": slim(policy.get("matches", [])),
+            "transition_points": slim(transitions.get("matches", [])),
+            "data_structures": slim(data_structures if isinstance(data_structures, list) else data_structures.get("result", [])),
+            "entrypoints": slim(entrypoints.get("matches", [])),
+        }
+
+    def investigate(self, project_root: Path, concept: str, limit: int = 5) -> dict[str, object]:
+        """High-level investigation entry point. Returns a navigation guide, not full data.
+
+        Runs quick probes across symbols, code files, schema, CSS, and modules,
+        then returns a ranked summary of what was found and which tools to call next.
+        """
+        self.init_db(project_root)
+        needle = concept.strip()
+        if not needle:
+            return {"concept": concept, "findings": [], "next_tools": []}
+
+        findings: list[dict[str, object]] = []
+        next_tools: list[dict[str, str]] = []
+
+        # 1. Symbol search — are there named symbols?
+        symbols = self.search_symbols(project_root, needle, limit=limit)
+        if symbols:
+            top_kinds = list(dict.fromkeys(s["kind"] for s in symbols))[:3]
+            findings.append({
+                "area": "symbols",
+                "count": len(symbols),
+                "top": [{"symbol": s["symbol"], "kind": s["kind"], "path": s["path"]} for s in symbols[:3]],
+                "kinds_found": top_kinds,
+            })
+            next_tools.append({"tool": "code_search_symbols", "why": f"Found {len(symbols)} symbols — search for specific names/kinds"})
+            if any(s["kind"] in ("class", "interface", "struct", "record") for s in symbols):
+                next_tools.append({"tool": "code_find_references", "why": "Trace where these types are used"})
+
+        # 2. Code files — which files mention this concept?
+        code_files = self.search_code(project_root, needle, limit=limit)
+        if code_files:
+            roles = list(dict.fromkeys(f["role"] for f in code_files))[:4]
+            findings.append({
+                "area": "files",
+                "count": len(code_files),
+                "top": [{"path": f["path"], "role": f["role"]} for f in code_files[:3]],
+                "roles_found": roles,
+            })
+            next_tools.append({"tool": "code_get_outline", "why": "Understand structure of the top files"})
+
+        # 3. Schema — any entities/fields?
+        try:
+            from .schema_index_store import SchemaIndexStore
+            schema = SchemaIndexStore()
+            entities = schema.find_schema_entities(project_root, query=needle, limit=limit)
+            fields = schema.find_schema_field(project_root, needle, limit=limit)
+            if entities:
+                findings.append({
+                    "area": "schema_entities",
+                    "count": len(entities),
+                    "top": [{"entity": e["entity_name"], "source": e.get("source_path", "").split("/")[-1]} for e in entities[:3]],
+                })
+                next_tools.append({"tool": "schema_get_entity", "why": "Get fields and relationships for matched entities"})
+            if fields:
+                findings.append({
+                    "area": "schema_fields",
+                    "count": len(fields),
+                    "top": [{"field": f["field_name"], "entity": f["entity_name"]} for f in fields[:3]],
+                })
+                next_tools.append({"tool": "schema_trace_relationship_path", "why": "Trace FK paths between entities"})
+        except Exception:
+            pass
+
+        # 4. CSS — any style definitions?
+        with self.connect(project_root) as conn:
+            css_rows = conn.execute(
+                "SELECT symbol, path FROM code_outlines WHERE kind = 'css_class' AND symbol LIKE ? LIMIT ?",
+                (f"%{needle}%", limit),
+            ).fetchall()
+        if css_rows:
+            findings.append({
+                "area": "css",
+                "count": len(css_rows),
+                "top": [{"class": r["symbol"], "path": r["path"]} for r in css_rows[:3]],
+            })
+            next_tools.append({"tool": "code_trace_css_class", "why": "Find CSS definitions + HTML/Razor template usages"})
+
+        # 5. Modules — which module owns this?
+        modules = self.get_modules(project_root)
+        matching_modules = [m for m in modules if needle.lower() in m["name"].lower() or needle.lower() in (m.get("description") or "").lower()]
+        if matching_modules:
+            findings.append({
+                "area": "modules",
+                "count": len(matching_modules),
+                "top": [{"module": m["module_path"], "kind": m["kind"], "files": m["file_count"]} for m in matching_modules[:3]],
+            })
+            next_tools.append({"tool": "code_get_module_files", "why": "List files in the matching module"})
+
+        # Deduplicate next_tools by tool name
+        seen_tools: set[str] = set()
+        unique_tools: list[dict[str, str]] = []
+        for t in next_tools:
+            if t["tool"] not in seen_tools:
+                seen_tools.add(t["tool"])
+                unique_tools.append(t)
+
+        return {
+            "concept": concept,
+            "findings": findings,
+            "next_tools": unique_tools,
+            "summary": ("Found: " + ", ".join(str(f["area"]) + "(" + str(f["count"]) + ")" for f in findings)) if findings else "No matches found.",
         }
 
     def get_dependencies(self, project_root: Path, path: str) -> list[dict[str, str]]:
@@ -2539,7 +3305,7 @@ class CodeIndexStore:
         if row["language"] == "csharp":
             seen = set()
             for item in outline:
-                if item["is_partial"] and item["symbol"] not in seen:
+                if item.get("is_partial") and item["symbol"] not in seen:
                     seen.add(item["symbol"])
                     partial_groups.append(
                         {
@@ -2956,6 +3722,81 @@ class CodeIndexStore:
             "Unknown preset. Allowed: csharp-partial, js-initializer, data-structure, session, context, dependency"
         )
 
+    # Directories to prune during os.walk — never descend into these.
+    _PRUNE_DIRS_BASE: set[str] = {
+        ".git", ".memory", ".opencode", ".claude", ".github", ".backup", ".backups",
+        "node_modules", ".next", ".docusaurus", "__pycache__", ".venv", "venv",
+        "dist", "coverage", "obj", "bin", "compiled", "vendor", "vendors",
+        "datatables", "target", "migrations", "dumps", "backups", "backup",
+        "temp", "tmp",
+    }
+
+    @classmethod
+    def _prune_dirs(cls) -> set[str]:
+        from .config import INDEX_EXTRA_SKIP_DIRS
+        return cls._PRUNE_DIRS_BASE | INDEX_EXTRA_SKIP_DIRS
+
+    @classmethod
+    def _module_hint_dirs(cls) -> set[str]:
+        from .config import INDEX_EXTRA_MODULE_HINTS
+        return cls._MODULE_HINT_DIRS_BASE | INDEX_EXTRA_MODULE_HINTS
+
+    @staticmethod
+    def _max_json_size() -> int:
+        from .config import INDEX_MAX_JSON_SIZE
+        return INDEX_MAX_JSON_SIZE
+
+    def _walk_source_files(self, project_root: Path, include_tests: bool = False) -> list[Path]:
+        """Walk the project tree with directory pruning. Much faster than rglob for large repos."""
+        results: list[Path] = []
+        root_str = str(project_root)
+        for dirpath, dirnames, filenames in os.walk(root_str):
+            # Prune directories in-place (modifying dirnames prevents os.walk from descending)
+            rel_dir = os.path.relpath(dirpath, root_str).replace("\\", "/")
+            rel_parts = rel_dir.lower().split("/") if rel_dir != "." else []
+
+            dirnames[:] = [
+                d for d in dirnames
+                if d.lower() not in self._prune_dirs()
+                and not d.startswith(".")
+                and not (d.lower() == "build" and "website" in rel_parts)
+                and not (d.lower() == "lib" and "wwwroot" in rel_parts)
+            ]
+
+            # Apply test skip at directory level
+            if not include_tests:
+                dirnames[:] = [
+                    d for d in dirnames
+                    if d.lower() not in ("tests", "test", "e2e", "__tests__", "__test__")
+                    and not d.lower().endswith(".test")
+                ]
+
+            # Skip known non-source directories
+            if any(segment in ("executed", "archived", "old", "bak", "fixtures", "sqlscripts") for segment in rel_parts):
+                dirnames.clear()
+                continue
+
+            for fname in filenames:
+                fpath = Path(dirpath) / fname
+                lower_name = fname.lower()
+                if lower_name.endswith((".min.js", ".min.css", ".bak", ".dump", ".backup")):
+                    continue
+                if lower_name in (
+                    "package-lock.json", "bun.lock", "yarn.lock", "pnpm-lock.yaml",
+                    "composer.lock", "cargo.lock", "gemfile.lock", "poetry.lock",
+                    "tsconfig.tsbuildinfo", ".eslintcache",
+                ):
+                    continue
+                # Skip large JSON files (> 100KB)
+                if lower_name.endswith(".json"):
+                    try:
+                        if fpath.stat().st_size > self._max_json_size():
+                            continue
+                    except OSError:
+                        continue
+                results.append(fpath)
+        return sorted(results)
+
     def _should_skip(self, project_root: Path, path: Path, include_tests: bool = False) -> bool:
         rel = path.relative_to(project_root).as_posix()
         prefixes = (
@@ -2996,14 +3837,35 @@ class CodeIndexStore:
                 "__pycache__",
                 ".venv",
                 "venv",
+                "target",
+                "migrations",
+                "dumps",
+                "backups",
+                "backup",
             )
         ):
+            return True
+        # Skip executed/archived SQL scripts, migration dumps, and test fixtures
+        if any(segment in ("executed", "archived", "old", "bak", "fixtures") for segment in parts):
+            return True
+        if "sqlscripts" in parts:
             return True
         if "website" in parts and "build" in parts:
             return True
         if "wwwroot" in parts and "lib" in parts:
             return True
-        if path.name.lower().endswith((".min.js", ".min.css")):
+        if path.name.lower().endswith((".min.js", ".min.css", ".bak", ".dump", ".backup")):
+            return True
+        # Skip noisy/generated data files
+        lower_name = path.name.lower()
+        if lower_name in (
+            "package-lock.json", "bun.lock", "yarn.lock", "pnpm-lock.yaml",
+            "composer.lock", "cargo.lock", "gemfile.lock", "poetry.lock",
+            "tsconfig.tsbuildinfo", ".eslintcache",
+        ):
+            return True
+        # Skip large JSON data files (> 100KB) — likely generated or data dumps
+        if lower_name.endswith(".json") and path.stat().st_size > self._max_json_size():
             return True
         if not include_tests:
             if "tests" in parts or "e2e" in parts or any(part.endswith(".test") for part in parts):
@@ -3024,10 +3886,36 @@ class CodeIndexStore:
             ".tsx": "tsx",
             ".jsx": "jsx",
             ".cs": "csharp",
+            ".rs": "rust",
+            ".go": "go",
+            ".java": "java",
+            ".kt": "kotlin",
+            ".kts": "kotlin",
+            ".rb": "ruby",
+            ".php": "php",
+            ".ex": "elixir",
+            ".exs": "elixir",
+            ".swift": "swift",
+            ".dart": "dart",
+            ".lua": "lua",
             ".sh": "shell",
+            ".bash": "shell",
             ".ps1": "powershell",
-            ".resx": "resx",
+            ".sql": "sql",
+            ".html": "html",
+            ".htm": "html",
             ".css": "css",
+            ".scss": "scss",
+            ".sass": "sass",
+            ".less": "less",
+            ".vue": "vue",
+            ".svelte": "svelte",
+            ".resx": "resx",
+            ".toml": "toml",
+            ".yaml": "yaml",
+            ".yml": "yaml",
+            ".json": "json",
+            ".prisma": "prisma",
         }
         return mapping.get(path.suffix.lower())
 
@@ -3075,6 +3963,73 @@ class CodeIndexStore:
             return self._extract_resx_outline(text)
         elif language == "css":
             return self._extract_css_outline(text)
+        elif language == "rust":
+            patterns = [
+                (r"^\s*(?:pub(?:\(crate\))?\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)", "struct"),
+                (r"^\s*(?:pub(?:\(crate\))?\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)", "enum"),
+                (r"^\s*(?:pub(?:\(crate\))?\s+)?trait\s+([A-Za-z_][A-Za-z0-9_]*)", "trait"),
+                (r"^\s*(?:pub(?:\(crate\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)", "function"),
+                (r"^\s*(?:pub(?:\(crate\))?\s+)?type\s+([A-Za-z_][A-Za-z0-9_]*)", "type_alias"),
+                (r"^\s*(?:pub(?:\(crate\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)", "module"),
+                (r"^\s*impl(?:<[^>]*>)?\s+([A-Za-z_][A-Za-z0-9_:<>]*)", "impl"),
+            ]
+        elif language == "go":
+            patterns = [
+                (r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\s+struct", "struct"),
+                (r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\s+interface", "interface"),
+                (r"^\s*func\s+(?:\([^)]*\)\s+)?([A-Za-z_][A-Za-z0-9_]*)", "function"),
+                (r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\s+", "type_alias"),
+            ]
+        elif language == "java":
+            patterns = [
+                (r"^\s*(?:public|private|protected|static|abstract|final|\s)*class\s+([A-Za-z_][A-Za-z0-9_]*)", "class"),
+                (r"^\s*(?:public|private|protected|static|abstract|final|\s)*interface\s+([A-Za-z_][A-Za-z0-9_]*)", "interface"),
+                (r"^\s*(?:public|private|protected|static|abstract|final|\s)*enum\s+([A-Za-z_][A-Za-z0-9_]*)", "enum"),
+                (r"^\s*(?:public|private|protected|static|abstract|final|synchronized|\s)+[A-Za-z_<>,\[\]?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", "method"),
+            ]
+        elif language == "kotlin":
+            patterns = [
+                (r"^\s*(?:data\s+|sealed\s+|abstract\s+|open\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)", "class"),
+                (r"^\s*(?:fun\s+)([A-Za-z_][A-Za-z0-9_]*)", "function"),
+                (r"^\s*interface\s+([A-Za-z_][A-Za-z0-9_]*)", "interface"),
+                (r"^\s*(?:enum\s+class|enum)\s+([A-Za-z_][A-Za-z0-9_]*)", "enum"),
+                (r"^\s*object\s+([A-Za-z_][A-Za-z0-9_]*)", "object"),
+            ]
+        elif language == "ruby":
+            patterns = [
+                (r"^\s*class\s+([A-Za-z_][A-Za-z0-9_:]*)", "class"),
+                (r"^\s*module\s+([A-Za-z_][A-Za-z0-9_:]*)", "module"),
+                (r"^\s*def\s+(?:self\.)?([A-Za-z_][A-Za-z0-9_!?]*)", "method"),
+            ]
+        elif language == "php":
+            patterns = [
+                (r"^\s*(?:abstract\s+|final\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)", "class"),
+                (r"^\s*interface\s+([A-Za-z_][A-Za-z0-9_]*)", "interface"),
+                (r"^\s*trait\s+([A-Za-z_][A-Za-z0-9_]*)", "trait"),
+                (r"^\s*(?:public|private|protected|static|\s)*function\s+([A-Za-z_][A-Za-z0-9_]*)", "function"),
+            ]
+        elif language == "elixir":
+            patterns = [
+                (r"^\s*defmodule\s+([A-Za-z_][A-Za-z0-9_.]*)", "module"),
+                (r"^\s*(?:def|defp)\s+([A-Za-z_][A-Za-z0-9_!?]*)", "function"),
+            ]
+        elif language in {"vue", "svelte"}:
+            # Extract script content patterns similar to JS/TS
+            patterns = [
+                (r"^\s*(?:export\s+)?(?:default\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)", "function"),
+                (r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?\(", "function"),
+                (r"^\s*(?:export\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)", "class"),
+            ]
+        elif language == "sql":
+            patterns = [
+                (r"(?i)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:\")?([A-Za-z_][A-Za-z0-9_.]*)(?:\")?", "table"),
+                (r"(?i)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:\")?([A-Za-z_][A-Za-z0-9_.]*)(?:\")?", "index"),
+                (r"(?i)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:\")?([A-Za-z_][A-Za-z0-9_.]*)(?:\")?", "view"),
+                (r"(?i)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(?:\")?([A-Za-z_][A-Za-z0-9_.]*)(?:\")?", "function"),
+            ]
+        elif language == "html":
+            # Minimal: just detect script/link references
+            patterns = []
 
         for line_number, line in enumerate(text.splitlines(), start=1):
             for pattern, kind in patterns:
@@ -3433,7 +4388,8 @@ class CodeIndexStore:
         outlines: list[tuple[str, str, int, str | None, bool]] = []
 
         # Patterns for CSS constructs
-        class_pattern = re.compile(r"^\s*\.([a-zA-Z_][a-zA-Z0-9_-]*)\s*[{,]")
+        # Match ALL class names in a selector line, not just the first
+        class_pattern = re.compile(r"\.([a-zA-Z_][a-zA-Z0-9_-]*)")
         var_pattern = re.compile(r"--([a-zA-Z][a-zA-Z0-9_-]*)\s*:")
         keyframes_pattern = re.compile(r"@keyframes\s+([a-zA-Z_][a-zA-Z0-9_-]*)")
         layer_pattern = re.compile(r"@layer\s+([a-zA-Z_][a-zA-Z0-9_-]*)")
@@ -3460,10 +4416,17 @@ class CodeIndexStore:
                 context = "theme" if in_theme else None
                 outlines.append((f"--{var_name}", "css_variable", line_number, context, False))
 
-            # Custom classes
-            m = class_pattern.match(line)
-            if m:
-                outlines.append((m.group(1), "css_class", line_number, None, False))
+            # Custom classes — extract all class names from selector lines
+            # Only match lines that look like selectors (contain { or , or start with .)
+            stripped = line.strip()
+            if stripped and not stripped.startswith("/*") and not stripped.startswith("*") and not stripped.startswith("//"):
+                if "{" in stripped or "," in stripped or stripped.startswith(".") or stripped.startswith("&"):
+                    seen_classes: set[str] = set()
+                    for m in class_pattern.finditer(stripped.split("{")[0]):
+                        cls_name = m.group(1)
+                        if cls_name not in seen_classes:
+                            seen_classes.add(cls_name)
+                            outlines.append((cls_name, "css_class", line_number, None, False))
 
             # @keyframes
             m = keyframes_pattern.search(line)
@@ -3537,6 +4500,13 @@ class CodeIndexStore:
                 m = re.search(r'Layout\s*=\s*"([^"]+)"', stripped)
                 if m:
                     edges.append((m.group(1), "layout_ref"))
+                # JS function calls: onclick="funcName(..." or funcName( in script blocks
+                for fm in re.finditer(r'onclick="([A-Za-z_][A-Za-z0-9_.]*)\s*\(', stripped):
+                    edges.append((fm.group(1), "js_call"))
+                # Script src references
+                m = re.search(r'<script\s+src="([^"]+)"', stripped)
+                if m:
+                    edges.append((m.group(1), "script_ref"))
             elif language == "resx":
                 pass  # resx files have no outgoing edges
         # dedupe preserve order
@@ -3690,6 +4660,20 @@ class CodeIndexStore:
                 ordered.append(item)
         return ordered
 
+    @staticmethod
+    def _outline_row_to_dict(row: sqlite3.Row) -> dict[str, object]:
+        """Convert an outline row to a dict, omitting falsy optional fields to reduce noise."""
+        result: dict[str, object] = {
+            "symbol": row["symbol"],
+            "kind": row["kind"],
+            "line_number": int(row["line_number"]),
+        }
+        if row["container"]:
+            result["container"] = row["container"]
+        if row["is_partial"]:
+            result["is_partial"] = True
+        return result
+
     def _score_text_match(
         self,
         needle: str,
@@ -3741,28 +4725,71 @@ class CodeIndexStore:
         if not raw:
             return []
 
-        variants = {raw, raw.lower()}
+        variants: set[str] = set()
         suffixes = ("Dto", "Model", "ViewModel", "Entity", "Service", "Controller", "Settings", "Options", "Request", "Response", "Id")
 
-        if raw.endswith("s") and len(raw) > 3:
-            variants.add(raw[:-1])
-        else:
-            variants.add(raw + "s")
+        # Split multi-word concepts into individual words and generate variants for each
+        words = raw.split()
+        tokens = [raw] if len(words) <= 1 else words + [raw]
 
-        for suffix in suffixes:
-            if raw.endswith(suffix) and len(raw) > len(suffix):
-                variants.add(raw[: -len(suffix)])
-            variants.add(raw + suffix)
+        # For multi-word queries, generate CamelCase/PascalCase/snake_case joins
+        if len(words) > 1:
+            # PascalCase: "create sql package" -> "CreateSqlPackage"
+            pascal = "".join(w.capitalize() for w in words)
+            variants.add(pascal)
+            # camelCase: "create sql package" -> "createSqlPackage"
+            camel = words[0].lower() + "".join(w.capitalize() for w in words[1:])
+            variants.add(camel)
+            # snake_case: "create sql package" -> "create_sql_package"
+            snake = "_".join(w.lower() for w in words)
+            variants.add(snake)
+            # kebab-case: "create sql package" -> "create-sql-package"
+            kebab = "-".join(w.lower() for w in words)
+            variants.add(kebab)
+            # Also add partial CamelCase combos for subsets
+            for i in range(len(words)):
+                for j in range(i + 2, len(words) + 1):
+                    sub = "".join(w.capitalize() for w in words[i:j])
+                    variants.add(sub)
 
-        if raw.startswith("Is") and len(raw) > 2:
-            variants.add(raw[2:])
-        else:
-            variants.add("Is" + raw[:1].upper() + raw[1:])
+        # For CamelCase input, also split into words for broader matching
+        if len(words) == 1 and any(c.isupper() for c in raw[1:]):
+            # Split CamelCase: "CreateSqlPackage" -> ["Create", "Sql", "Package"]
+            camel_words = re.sub(r'([a-z])([A-Z])', r'\1 \2', raw).split()
+            if len(camel_words) > 1:
+                for cw in camel_words:
+                    variants.add(cw)
+                    variants.add(cw.lower())
+                # Also add partial CamelCase combos
+                for i in range(len(camel_words)):
+                    for j in range(i + 2, len(camel_words) + 1):
+                        sub = "".join(camel_words[i:j])
+                        variants.add(sub)
+                        variants.add(sub.lower())
 
-        if raw.startswith("Has") and len(raw) > 3:
-            variants.add(raw[3:])
-        else:
-            variants.add("Has" + raw[:1].upper() + raw[1:])
+        for token in tokens:
+            variants.add(token)
+            variants.add(token.lower())
+
+            if token.endswith("s") and len(token) > 3:
+                variants.add(token[:-1])
+            else:
+                variants.add(token + "s")
+
+            for suffix in suffixes:
+                if token.endswith(suffix) and len(token) > len(suffix):
+                    variants.add(token[: -len(suffix)])
+                variants.add(token + suffix)
+
+            if token.startswith("Is") and len(token) > 2:
+                variants.add(token[2:])
+            elif len(token) > 1:
+                variants.add("Is" + token[:1].upper() + token[1:])
+
+            if token.startswith("Has") and len(token) > 3:
+                variants.add(token[3:])
+            elif len(token) > 1:
+                variants.add("Has" + token[:1].upper() + token[1:])
 
         return [item for item in variants if item]
 
@@ -3814,6 +4841,21 @@ class CodeIndexStore:
                 score -= 60
         return score
 
+    _ROLE_RELEVANCE: dict[str, int] = {
+        "service": 25, "controller": 20, "page-model": 18, "page-view": 15,
+        "data-model": 15, "policy": 15, "partial-view": 12, "abstraction": 10,
+        "configuration": 8, "utility": 5, "script": 3, "resource": 2,
+        "asset-style": 1, "asset-style-source": 1,
+    }
+
+    def _role_relevance_boost(self, project_root: Path, path: str) -> int:
+        """Score boost based on file role — services and controllers rank highest."""
+        with self.connect(project_root) as conn:
+            row = conn.execute("SELECT role FROM code_files WHERE path = ? LIMIT 1", (path,)).fetchone()
+        if not row or not row["role"]:
+            return 0
+        return self._ROLE_RELEVANCE.get(row["role"], 0)
+
     def _load_indexing_hints(self, project_root: Path) -> dict[str, list[str]]:
         cache_key = str(project_root)
         if cache_key in self._indexing_hint_cache:
@@ -3848,18 +4890,22 @@ class CodeIndexStore:
         needle = query.strip()
         if not needle:
             return 0
-        pattern = f"%{needle}%"
+        # Split multi-word queries so each word matches independently
+        words = needle.split()
+        if len(words) > 1:
+            clauses = " OR ".join(["(path LIKE ? OR summary LIKE ?)" for _ in words])
+            params: list[object] = []
+            for word in words:
+                pattern = f"%{word}%"
+                params.extend([pattern, pattern])
+            params.append(limit)
+            sql = f"SELECT path FROM code_files WHERE parsed = 0 AND ({clauses}) ORDER BY path ASC LIMIT ?"
+        else:
+            pattern = f"%{needle}%"
+            params = [pattern, pattern, limit]
+            sql = "SELECT path FROM code_files WHERE parsed = 0 AND (path LIKE ? OR summary LIKE ?) ORDER BY path ASC LIMIT ?"
         with self.connect(project_root) as conn:
-            rows = conn.execute(
-                """
-                SELECT path
-                FROM code_files
-                WHERE parsed = 0 AND (path LIKE ? OR summary LIKE ?)
-                ORDER BY path ASC
-                LIMIT ?
-                """,
-                (pattern, pattern, limit),
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         paths = [row["path"] for row in rows]
         if not paths:
             return 0
@@ -3927,9 +4973,11 @@ class CodeIndexStore:
                 return "middleware"
             if lower.endswith((".config.js", ".config.ts", ".config.mjs", ".config.cjs")) or any(token in parts for token in ("schemas", "schema")):
                 return "config-module"
-            if lower.endswith("next-env.d.ts") or name in {"next-env", "sidebars"}:
+            if lower.endswith((".d.ts", "-env.d.ts")) or name in {"next-env", "sst-env", "env", "sidebars"}:
                 return "config-module"
-            if any(token in parts for token in ("scripts", "bin", "cli")):
+            if name in {"vite", "happydom", "vitest", "jest", "tsconfig"}:
+                return "config-module"
+            if any(token in parts for token in ("scripts", "script", "bin", "cli")):
                 return "script"
             if any(token in parts for token in ("lib", "utils", "helpers")):
                 return "utility-module"
@@ -3943,6 +4991,18 @@ class CodeIndexStore:
                 return "barrel-module"
             if name in {"types", "type", "storage", "registry", "constants", "page-key", "evidence"}:
                 return "utility-module"
+            if any(token in parts for token in ("assets", "pwaassets", "static")):
+                return "asset-script"
+            if any(token in parts for token in ("api",)):
+                return "route-handler"
+            if any(token in parts for token in ("models", "types", "entities")):
+                return "data-model"
+            if any(token in parts for token in ("services",)):
+                return "service"
+            if any(token in parts for token in ("middleware",)):
+                return "middleware"
+            if any(token in parts for token in ("workers", "worker", "jobs")):
+                return "worker"
             if "initializer" in kinds:
                 return "initializer-module"
             if "hook" in kinds and kinds <= {"hook"}:
@@ -4001,6 +5061,14 @@ class CodeIndexStore:
                 return "worker"
             if name.endswith(("dto", "model", "viewmodel", "entity")):
                 return "data-model"
+            if any(token in parts for token in ("database", "data", "dal", "persistence")):
+                return "data-access"
+            if any(token in parts for token in ("areas",)):
+                return "controller"
+            if "xtrareports" in parts or "reports" in parts:
+                return "report"
+            if "properties" in parts:
+                return "configuration"
         if language == "python":
             if lower.endswith("__init__.py"):
                 return "module-init"
@@ -4028,6 +5096,169 @@ class CodeIndexStore:
             return "script"
         if language == "shell":
             return "script"
+
+        # ── New language role inference ──────────────────────────────────
+        if language == "rust":
+            if name in ("main", "lib"):
+                return "core-module"
+            if name == "mod":
+                return "module-init"
+            if any(token in parts for token in ("tests", "benches", "examples")):
+                return "script"
+            if any(token in parts for token in ("models", "types", "schema")):
+                return "data-model"
+            if any(token in parts for token in ("utils", "helpers", "common")):
+                return "utility-module"
+            if any(token in parts for token in ("api", "handlers", "routes")):
+                return "route-handler"
+            if any(token in parts for token in ("services", "engine", "core")):
+                return "service"
+            return "core-module"
+        if language == "go":
+            if name == "main":
+                return "core-module"
+            if any(token in parts for token in ("handlers", "api", "routes")):
+                return "route-handler"
+            if any(token in parts for token in ("models", "types", "schema")):
+                return "data-model"
+            if any(token in parts for token in ("services", "pkg")):
+                return "service"
+            if any(token in parts for token in ("cmd", "cli")):
+                return "script"
+            if name.endswith("_test"):
+                return "script"
+            return "core-module"
+        if language == "java":
+            if name.endswith(("controller", "resource")):
+                return "controller"
+            if name.endswith("service") or name.endswith("serviceimpl"):
+                return "service"
+            if name.endswith(("repository", "dao")):
+                return "repository"
+            if name.endswith(("entity", "model", "dto")):
+                return "data-model"
+            if name.endswith("config") or name.endswith("configuration"):
+                return "configuration"
+            if name.endswith(("test", "spec")):
+                return "script"
+            return "core-module"
+        if language == "kotlin":
+            if name.endswith(("controller", "resource")):
+                return "controller"
+            if name.endswith("service"):
+                return "service"
+            if name.endswith(("repository", "dao")):
+                return "repository"
+            if name.endswith(("entity", "model", "dto")):
+                return "data-model"
+            return "core-module"
+        if language == "ruby":
+            if any(token in parts for token in ("controllers",)):
+                return "controller"
+            if any(token in parts for token in ("models",)):
+                return "data-model"
+            if any(token in parts for token in ("views", "templates")):
+                return "page-view"
+            if any(token in parts for token in ("services", "jobs", "workers")):
+                return "service"
+            if name.endswith("_spec") or name.endswith("_test"):
+                return "script"
+            return "core-module"
+        if language == "php":
+            if name.endswith("controller"):
+                return "controller"
+            if name.endswith("model") or any(token in parts for token in ("models", "entities")):
+                return "data-model"
+            if name.endswith("service"):
+                return "service"
+            if any(token in parts for token in ("views", "templates", "resources")):
+                return "page-view"
+            return "core-module"
+        if language == "elixir":
+            if any(token in parts for token in ("controllers",)):
+                return "controller"
+            if any(token in parts for token in ("views", "templates")):
+                return "page-view"
+            if name.endswith("_test"):
+                return "script"
+            return "core-module"
+        if language == "sql":
+            if any(token in parts for token in ("schema", "db", "database")):
+                return "data-access"
+            return "data-access"
+        if language in {"scss", "sass", "less"}:
+            if "input" in name or "tailwind" in name:
+                return "asset-style-source"
+            return "asset-style"
+        if language == "html":
+            if any(token in parts for token in ("templates", "email", "emailtemplates")):
+                return "template"
+            if "wwwroot" in parts:
+                return "asset-html"
+            return "template"
+        if language == "vue":
+            if "pages" in parts:
+                return "page"
+            if "layouts" in parts:
+                return "layout"
+            if "components" in parts:
+                return "component"
+            return "component"
+        if language == "svelte":
+            if "routes" in parts:
+                return "page"
+            if "components" in parts:
+                return "component"
+            return "component"
+        if language == "prisma":
+            return "data-access"
+        if language == "toml":
+            return "configuration"
+        if language in {"yaml", "yml"}:
+            if any(token in parts for token in ("ci", "workflows", ".github")):
+                return "configuration"
+            return "configuration"
+        if language == "json":
+            if name == "package":
+                return "configuration"
+            if name == "tsconfig" or name.endswith("config"):
+                return "configuration"
+            if name == "manifest":
+                return "configuration"
+            if any(token in parts for token in ("schemas", "archetypes")):
+                return "configuration"
+            return "data-file"
+
+        # ── Fallback path-based heuristics (any language) ───────────────
+        if any(token in parts for token in ("components", "features")):
+            return "component"
+        if any(token in parts for token in ("pages", "views")):
+            return "page"
+        if any(token in parts for token in ("layouts",)):
+            return "layout"
+        if any(token in parts for token in ("hooks",)):
+            return "hook-module"
+        if any(token in parts for token in ("services",)):
+            return "service"
+        if any(token in parts for token in ("utils", "helpers", "lib", "app_helpers")):
+            return "utility-module"
+        if any(token in parts for token in ("scripts", "bin", "cli", "tools")):
+            return "script"
+        if any(token in parts for token in ("config", "configs", "app_start", "infra")):
+            return "configuration"
+        if any(token in parts for token in ("api", "routes", "controllers")):
+            return "route-handler"
+        if any(token in parts for token in ("models", "entities", "types", "dto", "dtos")):
+            return "data-model"
+        if any(token in parts for token in ("middleware",)):
+            return "middleware"
+        if any(token in parts for token in ("worker", "workers", "jobs")):
+            return "worker"
+        if any(token in parts for token in ("examples", "demo", "demos")):
+            return "script"
+        if any(token in parts for token in ("src",)):
+            return "core-module"
+
         return None
 
     def _infer_plugin_structure_role(self, project_root: Path, path: str) -> str | None:
@@ -4075,7 +5306,8 @@ class CodeIndexStore:
         return bool(name and name[0].isupper() and any(ch.isupper() for ch in name[1:]))
 
     def _role_group(self, role: str) -> str:
-        if role in {"component", "context-provider", "hook-module", "page", "layout", "asset-script"}:
+        if role in {"component", "context-provider", "hook-module", "page", "layout", "asset-script",
+                     "page-view", "partial-view", "shared-view"}:
             return "frontend"
         if role in {"controller", "route-handler", "page-model", "hub"}:
             return "request-surfaces"
@@ -4083,7 +5315,10 @@ class CodeIndexStore:
             return "logic-runtime"
         if role in {"data-model", "data-access"}:
             return "data"
-        if role in {"initializer-module", "module-init", "config-module", "script", "utility", "utility-module", "configuration", "plugin-generator", "plugin-module", "plugin-template-module", "framework-generator", "barrel-module", "abstraction"}:
+        if role in {"initializer-module", "module-init", "config-module", "script", "utility", "utility-module",
+                     "configuration", "plugin-generator", "plugin-module", "plugin-template-module",
+                     "framework-generator", "barrel-module", "abstraction", "resource",
+                     "asset-style", "asset-style-source"}:
             return "support"
         return "unknown"
 

@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  A <a href="https://github.com/cristian1991">CodeNexus</a> project
+  A <a href="https://codenexus.cloud">CodeNexus</a> project
 </p>
 
 ### Supported Agents

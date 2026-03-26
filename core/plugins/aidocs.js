@@ -321,12 +321,12 @@ function buildPromptContext(state, promptText, activeCommand, activeCommandMeta)
 }
 
 const ACTION_TOOL_DIRECTIVES = {
-  edit: "`task_begin` → `code_get_outline` → `code_search_symbols` → Edit → `task_complete`. CSS: add `code_trace_css_class`. API: add `code_trace_api_to_ui`. DB: add `schema_get_entity`.",
-  trace: "`code_find_references` (usages) → `code_trace_field_flow` (cross-layer) → `code_trace_css_class` (CSS+HTML). DB: `schema_trace_relationship_path`. API→UI: `code_trace_api_to_ui`.",
-  understand: "`code_get_outline` (structure) → `code_search_symbols` (find) → `code_get_symbol_snippet` (read). Broad: `code_get_subsystem_bundle`. DB: `schema_get_entity`.",
-  read_error: "`code_search_symbols` (find failing symbol) → `code_find_references` (trace) → `code_get_symbol_snippet` (read method). DB: add `schema_get_entity`.",
-  investigate: "`code_get_subsystem_bundle` (broad) → narrow with `code_find_mutation_points` / `code_find_validation_surfaces` / `code_find_policy_surfaces`. Or: `code_investigate` for guided plan.",
-  inspect: "`code_get_outline` → `code_get_dependencies` / `code_find_dependents` → `code_get_modules`. Read only after narrowing.",
+  edit: '`task_begin` → `code_get_outline` → `code_find(query, mode="symbols")` → Edit → `task_complete`. CSS: `code_trace(class, mode="css_class")`. DB: `schema_query(entity, mode="entity")`.',
+  trace: '`code_find(query, mode="references")` → `code_trace(query, mode="field_flow"|"css_class"|"api_to_ui")`. DB: `schema_query("Source→Target", mode="trace_path")`.',
+  understand: '`code_get_outline` → `code_find(query, mode="symbols")` → `code_get_symbol_snippet`. Broad: `code_bundle(concept, mode="subsystem")`. DB: `schema_query(name, mode="entity")`.',
+  read_error: '`code_find(symbol, mode="symbols")` → `code_find(symbol, mode="references")` → `code_get_symbol_snippet`. DB: `schema_query(entity, mode="entity")`.',
+  investigate: '`code_investigate(concept)` for guided navigation. Or: `code_bundle(concept, mode="subsystem")` → `code_find(concept, mode="mutations"|"validation"|"policy")`.',
+  inspect: '`code_get_outline` → `code_get_dependencies` / `code_find_dependents` → `code_get_modules`. Read only after narrowing.',
 }
 
 function getActionDirective(actionKind) {

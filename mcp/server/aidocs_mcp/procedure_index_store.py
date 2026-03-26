@@ -50,20 +50,27 @@ class ProcedureIndexStore:
     def sync_procedures(self, project_root: Path, compiled_workflow: dict[str, object] | None = None) -> int:
         self.init_db(project_root)
         rows: list[tuple[str, str, str, str, str | None, str | None, str, str | None, str | None, str | None, str | None, str | None, str, str]] = []
-        workflow_path = project_root / ".MEMORY" / "rules" / "workflow.md"
+        workflow_root = project_root / ".MEMORY" / "rules"
+        rules_path = workflow_root / "workflow-rules.md"
+        actions_path = workflow_root / "workflow-actions.md"
         discovered_at = self._timestamp()
 
-        if workflow_path.is_file():
-            text = workflow_path.read_text(encoding="utf-8")
+        text_parts: list[tuple[str, str]] = []
+        if rules_path.is_file():
+            text_parts.append((".MEMORY/rules/workflow-rules.md", rules_path.read_text(encoding="utf-8")))
+        if actions_path.is_file():
+            text_parts.append((".MEMORY/rules/workflow-actions.md", actions_path.read_text(encoding="utf-8")))
+
+        for source_path, text in text_parts:
             for section_name, rule_index, rule_text in self._extract_rule_bullets(text):
                 procedure_id = f"workflow-rule:{section_name}:{rule_index}"
-                checksum = self._checksum([procedure_id, section_name, rule_text])
+                checksum = self._checksum([procedure_id, source_path, section_name, rule_text])
                 rows.append(
                     (
                         procedure_id,
                         "workflow_rule",
                         "memory_rule_file",
-                        ".MEMORY/rules/workflow.md",
+                        source_path,
                         section_name,
                         None,
                         rule_text,
@@ -78,6 +85,113 @@ class ProcedureIndexStore:
                 )
 
         compiled = compiled_workflow or {}
+        for action in compiled.get("action_definitions", []) or []:
+            if not isinstance(action, dict):
+                continue
+            procedure_id = str(action.get("id") or "").strip()
+            if not procedure_id:
+                continue
+            action_kind = self._string_or_none(action.get("kind"))
+            title = self._string_or_none(action.get("name"))
+            source_rule = self._string_or_none(action.get("source_rule"))
+            source_segment = self._string_or_none(action.get("source_segment"))
+            action_payload = {
+                key: value
+                for key, value in action.items()
+                if key not in {"id", "name", "kind", "source_rule", "source_segment"}
+            }
+            checksum = self._checksum([
+                procedure_id,
+                title or "",
+                action_kind or "",
+                source_rule or "",
+                source_segment or "",
+                json.dumps(action_payload, sort_keys=True, default=str),
+            ])
+            rows.append(
+                (
+                    procedure_id,
+                    "workflow_action_definition",
+                    "compiled_workflow_action_definition",
+                    ".MEMORY/config/workflow-actions.json",
+                    "Workflow Actions",
+                    title,
+                    source_rule or source_segment or procedure_id,
+                    None,
+                    action_kind,
+                    json.dumps(action_payload, sort_keys=True, default=str),
+                    source_rule,
+                    source_segment,
+                    checksum,
+                    discovered_at,
+                )
+            )
+
+        for rule in compiled.get("rules", []) or []:
+            if not isinstance(rule, dict):
+                continue
+            procedure_id = str(rule.get("id") or "").strip()
+            if not procedure_id:
+                continue
+            trigger = self._string_or_none(rule.get("trigger"))
+            source_rule = self._string_or_none(rule.get("source_rule"))
+            steps = [item for item in (rule.get("steps") or []) if isinstance(item, dict)]
+            checksum = self._checksum([
+                procedure_id,
+                trigger or "",
+                source_rule or "",
+                json.dumps(steps, sort_keys=True, default=str),
+            ])
+            rows.append(
+                (
+                    procedure_id,
+                    "workflow_flow",
+                    "compiled_workflow_rule",
+                    ".MEMORY/config/workflow-actions.json",
+                    "Workflow Rules",
+                    None,
+                    source_rule or procedure_id,
+                    trigger,
+                    None,
+                    json.dumps({"steps": steps}, sort_keys=True, default=str),
+                    source_rule,
+                    None,
+                    checksum,
+                    discovered_at,
+                )
+            )
+            for step in steps:
+                idx = int(step.get("index") or 0)
+                step_id = f"{procedure_id}::step::{idx:02d}"
+                action_kind = self._string_or_none(step.get("kind"))
+                source_segment = self._string_or_none(step.get("source_segment"))
+                checksum = self._checksum([
+                    step_id,
+                    procedure_id,
+                    str(idx),
+                    action_kind or "",
+                    source_segment or "",
+                    json.dumps(step, sort_keys=True, default=str),
+                ])
+                rows.append(
+                    (
+                        step_id,
+                        "workflow_flow_step",
+                        "compiled_workflow_rule_step",
+                        ".MEMORY/config/workflow-actions.json",
+                        "Workflow Rules",
+                        self._string_or_none(step.get("action_ref")) or f"step {idx}",
+                        source_segment or step_id,
+                        trigger,
+                        action_kind,
+                        json.dumps(step, sort_keys=True, default=str),
+                        source_rule,
+                        source_segment,
+                        checksum,
+                        discovered_at,
+                    )
+                )
+
         for action in compiled.get("actions", []) or []:
             if not isinstance(action, dict):
                 continue

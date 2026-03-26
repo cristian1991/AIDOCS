@@ -74,10 +74,10 @@ def test_sync_memory_files_indexes_links_and_kinds(tmp_path: Path) -> None:
         "# Index\n\n- [INDEX](../INDEX.md)\n", encoding="utf-8"
     )
     (memory_root / "INDEX.md").write_text(
-        "# Memory Index\n\n- [rule](rules/workflow.md)\n", encoding="utf-8"
+        "# Memory Index\n\n- [rule](rules/workflow-rules.md)\n", encoding="utf-8"
     )
     (memory_root / "rules").mkdir(parents=True, exist_ok=True)
-    (memory_root / "rules" / "workflow.md").write_text("- rule\n", encoding="utf-8")
+    (memory_root / "rules" / "workflow-rules.md").write_text("- rule\n", encoding="utf-8")
 
     count = store.sync_memory_files(project_root)
 
@@ -86,7 +86,7 @@ def test_sync_memory_files_indexes_links_and_kinds(tmp_path: Path) -> None:
         files = conn.execute("SELECT path, kind, title FROM memory_files ORDER BY path").fetchall()
         links = conn.execute("SELECT source_path, target_path FROM memory_links ORDER BY source_path, target_path").fetchall()
     assert (".aidocs/index.aidocs", "aidocs") in [(r["path"], r["kind"]) for r in files]
-    assert ("rules/workflow.md", "rule") in [(r["path"], r["kind"]) for r in files]
+    assert ("rules/workflow-rules.md", "rule") in [(r["path"], r["kind"]) for r in files]
     assert any(r["title"] == "Memory Index" for r in files)
     assert (".aidocs/index.aidocs", "INDEX.md") in [(r["source_path"], r["target_path"]) for r in links]
 

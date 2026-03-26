@@ -45,18 +45,43 @@ class UpdaterService:
                 "ok": False,
             }
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        import tempfile
+        import os
+        # Use temp files instead of pipes to avoid conflicts with MCP stdio transport
+        out_path = err_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".out", delete=False) as out_f:
+                out_path = out_f.name
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".err", delete=False) as err_f:
+                err_path = err_f.name
+            with open(out_path, "w") as out_fh, open(err_path, "w") as err_fh:
+                result = subprocess.run(
+                    cmd,
+                    stdout=out_fh,
+                    stderr=err_fh,
+                    text=True,
+                    check=False,
+                    timeout=60,
+                )
+            stdout = Path(out_path).read_text(encoding="utf-8", errors="ignore")
+            stderr = Path(err_path).read_text(encoding="utf-8", errors="ignore")
+        except subprocess.TimeoutExpired:
+            return {"mode": mode, "project_root": str(project_root), "exit_code": 1, "stdout": "", "stderr": "Script timed out", "ok": False}
+        except Exception as exc:
+            return {"mode": mode, "project_root": str(project_root), "exit_code": 1, "stdout": "", "stderr": str(exc), "ok": False}
+        finally:
+            for p in (out_path, err_path):
+                if p:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
         return {
             "mode": mode,
             "project_root": str(project_root),
             "exit_code": result.returncode,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
+            "stdout": stdout,
+            "stderr": stderr,
             "ok": result.returncode == 0,
         }
 

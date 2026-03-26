@@ -38,8 +38,8 @@ class MemoryStore:
 
     def _resolve_target(self, root: Path, kind: str, content: str, target_hint: str | None) -> Path:
         mapping = {
-            "rule": root / "rules" / "workflow.md",
-            "feedback": root / "rules" / "workflow.md",
+            "rule": root / "rules" / "workflow-rules.md",
+            "feedback": root / "rules" / "workflow-rules.md",
             "system": root / "system" / "architecture.md",
             "config": root / "config" / "personality.md",
             "domain": root / "domains" / "general.md",
@@ -92,7 +92,7 @@ class MemoryStore:
                 return root / "rules" / "security.md"
             if any(tok in text for tok in ("ui", "color", "theme", "design", "layout", "css", "tailwind", "font", "icon", "visual")):
                 return root / "rules" / "design.md"
-            return root / "rules" / "workflow.md"
+            return root / "rules" / "workflow-rules.md"
         if kind == "project":
             return root / "domains" / "project-state.md"
         if kind == "user":
@@ -127,7 +127,7 @@ class MemoryStore:
             "task",
         )
         if any(token in text for token in workflow_tokens):
-            return root / "rules" / "workflow.md"
+            return root / "rules" / "workflow-rules.md"
 
         return root / "domains" / "general.md"
 

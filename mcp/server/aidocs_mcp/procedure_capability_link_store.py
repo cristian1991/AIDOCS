@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,10 +62,32 @@ class ProcedureCapabilityLinkStore:
                     capability_by_alias.setdefault(normalized, item)
         rows: list[tuple[str, str, str | None, str | None, str, str, str | None, str | None, str]] = []
         for procedure in procedures:
-            if str(procedure.get("definition_kind") or "") != "workflow_action":
-                continue
+            definition_kind = str(procedure.get("definition_kind") or "")
             procedure_id = str(procedure.get("procedure_id") or "").strip()
             if not procedure_id:
+                continue
+            if definition_kind == "workflow_rule":
+                matches = self._match_rule_capabilities(
+                    str(procedure.get("body_text") or ""),
+                    capability_by_name,
+                    capability_by_alias,
+                )
+                for idx, match in enumerate(matches, start=1):
+                    rows.append(
+                        (
+                            f"{procedure_id}::rule::{idx:02d}",
+                            procedure_id,
+                            match["capability_name"],
+                            None,
+                            "procedure_mentions_capability",
+                            "resolved",
+                            match["match_basis"],
+                            None,
+                            discovered_at,
+                        )
+                    )
+                continue
+            if definition_kind != "workflow_action":
                 continue
             action_kind = str(procedure.get("action_kind") or "").strip() or None
             if action_kind and action_kind in capability_by_name:
@@ -99,19 +122,7 @@ class ProcedureCapabilityLinkStore:
                     )
                 )
                 continue
-            rows.append(
-                (
-                    f"{procedure_id}::unresolved",
-                    procedure_id,
-                    None,
-                    action_kind,
-                    "procedure_declares_capability",
-                    "unresolved",
-                    "no_matching_capability",
-                    "No indexed capability currently matches this workflow action kind.",
-                    discovered_at,
-                )
-            )
+            continue
 
         with self.connect(project_root) as conn:
             conn.execute("DELETE FROM procedure_capability_links")
@@ -173,6 +184,45 @@ class ProcedureCapabilityLinkStore:
         with self.connect(project_root) as conn:
             rows = conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
+
+    def _match_rule_capabilities(
+        self,
+        text: str,
+        capability_by_name: dict[str, dict[str, Any]],
+        capability_by_alias: dict[str, dict[str, Any]],
+    ) -> list[dict[str, str]]:
+        found: list[dict[str, str]] = []
+        seen: set[str] = set()
+
+        for token in re.findall(r"`([^`]+)`", text):
+            item = capability_by_name.get(token) or capability_by_alias.get(token)
+            if not item:
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            found.append({"capability_name": name, "match_basis": "workflow_rule_backtick_match"})
+
+        normalized = f" {text} "
+        for name in sorted(capability_by_name.keys(), key=len, reverse=True):
+            if name in seen:
+                continue
+            if not re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", normalized):
+                continue
+            seen.add(name)
+            found.append({"capability_name": name, "match_basis": "workflow_rule_text_match"})
+
+        for alias, item in sorted(capability_by_alias.items(), key=lambda pair: len(pair[0]), reverse=True):
+            name = str(item.get("name") or "").strip()
+            if not name or name in seen:
+                continue
+            if not re.search(rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])", normalized):
+                continue
+            seen.add(name)
+            found.append({"capability_name": name, "match_basis": "workflow_rule_alias_match"})
+
+        return found
 
     def _timestamp(self) -> str:
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

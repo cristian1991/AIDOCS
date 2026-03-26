@@ -37,6 +37,36 @@ write_memory:
   - 記録して
   - 忘れないで
 
+git_commit_and_push:
+  - commitしてpush
+  - commitしてからpush
+
+git_status_check:
+  - git statusを確認
+  - git statusを検証
+
+github_workflow_check:
+  - github actionsを確認
+  - github workflowを確認
+  - github workflow statusを確認
+  - workflow statusを確認
+  - actions statusを確認
+  - ci statusを確認
+
+deploy_health_check:
+  - deploy statusを確認
+  - deployment statusを確認
+  - deployment healthを確認
+  - deploy healthを確認
+  - vps statusを確認
+  - vps deploy statusを確認
+
+git_push:
+  - push
+
+git_commit:
+  - commit
+
 code_bundle:
   - コンテキスト取得
   - コード取得

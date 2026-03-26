@@ -3103,20 +3103,20 @@ class CodeIndexStore:
 
         # Strip verbose snippets and low-relevance results
         min_score = 40
-        def slim(matches: list[dict[str, object]]) -> list[dict[str, object]]:
+        def slim(matches: list[dict[str, object]], require_score: bool = True) -> list[dict[str, object]]:
             return [
                 {k: v for k, v in m.items() if k != "snippet"}
                 for m in (matches or [])
-                if int(m.get("score", 0)) >= min_score
+                if not require_score or int(m.get("score", 0)) >= min_score
             ]
 
         return {
             "concept": concept,
-            "domain_cluster": slim(domain_cluster.get("cluster", [])),
+            "domain_cluster": slim(domain_cluster.get("cluster", []), require_score=False),
             "touchpoints": slim(touchpoints.get("matches", [])),
             "policy_surfaces": slim(policy.get("matches", [])),
             "transition_points": slim(transitions.get("matches", [])),
-            "data_structures": slim(data_structures if isinstance(data_structures, list) else data_structures.get("result", [])),
+            "data_structures": slim(data_structures if isinstance(data_structures, list) else data_structures.get("result", []), require_score=False),
             "entrypoints": slim(entrypoints.get("matches", [])),
         }
 

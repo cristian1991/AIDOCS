@@ -111,8 +111,12 @@ def test_project_bootstrap_or_resume_syncs_and_selects_session(tmp_path: Path) -
     (project_root / "src").mkdir(parents=True, exist_ok=True)
     (project_root / "src" / "app.py").write_text("class App:\n    pass\n", encoding="utf-8")
     (project_root / ".MEMORY" / "rules").mkdir(parents=True, exist_ok=True)
-    (project_root / ".MEMORY" / "rules" / "workflow.md").write_text(
-        "# Workflow\n\n## Automation Rules\n- After push, check GitHub workflow status.\n",
+    (project_root / ".MEMORY" / "rules" / "workflow-actions.md").write_text(
+        "# Workflow Actions\n\n## Workflow Actions\n- ci_status: check GitHub workflow status\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY" / "rules" / "workflow-rules.md").write_text(
+        "# Workflow Rules\n\n## Workflow Rules\n- After push, ci_status.\n",
         encoding="utf-8",
     )
     hub.sessions.create_session(project_root, "2026-03-23-a", "A", "Agent", "Goal A")
@@ -129,6 +133,36 @@ def test_project_bootstrap_or_resume_syncs_and_selects_session(tmp_path: Path) -
     assert result["session"]["selected_session"]["session_id"] == "2026-03-23-a"
     assert result["sync"]["workflow"]["action_count"] == 1
     assert result["sync"]["workflow"]["actions"][0]["kind"] == "github_workflow_check"
+
+
+def test_collect_pending_workflow_prefers_ordered_rule_steps(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    hub = AidocsServiceHub(templates_root=templates)
+    runtime = RuntimeService(hub)
+    project_root = tmp_path / "project"
+    _seed_project(project_root)
+    (project_root / ".MEMORY" / "rules").mkdir(parents=True, exist_ok=True)
+    (project_root / ".MEMORY" / "rules" / "workflow-actions.md").write_text(
+        "# Workflow Actions\n\n"
+        "## Workflow Actions\n"
+        "- ci_status: check github workflow status\n"
+        "- repo_status: check git status\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY" / "rules" / "workflow-rules.md").write_text(
+        "# Workflow Rules\n\n"
+        "## Workflow Rules\n"
+        "- After push, ci_status then repo_status.\n",
+        encoding="utf-8",
+    )
+
+    hub.workflow.compile_project_rules(project_root)
+
+    summary = runtime._collect_pending_workflow("git_push", project_root)
+
+    assert "after_git_push" in summary
+    assert "ci_status then repo_status" in summary
 
 
 def test_aidocs_orchestrate_uses_session_bundle_by_default(tmp_path: Path) -> None:

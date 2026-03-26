@@ -66,8 +66,12 @@ def test_user_prompt_submit_adds_context_when_project_is_managed(tmp_path: Path)
     (project_root / "src").mkdir(parents=True, exist_ok=True)
     (project_root / "src" / "app.py").write_text("class App:\n    pass\n", encoding="utf-8")
     (project_root / ".MEMORY" / "rules").mkdir(parents=True, exist_ok=True)
-    (project_root / ".MEMORY" / "rules" / "workflow.md").write_text(
-        "# Workflow\n\n## Automation Rules\n- After push, check GitHub workflow status.\n",
+    (project_root / ".MEMORY" / "rules" / "workflow-actions.md").write_text(
+        "# Workflow Actions\n\n## Workflow Actions\n- ci_status: check GitHub workflow status\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY" / "rules" / "workflow-rules.md").write_text(
+        "# Workflow Rules\n\n## Workflow Rules\n- After push, ci_status.\n",
         encoding="utf-8",
     )
     handler.runtime.hub.sessions.create_session(project_root, "2026-03-24-a", "A", "Agent", "Goal A")
@@ -96,8 +100,12 @@ def test_user_prompt_submit_adds_context_when_project_is_managed(tmp_path: Path)
 def test_pre_tool_use_adds_context_when_project_is_managed(tmp_path: Path) -> None:
     handler, project_root = _make_handler(tmp_path)
     (project_root / ".MEMORY" / "rules").mkdir(parents=True, exist_ok=True)
-    (project_root / ".MEMORY" / "rules" / "workflow.md").write_text(
-        "# Workflow\n\n## Automation Rules\n- After each completed task, run `python tools/blink.py`.\n",
+    (project_root / ".MEMORY" / "rules" / "workflow-actions.md").write_text(
+        "# Workflow Actions\n\n## Workflow Actions\n- blink: run `python tools/blink.py`\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY" / "rules" / "workflow-rules.md").write_text(
+        "# Workflow Rules\n\n## Workflow Rules\n- After each completed task, blink.\n",
         encoding="utf-8",
     )
     handler.runtime.hub.sessions.create_session(project_root, "2026-03-24-a", "A", "Agent", "Goal A")

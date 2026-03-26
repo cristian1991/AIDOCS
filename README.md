@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.2-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.1.0-blue" alt="version">
   <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="license">
   <img src="https://img.shields.io/badge/python-3.11%2B-yellow" alt="python">
   <img src="https://img.shields.io/badge/tests-182%20passing-brightgreen" alt="tests">
@@ -168,7 +168,8 @@ enabled = "en"
 
 | Version | Highlights |
 |---------|------------|
-| **1.0.2** | Index hardening (16 languages, monorepo modules, os.walk pruning), `code_investigate` entry tool, CSS compound+HTML tracing, CamelCase search, session journal, `aidocs.toml` config, shortened directives |
+| **1.1.0** | Tool consolidation: 4 unified dispatchers (`code_find`, `code_trace`, `code_bundle`, `schema_query`), 47 legacy tools deprecated, agent directives use unified API |
+| 1.0.2 | Index hardening (16 languages, monorepo modules, os.walk pruning), `code_investigate` entry tool, CSS compound+HTML tracing, CamelCase search, session journal, `aidocs.toml` config |
 | 1.0.1 | Multilingual classifier, lightweight hook path, auto MCP config |
 | 1.0.0 | Initial release |
 

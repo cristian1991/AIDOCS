@@ -18,11 +18,11 @@ def test_compile_project_rules_writes_empty_config_when_source_missing(tmp_path:
 def test_compile_project_rules_compiles_supported_automation_rules(tmp_path: Path) -> None:
     service = WorkflowActionService()
     project_root = tmp_path / "project"
-    rules_path = project_root / ".MEMORY" / "rules" / "workflow.md"
-    rules_path.parent.mkdir(parents=True, exist_ok=True)
-    rules_path.write_text(
-        "# Workflow\n\n"
-        "## Automation Rules\n"
+    rules_dir = project_root / ".MEMORY" / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "workflow-rules.md").write_text(
+        "# Workflow Rules\n\n"
+        "## Workflow Rules\n"
         "- After each completed task, commit and push.\n"
         "- After push, check GitHub workflow status.\n"
         "- After deploy success, ssh `prod` `systemctl status app`.\n"
@@ -50,12 +50,13 @@ def test_compile_project_rules_compiles_supported_automation_rules(tmp_path: Pat
 def test_compile_project_rules_ignores_prose_outside_automation_section(tmp_path: Path) -> None:
     service = WorkflowActionService()
     project_root = tmp_path / "project"
-    rules_path = project_root / ".MEMORY" / "rules" / "workflow.md"
-    rules_path.parent.mkdir(parents=True, exist_ok=True)
-    rules_path.write_text(
+    rules_dir = project_root / ".MEMORY" / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "workflow-rules.md").write_text(
         "# Workflow\n\n"
+        "## Workflow Notes\n"
         "- Session entry order: read the router first.\n\n"
-        "## Automation Rules\n"
+        "## Workflow Rules\n"
         "- After push, check git status.\n",
         encoding="utf-8",
     )
@@ -69,11 +70,11 @@ def test_compile_project_rules_ignores_prose_outside_automation_section(tmp_path
 def test_compile_project_rules_reports_unsupported_rules(tmp_path: Path) -> None:
     service = WorkflowActionService()
     project_root = tmp_path / "project"
-    rules_path = project_root / ".MEMORY" / "rules" / "workflow.md"
-    rules_path.parent.mkdir(parents=True, exist_ok=True)
-    rules_path.write_text(
-        "# Workflow\n\n"
-        "## Automation Rules\n"
+    rules_dir = project_root / ".MEMORY" / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "workflow-rules.md").write_text(
+        "# Workflow Rules\n\n"
+        "## Workflow Rules\n"
         "- After push, order a coffee.\n",
         encoding="utf-8",
     )
@@ -83,6 +84,82 @@ def test_compile_project_rules_reports_unsupported_rules(tmp_path: Path) -> None
     assert result["action_count"] == 0
     assert result["unsupported_count"] == 1
     assert "unsupported action" in result["unsupported_rules"][0]["reason"]
+
+
+def test_compile_project_rules_matches_multilingual_workflow_tokens(tmp_path: Path) -> None:
+    service = WorkflowActionService()
+    project_root = tmp_path / "project"
+    rules_dir = project_root / ".MEMORY" / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "workflow-rules.md").write_text(
+        "# Workflow Rules\n\n"
+        "## Workflow Rules\n"
+        "- After push, verificar github workflow status.\n",
+        encoding="utf-8",
+    )
+
+    result = service.compile_project_rules(project_root)
+
+    assert result["action_count"] == 1
+    assert result["unsupported_count"] == 0
+    assert result["actions"][0]["kind"] == "github_workflow_check"
+
+
+def test_compile_project_rules_supports_separate_rule_and_action_sections(tmp_path: Path) -> None:
+    service = WorkflowActionService()
+    project_root = tmp_path / "project"
+    rules_dir = project_root / ".MEMORY" / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "workflow-actions.md").write_text(
+        "# Workflow Actions\n\n"
+        "## Workflow Actions\n"
+        "- ci_status: check github workflow status\n"
+        "- repo_status: check git status\n",
+        encoding="utf-8",
+    )
+    (rules_dir / "workflow-rules.md").write_text(
+        "# Workflow Rules\n\n"
+        "## Workflow Rules\n"
+        "- After push, ci_status then repo_status.\n",
+        encoding="utf-8",
+    )
+
+    result = service.compile_project_rules(project_root)
+    compiled = service.read_compiled(project_root)
+
+    assert result["action_definition_count"] == 2
+    assert result["rule_count"] == 1
+    assert result["action_count"] == 2
+    assert compiled is not None
+    assert [item["name"] for item in compiled["action_definitions"]] == ["ci_status", "repo_status"]
+    assert [item["kind"] for item in compiled["actions"]] == ["github_workflow_check", "git_status_check"]
+    assert [item["action_ref"] for item in compiled["actions"]] == ["ci_status", "repo_status"]
+    assert [item["action_ref"] for item in compiled["rules"][0]["steps"]] == ["ci_status", "repo_status"]
+
+
+def test_compile_project_rules_reads_split_workflow_files_first(tmp_path: Path) -> None:
+    service = WorkflowActionService()
+    project_root = tmp_path / "project"
+    rules_dir = project_root / ".MEMORY" / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "workflow-actions.md").write_text(
+        "# Workflow Actions\n\n"
+        "## Workflow Actions\n"
+        "- ci_status: check github workflow status\n",
+        encoding="utf-8",
+    )
+    (rules_dir / "workflow-rules.md").write_text(
+        "# Workflow Rules\n\n"
+        "## Workflow Rules\n"
+        "- After push, ci_status.\n",
+        encoding="utf-8",
+    )
+    result = service.compile_project_rules(project_root)
+
+    assert result["action_definition_count"] == 1
+    assert result["rule_count"] == 1
+    assert result["action_count"] == 1
+    assert result["actions"][0]["action_ref"] == "ci_status"
 
 
 # ── triggers_for_action_kind tests ───────────────────────────────────
@@ -118,9 +195,9 @@ def test_pending_actions_for_trigger_returns_matching_actions(tmp_path: Path) ->
     project_root = tmp_path / "project"
 
     (project_root / ".MEMORY" / "rules").mkdir(parents=True, exist_ok=True)
-    (project_root / ".MEMORY" / "rules" / "workflow.md").write_text(
-        "# Workflow\n\n"
-        "## Automation Rules\n"
+    (project_root / ".MEMORY" / "rules" / "workflow-rules.md").write_text(
+        "# Workflow Rules\n\n"
+        "## Workflow Rules\n"
         "- After each completed task, run `python tools/check.py`.\n"
         "- After each push, run `python tools/deploy.py`.\n",
         encoding="utf-8",
@@ -157,9 +234,9 @@ def test_status_reports_compiled_state(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
 
     (project_root / ".MEMORY" / "rules").mkdir(parents=True, exist_ok=True)
-    (project_root / ".MEMORY" / "rules" / "workflow.md").write_text(
-        "# Workflow\n\n"
-        "## Automation Rules\n"
+    (project_root / ".MEMORY" / "rules" / "workflow-rules.md").write_text(
+        "# Workflow Rules\n\n"
+        "## Workflow Rules\n"
         "- After each completed task, run `python tools/check.py`.\n",
         encoding="utf-8",
     )

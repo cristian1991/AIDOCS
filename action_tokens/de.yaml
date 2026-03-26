@@ -39,6 +39,36 @@ write_memory:
   - zum speicher hinzufuegen
   - vergiss nicht
 
+git_commit_and_push:
+  - commit und push
+  - committen und pushen
+
+git_status_check:
+  - git status pruefen
+  - git status ueberpruefen
+
+github_workflow_check:
+  - github actions pruefen
+  - github workflow pruefen
+  - github workflow status pruefen
+  - workflow status pruefen
+  - actions status pruefen
+  - ci status pruefen
+
+deploy_health_check:
+  - deploy status pruefen
+  - deployment status pruefen
+  - deployment health pruefen
+  - deploy health pruefen
+  - vps status pruefen
+  - vps deploy status pruefen
+
+git_push:
+  - push
+
+git_commit:
+  - commit
+
 code_bundle:
   - kontext abrufen
   - kontext holen

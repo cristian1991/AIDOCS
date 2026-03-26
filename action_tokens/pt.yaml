@@ -38,6 +38,36 @@ write_memory:
   - adicionar a memoria
   - guarda isso
 
+git_commit_and_push:
+  - commit e push
+  - fazer commit e push
+
+git_status_check:
+  - verificar git status
+  - checar git status
+
+github_workflow_check:
+  - verificar github actions
+  - verificar github workflow
+  - verificar github workflow status
+  - verificar workflow status
+  - verificar actions status
+  - verificar ci status
+
+deploy_health_check:
+  - verificar deploy status
+  - verificar deployment status
+  - verificar deployment health
+  - verificar deploy health
+  - verificar vps status
+  - verificar vps deploy status
+
+git_push:
+  - push
+
+git_commit:
+  - commit
+
 code_bundle:
   - recuperar contexto
   - obter contexto

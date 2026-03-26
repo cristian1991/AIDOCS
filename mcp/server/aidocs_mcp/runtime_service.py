@@ -1005,8 +1005,16 @@ class RuntimeService:
             if not triggers:
                 return ""
             pending: list[dict[str, object]] = []
+            flows: list[dict[str, object]] = []
+            compiled = self.hub.workflow.read_compiled(project_root) or {}
+            rule_defs = compiled.get("rules", []) if isinstance(compiled.get("rules"), list) else []
             for trigger in triggers:
                 pending.extend(self.hub.workflow.pending_actions_for_trigger(project_root, trigger))
+                flows.extend(
+                    item
+                    for item in rule_defs
+                    if isinstance(item, dict) and item.get("trigger") == trigger
+                )
             if not pending:
                 return ""
             # Record trigger evaluation event
@@ -1027,15 +1035,37 @@ class RuntimeService:
                             {"trigger": a.get("trigger"), "kind": a.get("kind")}
                             for a in pending[:5]
                         ],
+                        "pending_flows": [
+                            {
+                                "trigger": item.get("trigger"),
+                                "rule": item.get("source_rule"),
+                                "steps": [
+                                    step.get("action_ref") or step.get("kind")
+                                    for step in (item.get("steps") or [])[:5]
+                                    if isinstance(step, dict)
+                                ],
+                            }
+                            for item in flows[:3]
+                        ],
                     },
                 )
             except Exception as exc:
                 logger.debug("Failed to record workflow trigger evaluation event: %s", exc)
             parts = []
-            for action in pending[:3]:
-                trigger = action.get("trigger", "?")
-                kind = action.get("kind", "?")
-                parts.append(f"`{trigger} → {kind}`")
+            for item in flows[:3]:
+                trigger = item.get("trigger", "?")
+                steps = [
+                    str(step.get("action_ref") or step.get("kind") or "?")
+                    for step in (item.get("steps") or [])
+                    if isinstance(step, dict)
+                ]
+                if steps:
+                    parts.append(f"`{trigger} → {' then '.join(steps)}`")
+            if not parts:
+                for action in pending[:3]:
+                    trigger = action.get("trigger", "?")
+                    kind = action.get("action_ref") or action.get("kind", "?")
+                    parts.append(f"`{trigger} → {kind}`")
             if len(pending) > 3:
                 parts.append(f"and {len(pending) - 3} more")
             return ", ".join(parts)

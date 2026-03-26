@@ -11,6 +11,97 @@ from .runtime_service import RuntimeService
 from .service_hub import AidocsServiceHub
 
 
+_GIT_SAFE_DIR = ["-c", "safe.directory=*"]
+_GIT_TIMEOUT = 10
+_GIT_FAST_DIVERGENCE = 500
+_GIT_SAMPLE_DIVERGENCE = 1500
+
+
+def _run_git_sync(cwd: str, *args: str, timeout: int = _GIT_TIMEOUT) -> str:
+    """Run a git command synchronously using temp files (no pipes — avoids MCP stdio conflicts on Windows)."""
+    import subprocess
+    import tempfile
+    import os as _os
+    import sys as _sys
+    out_path = err_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".out", delete=False) as f:
+            out_path = f.name
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".err", delete=False) as f:
+            err_path = f.name
+        flags = 0
+        startupinfo = None
+        if _sys.platform == "win32":
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        with open(out_path, "w") as out_fh, open(err_path, "w") as err_fh:
+            result = subprocess.run(
+                ["git", *_GIT_SAFE_DIR, *args],
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=out_fh,
+                stderr=err_fh,
+                text=True,
+                timeout=timeout,
+                creationflags=flags,
+                startupinfo=startupinfo,
+                close_fds=True,
+            )
+        stdout = Path(out_path).read_text(encoding="utf-8", errors="ignore").strip()
+        stderr = Path(err_path).read_text(encoding="utf-8", errors="ignore").strip()
+    except FileNotFoundError as exc:
+        raise RuntimeError("git is not installed or not in PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"git timed out after {timeout}s") from exc
+    finally:
+        for p in (out_path, err_path):
+            if p:
+                try:
+                    _os.unlink(p)
+                except OSError:
+                    pass
+    if result.returncode != 0:
+        message = stderr or stdout or f"git exited with code {result.returncode}"
+        raise RuntimeError(message)
+    return stdout
+
+
+async def _run_git(cwd: str, *args: str, timeout: int = _GIT_TIMEOUT) -> str:
+    """Run a git command from inside an async context by offloading to a thread."""
+    import asyncio
+    from functools import partial
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, partial(_run_git_sync, cwd, *args, timeout=timeout))
+
+
+def _find_git_root(project_root: str) -> Path:
+    """Find the actual git root, walking up from project_root if needed.
+
+    Raises RuntimeError if no git repository is found.
+    """
+    import subprocess
+    root = Path(project_root)
+    if not root.is_dir():
+        raise RuntimeError(f"Directory does not exist: {project_root}")
+    try:
+        toplevel = _run_git_sync(str(root), "rev-parse", "--show-toplevel")
+        if toplevel:
+            return Path(toplevel)
+    except FileNotFoundError:
+        raise RuntimeError("git is not installed or not in PATH")
+    except Exception:
+        pass
+    # Check one level down — common for monorepos (e.g., D:/Projects/OpenCode/opencode/)
+    try:
+        for child in root.iterdir():
+            if child.is_dir() and (child / ".git").exists():
+                return child
+    except Exception:
+        pass
+    raise RuntimeError(f"No git repository found at or above: {project_root}")
+
+
 def _resolve_templates_root() -> Path:
     repo_root = Path(__file__).resolve().parents[3]
     return repo_root / "core" / ".MEMORY" / ".aidocs" / "templates"
@@ -554,29 +645,29 @@ def create_server() -> Any:
 
     @server.tool()
     def schema_find_entities(project_root: str, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-        """Find indexed schema entities such as tables, DTOs, models, and enums."""
+        """DEPRECATED: Use `schema_query(mode="entities")` instead. Find indexed schema entities such as tables, DTOs, models, and enums."""
         return hub.schema.find_schema_entities(Path(project_root), query=query, limit=limit)
 
     @server.tool()
     def schema_get_entity(project_root: str, entity_name: str) -> dict[str, Any]:
-        """Return one indexed schema/catalog entity with its fields/members."""
+        """DEPRECATED: Use `schema_query(mode="entity")` instead. Return one indexed schema/catalog entity with its fields/members."""
         return hub.schema.get_schema_entity(Path(project_root), entity_name=entity_name)
 
     @server.tool()
     def schema_find_field(project_root: str, field_name: str, limit: int = 50) -> list[dict[str, Any]]:
-        """Find indexed schema fields/columns/properties by name."""
+        """DEPRECATED: Use `schema_query(mode="field")` instead. Find indexed schema fields/columns/properties by name."""
         return hub.schema.find_schema_field(Path(project_root), field_name=field_name, limit=limit)
 
     @server.tool()
     def schema_trace_entity_flow(project_root: str, entity_name: str, limit: int = 50) -> dict[str, Any]:
-        """Trace one schema/catalog entity across schema and indexed code references."""
+        """DEPRECATED: Use `schema_query(mode="trace_flow")` instead. Trace one schema/catalog entity across schema and indexed code references."""
         return hub.schema.trace_entity_flow(Path(project_root), entity_name=entity_name, limit=limit)
 
     @server.tool()
     def schema_trace_relationship_path(
         project_root: str, source_entity: str, target_entity: str, limit: int = 20
     ) -> dict[str, Any]:
-        """Trace possible relationship paths between two schema entities."""
+        """DEPRECATED: Use `schema_query(mode="trace_path")` instead. Trace possible relationship paths between two schema entities."""
         return hub.schema.trace_relationship_path(
             Path(project_root), source_entity=source_entity, target_entity=target_entity, limit=limit
         )
@@ -639,7 +730,7 @@ def create_server() -> Any:
     def code_get_dependency_bundle(
         project_root: str, path: str, include_dependents: bool = False, limit: int = 20
     ) -> dict[str, Any]:
-        """Return a dependency-aware bundle for one indexed code file."""
+        """DEPRECATED: Use `code_bundle(mode="dependency")` instead. Return a dependency-aware bundle for one indexed code file."""
         return hub.code.get_dependency_bundle(
             Path(project_root), path=path, include_dependents=include_dependents, limit=limit
         )
@@ -652,7 +743,7 @@ def create_server() -> Any:
         role: str | None = None,
         limit: int = 25,
     ) -> list[dict[str, Any]]:
-        """Search indexed outline symbols across the codebase.
+        """DEPRECATED: Use `code_find(mode="symbols")` instead. Search indexed outline symbols across the codebase.
 
         Args:
             query: Symbol name to search for (can be empty if kind is provided).
@@ -666,77 +757,77 @@ def create_server() -> Any:
 
     @server.tool()
     def code_find_references(project_root: str, symbol: str, limit: int = 100) -> dict[str, Any]:
-        """Find exact line-level references to a symbol across indexed code files."""
+        """DEPRECATED: Use `code_find(mode="references")` instead. Find exact line-level references to a symbol across indexed code files."""
         return hub.code.find_references(Path(project_root), symbol=symbol, limit=limit)
 
     @server.tool()
     def code_trace_field_flow(project_root: str, field_name: str, limit: int = 50) -> dict[str, Any]:
-        """Trace likely cross-layer field/setting usage across the indexed codebase."""
+        """DEPRECATED: Use `code_trace(mode="field_flow")` instead. Trace likely cross-layer field/setting usage across the indexed codebase."""
         return hub.code.trace_field_flow(Path(project_root), field_name=field_name, limit=limit)
 
     @server.tool()
     def code_trace_setting_usage(project_root: str, setting_name: str, limit: int = 50) -> dict[str, Any]:
-        """Trace likely cross-layer usage of a config/setting concept."""
+        """DEPRECATED: Use `code_trace(mode="setting")` instead. Trace likely cross-layer usage of a config/setting concept."""
         return hub.code.trace_setting_usage(Path(project_root), setting_name=setting_name, limit=limit)
 
     @server.tool()
     def code_trace_service_usage(project_root: str, service_name: str, limit: int = 50) -> dict[str, Any]:
-        """Trace likely definition and usage points for a service-like concept."""
+        """DEPRECATED: Use `code_trace(mode="service")` instead. Trace likely definition and usage points for a service-like concept."""
         return hub.code.trace_service_usage(Path(project_root), service_name=service_name, limit=limit)
 
     @server.tool()
     def code_trace_model_usage(project_root: str, model_name: str, limit: int = 50) -> dict[str, Any]:
-        """Trace likely definition and usage points for a DTO/model/entity-like concept."""
+        """DEPRECATED: Use `code_trace(mode="model")` instead. Trace likely definition and usage points for a DTO/model/entity-like concept."""
         return hub.code.trace_model_usage(Path(project_root), model_name=model_name, limit=limit)
 
     @server.tool()
     def code_find_mutation_points(project_root: str, concept: str, limit: int = 50) -> dict[str, Any]:
-        """Find likely create/update/save/toggle/mutation points for a concept."""
+        """DEPRECATED: Use `code_find(mode="mutations")` instead. Find likely create/update/save/toggle/mutation points for a concept."""
         return hub.code.find_mutation_points(Path(project_root), concept=concept, limit=limit)
 
     @server.tool()
     def code_find_validation_surfaces(project_root: str, concept: str, limit: int = 50) -> dict[str, Any]:
-        """Find likely validation logic, validators, required rules, and validation-related surfaces for a concept."""
+        """DEPRECATED: Use `code_find(mode="validation")` instead. Find likely validation logic, validators, required rules, and validation-related surfaces for a concept."""
         return hub.code.find_validation_surfaces(Path(project_root), concept=concept, limit=limit)
 
     @server.tool()
     def code_find_async_boundaries(project_root: str, concept: str | None = None, limit: int = 50) -> dict[str, Any]:
-        """Find likely async, background, deferred, or queued execution boundaries."""
+        """DEPRECATED: Use `code_find(mode="async")` instead. Find likely async, background, deferred, or queued execution boundaries."""
         return hub.code.find_async_boundaries(Path(project_root), concept=concept, limit=limit)
 
     @server.tool()
     def code_find_hotspots(project_root: str, query: str | None = None, limit: int = 30) -> dict[str, Any]:
-        """Find likely complexity hotspots using generic code-index signals."""
+        """DEPRECATED: Use `code_find(mode="hotspots")` instead. Find likely complexity hotspots using generic code-index signals."""
         return hub.code.find_hotspots(Path(project_root), query=query, limit=limit)
 
     @server.tool()
     def code_find_query_hotspots(project_root: str, query: str | None = None, limit: int = 30) -> dict[str, Any]:
-        """Find likely query-complexity hotspots using generic query signals."""
+        """DEPRECATED: Use `code_find(mode="query_hotspots")` instead. Find likely query-complexity hotspots using generic query signals."""
         return hub.code.find_query_hotspots(Path(project_root), query=query, limit=limit)
 
     @server.tool()
     def code_trace_component_usage(project_root: str, component_name: str, limit: int = 50) -> dict[str, Any]:
-        """Trace likely definition, references, and local frontend neighbors for a component-like symbol."""
+        """DEPRECATED: Use `code_trace(mode="component")` instead. Trace likely definition, references, and local frontend neighbors for a component-like symbol."""
         return hub.code.trace_component_usage(Path(project_root), component_name=component_name, limit=limit)
 
     @server.tool()
     def code_find_state_model_mismatch(project_root: str, concept: str, limit: int = 50) -> dict[str, Any]:
-        """Find likely mixed or competing state-model representations for a concept."""
+        """DEPRECATED: Use `code_find(mode="mismatches")` instead. Find likely mixed or competing state-model representations for a concept."""
         return hub.code.find_state_model_mismatch(Path(project_root), concept=concept, limit=limit)
 
     @server.tool()
     def code_find_ui_backend_touchpoints(project_root: str, concept: str, limit: int = 50) -> dict[str, Any]:
-        """Find likely UI/backend touchpoints for a concept across indexed code."""
+        """DEPRECATED: Use `code_find(mode="touchpoints")` instead. Find likely UI/backend touchpoints for a concept across indexed code."""
         return hub.code.find_ui_backend_touchpoints(Path(project_root), concept=concept, limit=limit)
 
     @server.tool()
     def code_find_policy_surfaces(project_root: str, concept: str, limit: int = 50) -> dict[str, Any]:
-        """Find likely policy/RBAC/guard enforcement surfaces for a concept."""
+        """DEPRECATED: Use `code_find(mode="policy")` instead. Find likely policy/RBAC/guard enforcement surfaces for a concept."""
         return hub.code.find_policy_surfaces(Path(project_root), concept=concept, limit=limit)
 
     @server.tool()
     def code_find_domain_clusters(project_root: str, concept: str, limit: int = 50) -> dict[str, Any]:
-        """Find a broader cross-layer domain cluster for a concept."""
+        """DEPRECATED: Use `code_find(mode="clusters")` instead. Find a broader cross-layer domain cluster for a concept."""
         return hub.code.find_domain_clusters(Path(project_root), concept=concept, limit=limit)
 
     @server.tool()
@@ -747,7 +838,7 @@ def create_server() -> Any:
         min_shared: int = 3,
         limit: int = 30,
     ) -> dict[str, Any]:
-        """Find files with overlapping outline symbols — candidates for extraction into shared partials/components.
+        """DEPRECATED: Use `code_find(mode="duplicates")` instead. Find files with overlapping outline symbols — candidates for extraction into shared partials/components.
 
         Groups files by shared symbol fingerprints (same symbol+kind in multiple files).
         Use role_filter to narrow to specific file types (e.g., 'page-view', 'partial-view').
@@ -763,7 +854,7 @@ def create_server() -> Any:
 
     @server.tool()
     def code_find_partial_consumers(project_root: str, partial_name: str, limit: int = 50) -> list[dict[str, Any]]:
-        """Find all pages/views that reference a Razor partial by name.
+        """DEPRECATED: Use `code_find(mode="partial_consumers")` instead. Find all pages/views that reference a Razor partial by name.
 
         Args:
             partial_name: Partial name (with or without underscore prefix, e.g., '_PageHeader' or 'PageHeader').
@@ -772,7 +863,7 @@ def create_server() -> Any:
 
     @server.tool()
     def code_find_api_consumers(project_root: str, endpoint: str, limit: int = 50) -> list[dict[str, Any]]:
-        """Find all pages/scripts that call an API endpoint.
+        """DEPRECATED: Use `code_find(mode="api_consumers")` instead. Find all pages/scripts that call an API endpoint.
 
         Args:
             endpoint: API path to search for (e.g., '/api/forms/submissions' or 'submissions').
@@ -781,7 +872,7 @@ def create_server() -> Any:
 
     @server.tool()
     def code_trace_css_class(project_root: str, class_name: str, limit: int = 50) -> dict[str, Any]:
-        """Find CSS class definitions AND HTML/Razor template usages across the codebase.
+        """DEPRECATED: Use `code_trace(mode="css_class")` instead. Find CSS class definitions AND HTML/Razor template usages across the codebase.
 
         Returns both where the class is defined (CSS files) and which templates likely use it.
         """
@@ -789,22 +880,22 @@ def create_server() -> Any:
 
     @server.tool()
     def code_find_transition_points(project_root: str, concept: str | None = None, limit: int = 50) -> dict[str, Any]:
-        """Find likely migration seams, adapters, compatibility layers, and transition hotspots."""
+        """DEPRECATED: Use `code_find(mode="transitions")` instead. Find likely migration seams, adapters, compatibility layers, and transition hotspots."""
         return hub.code.find_transition_points(Path(project_root), concept=concept, limit=limit)
 
     @server.tool()
     def code_find_entrypoints(project_root: str, concept: str | None = None, limit: int = 50) -> dict[str, Any]:
-        """Find likely startup, bootstrap, registration, or provider entrypoints."""
+        """DEPRECATED: Use `code_find(mode="entrypoints")` instead. Find likely startup, bootstrap, registration, or provider entrypoints."""
         return hub.code.find_entrypoints(Path(project_root), concept=concept, limit=limit)
 
     @server.tool()
     def code_find_routes(project_root: str, query: str | None = None, limit: int = 50) -> dict[str, Any]:
-        """Find likely route, endpoint, controller, and page entry surfaces."""
+        """DEPRECATED: Use `code_find(mode="routes")` instead. Find likely route, endpoint, controller, and page entry surfaces."""
         return hub.code.find_routes(Path(project_root), query=query, limit=limit)
 
     @server.tool()
     def code_trace_api_to_ui(project_root: str, concept: str, limit: int = 50) -> dict[str, Any]:
-        """Trace likely API-to-UI connection points for a concept."""
+        """DEPRECATED: Use `code_trace(mode="api_to_ui")` instead. Trace likely API-to-UI connection points for a concept."""
         return hub.code.trace_api_to_ui(Path(project_root), concept=concept, limit=limit)
 
     @server.tool()
@@ -814,12 +905,12 @@ def create_server() -> Any:
 
     @server.tool()
     def code_find_partial_group(project_root: str, symbol: str, limit: int = 50) -> list[dict[str, Any]]:
-        """Return all indexed partial definitions for a C# symbol."""
+        """DEPRECATED: Use `code_find(mode="partial_group")` instead. Return all indexed partial definitions for a C# symbol."""
         return hub.code.find_partial_group(Path(project_root), symbol=symbol, limit=limit)
 
     @server.tool()
     def code_find_data_structures(project_root: str, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-        """Return indexed DTO/model/enum/data-structure style symbols and members."""
+        """DEPRECATED: Use `code_find(mode="data_structures")` instead. Return indexed DTO/model/enum/data-structure style symbols and members."""
         return hub.code.find_data_structures(Path(project_root), query=query, limit=limit)
 
     @server.tool()
@@ -829,12 +920,12 @@ def create_server() -> Any:
         kinds: tuple[str, ...] = ("component", "context_provider", "hook", "function", "initializer"),
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """Return indexed frontend-oriented symbols like components and hooks."""
+        """DEPRECATED: Use `code_find(mode="frontend_symbols")` instead. Return indexed frontend-oriented symbols like components and hooks."""
         return hub.code.find_frontend_symbols(Path(project_root), query=query, kinds=kinds, limit=limit)
 
     @server.tool()
     def code_find_initializers(project_root: str, path: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-        """Return indexed JS/TS global initializer hooks and startup listeners."""
+        """DEPRECATED: Use `code_find(mode="initializers")` instead. Return indexed JS/TS global initializer hooks and startup listeners."""
         return hub.code.find_initializers(Path(project_root), path=path, limit=limit)
 
     @server.tool()
@@ -862,7 +953,7 @@ def create_server() -> Any:
         kind: str | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
-        """Return a full symbol bundle: definitions, references, dependencies, partials, and schema hints."""
+        """DEPRECATED: Use `code_bundle(mode="symbol")` instead. Return a full symbol bundle: definitions, references, dependencies, partials, and schema hints."""
         return hub.code.get_symbol_bundle(
             Path(project_root),
             symbol=symbol,
@@ -873,7 +964,7 @@ def create_server() -> Any:
 
     @server.tool()
     def code_get_subsystem_bundle(project_root: str, concept: str, limit: int = 20) -> dict[str, Any]:
-        """Return a broad subsystem bundle for a concept using multiple generic analyzers."""
+        """DEPRECATED: Use `code_bundle(mode="subsystem")` instead. Return a broad subsystem bundle for a concept using multiple generic analyzers."""
         return hub.code.get_subsystem_bundle(Path(project_root), concept=concept, limit=limit)
 
     @server.tool()
@@ -890,44 +981,300 @@ def create_server() -> Any:
         """
         return hub.code.investigate(Path(project_root), concept=concept, limit=limit)
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # Unified Tools (v1.1.0) — prefer these over granular tools below
+    # ═══════════════════════════════════════════════════════════════════════
+
+    _FIND_MODES = {
+        "symbols": "Search symbols by name, kind, or role",
+        "references": "Find all usages of a symbol across the codebase",
+        "routes": "Find API endpoints, page routes, controllers",
+        "hotspots": "Find complex files (high symbol count, deep nesting)",
+        "query_hotspots": "Find files with heavy DB query patterns",
+        "entrypoints": "Find bootstrap, main, provider-like entry symbols",
+        "duplicates": "Find structurally similar code across files",
+        "partial_group": "Find all partial class files for a C# type",
+        "partial_consumers": "Find pages/views referencing a Razor partial",
+        "api_consumers": "Find pages/scripts calling an API endpoint",
+        "frontend_symbols": "Find components, hooks, providers by name",
+        "data_structures": "Find classes, records, enums with their members",
+        "initializers": "Find DOMContentLoaded, document.ready, window.onload",
+        "mutations": "Find create/update/delete flows for a concept",
+        "validation": "Find validation logic, required fields, validators",
+        "async": "Find async boundaries, deferred execution, Task patterns",
+        "policy": "Find authorization, RBAC, permission checks",
+        "touchpoints": "Find UI↔backend connection points for a concept",
+        "mismatches": "Find state/model representation conflicts",
+        "clusters": "Find cross-layer grouping for a domain concept",
+        "transitions": "Find migration seams, adapters, compatibility layers",
+    }
+
+    @server.tool()
+    def code_find(
+        project_root: str,
+        query: str,
+        mode: str = "symbols",
+        kind: str | None = None,
+        role: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """Unified find tool — replaces all code_find_* and code_search_* tools.
+
+        Modes: symbols, references, routes, hotspots, query_hotspots, entrypoints,
+        duplicates, partial_group, partial_consumers, api_consumers, frontend_symbols,
+        data_structures, initializers, mutations, validation, async, policy,
+        touchpoints, mismatches, clusters, transitions.
+
+        Args:
+            query: What to find (symbol name, concept, endpoint, class name, etc.).
+            mode: Which find mode to use (see above).
+            kind: Filter by symbol kind (only for mode=symbols).
+            role: Filter by file role (only for mode=symbols).
+        """
+        root = Path(project_root)
+        m = mode.strip().lower()
+        if m == "symbols":
+            return hub.code.search_symbols(root, query=query, kind=kind, role=role, limit=limit)
+        if m == "references":
+            return hub.code.find_references(root, symbol=query, limit=limit)
+        if m == "routes":
+            return hub.code.find_routes(root, query=query, limit=limit)
+        if m == "hotspots":
+            return hub.code.find_hotspots(root, query=query, limit=limit)
+        if m == "query_hotspots":
+            return hub.code.find_query_hotspots(root, query=query, limit=limit)
+        if m == "entrypoints":
+            return hub.code.find_entrypoints(root, concept=query, limit=limit)
+        if m == "duplicates":
+            return hub.code.find_duplicate_structures(root, query=query, limit=limit)
+        if m == "partial_group":
+            return hub.code.find_partial_group(root, symbol=query, limit=limit)
+        if m == "partial_consumers":
+            return hub.code.find_partial_consumers(root, partial_name=query, limit=limit)
+        if m == "api_consumers":
+            return hub.code.find_api_consumers(root, endpoint=query, limit=limit)
+        if m == "frontend_symbols":
+            return hub.code.find_frontend_symbols(root, query=query, limit=limit)
+        if m == "data_structures":
+            return hub.code.find_data_structures(root, query=query, limit=limit)
+        if m == "initializers":
+            return hub.code.find_initializers(root, path=query if query.strip() else None, limit=limit)
+        if m == "mutations":
+            return hub.code.find_mutation_points(root, concept=query, limit=limit)
+        if m == "validation":
+            return hub.code.find_validation_surfaces(root, concept=query, limit=limit)
+        if m == "async":
+            return hub.code.find_async_boundaries(root, concept=query or None, limit=limit)
+        if m == "policy":
+            return hub.code.find_policy_surfaces(root, concept=query, limit=limit)
+        if m == "touchpoints":
+            return hub.code.find_ui_backend_touchpoints(root, concept=query, limit=limit)
+        if m == "mismatches":
+            return hub.code.find_state_model_mismatch(root, concept=query, limit=limit)
+        if m == "clusters":
+            return hub.code.find_domain_clusters(root, concept=query, limit=limit)
+        if m == "transitions":
+            return hub.code.find_transition_points(root, concept=query, limit=limit)
+        return {"error": f"Unknown mode: {mode}", "available_modes": list(create_server._FIND_MODES.keys())}
+
+    _TRACE_MODES = {
+        "field_flow": "Trace a field across model→service→UI layers",
+        "service": "Find where a service is injected and consumed",
+        "model": "Trace a DTO/entity through the full stack",
+        "component": "Trace component imports and usage",
+        "api_to_ui": "Trace from API endpoint through to UI",
+        "css_class": "Find CSS definitions AND HTML/template usages",
+        "query_shape": "Trace query patterns + schema relationships",
+        "setting": "Trace a configuration setting across layers",
+    }
+
+    @server.tool()
+    def code_trace(
+        project_root: str,
+        query: str,
+        mode: str = "field_flow",
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Unified trace tool — replaces all code_trace_* tools.
+
+        Modes: field_flow, service, model, component, api_to_ui, css_class, query_shape, setting.
+
+        Args:
+            query: What to trace (field name, service name, component name, CSS class, etc.).
+            mode: Which trace mode to use.
+        """
+        root = Path(project_root)
+        m = mode.strip().lower()
+        if m == "field_flow":
+            return hub.code.trace_field_flow(root, field_name=query, limit=limit)
+        if m == "service":
+            return hub.code.trace_service_usage(root, service_name=query, limit=limit)
+        if m == "model":
+            return hub.code.trace_model_usage(root, model_name=query, limit=limit)
+        if m == "component":
+            return hub.code.trace_component_usage(root, component_name=query, limit=limit)
+        if m == "api_to_ui":
+            return hub.code.trace_api_to_ui(root, concept=query, limit=limit)
+        if m == "css_class":
+            return hub.code.trace_css_class_usage(root, class_name=query, limit=limit)
+        if m == "query_shape":
+            return hub.code.trace_query_shape(root, path=query, limit=limit)
+        if m == "setting":
+            return hub.code.trace_setting_usage(root, setting_name=query, limit=limit)
+        return {"error": f"Unknown mode: {mode}", "available_modes": list(create_server._TRACE_MODES.keys())}
+
+    _BUNDLE_MODES = {
+        "file": "Full file context: outline + deps + schema hints",
+        "service": "Service file + related backend neighbors",
+        "component": "Component + imported frontend neighbors",
+        "query": "Query hotspot + schema hints + relationship paths",
+        "subsystem": "Broad concept analysis across all layers",
+        "dependency": "File + resolved dependency chain",
+        "partial": "All partial class definitions for a C# type",
+        "symbol": "Symbol definition + references + schema matches",
+        "style": "CSS selector matches for class names",
+        "session": "Session-guided code bundle from context targets",
+        "context": "Session-guided ranked context bundle",
+        "preset": "Preconfigured bundle (csharp-partial, data-structure, etc.)",
+        "tree": "Recursive component import tree",
+    }
+
+    @server.tool()
+    def code_bundle(
+        project_root: str,
+        target: str,
+        mode: str = "file",
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """Unified bundle tool — replaces all code_get_*_bundle tools.
+
+        Modes: file, service, component, query, subsystem, dependency, partial,
+        symbol, style, session, context, preset, tree.
+
+        Args:
+            target: File path, symbol name, concept, CSS class, or preset spec depending on mode.
+            mode: Which bundle mode to use.
+            session_id: Required for session/context modes.
+        """
+        root = Path(project_root)
+        m = mode.strip().lower()
+        if m == "file":
+            return hub.code.get_file_bundle(root, path=target)
+        if m == "service":
+            return hub.code.get_service_bundle(root, path=target, limit=limit)
+        if m == "component":
+            return hub.code.get_component_bundle(root, path=target, limit=limit)
+        if m == "query":
+            return hub.code.get_query_bundle(root, path=target, limit=limit)
+        if m == "subsystem":
+            return hub.code.get_subsystem_bundle(root, concept=target, limit=limit)
+        if m == "dependency":
+            return hub.code.get_dependency_bundle(root, path=target, limit=limit)
+        if m == "partial":
+            return hub.code.get_partial_bundle(root, symbol=target, limit=limit)
+        if m == "symbol":
+            return hub.code.get_symbol_bundle(root, symbol=target, limit=limit)
+        if m == "style":
+            # Accept comma/space separated class names
+            if isinstance(target, str):
+                class_names = [s.strip() for s in re.split(r"[,\s]+", target) if s.strip()]
+            else:
+                class_names = target
+            return hub.code.get_style_bundle(root, class_names=class_names, limit=limit)
+        if m == "session":
+            if not session_id:
+                return {"error": "session_id is required for session mode"}
+            return hub.code.get_session_code_bundle(root, session_id=session_id)
+        if m == "context":
+            if not session_id:
+                return {"error": "session_id is required for context mode"}
+            return hub.code.get_context_bundle(root, session_id=session_id, limit=limit)
+        if m == "preset":
+            # target format: "preset_name:value" e.g. "csharp-partial:FormPdfService"
+            parts = target.split(":", 1)
+            preset = parts[0].strip()
+            value = parts[1].strip() if len(parts) > 1 else ""
+            return hub.code.get_preset_bundle(root, preset=preset, value=value, limit=limit)
+        if m == "tree":
+            return hub.code.get_component_tree(root, path=target, limit=limit)
+        return {"error": f"Unknown mode: {mode}", "available_modes": list(create_server._BUNDLE_MODES.keys())}
+
+    @server.tool()
+    def schema_query(
+        project_root: str,
+        query: str,
+        mode: str = "entities",
+        limit: int = 50,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """Unified schema tool — replaces all schema_find_*, schema_get_*, schema_trace_* tools.
+
+        Modes: entities, entity, field, trace_flow, trace_path.
+
+        Args:
+            query: Entity name, field name, or "source→target" for trace_path mode.
+            mode: Which schema operation to run.
+        """
+        root = Path(project_root)
+        m = mode.strip().lower()
+        if m == "entities":
+            return hub.schema.find_schema_entities(root, query=query or None, limit=limit)
+        if m == "entity":
+            return hub.schema.get_schema_entity(root, entity_name=query)
+        if m == "field":
+            return hub.schema.find_schema_field(root, field_name=query, limit=limit)
+        if m == "trace_flow":
+            return hub.schema.trace_entity_flow(root, entity_name=query, limit=limit)
+        if m == "trace_path":
+            # Accept "Source→Target" or "Source -> Target" or "Source,Target"
+            parts = re.split(r"[→\->,]+", query, maxsplit=1)
+            if len(parts) < 2:
+                return {"error": "trace_path requires 'Source→Target' format", "query": query}
+            return hub.schema.trace_relationship_path(root, source_entity=parts[0].strip(), target_entity=parts[1].strip(), limit=limit)
+        return {"error": f"Unknown mode: {mode}", "available_modes": ["entities", "entity", "field", "trace_flow", "trace_path"]}
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Legacy Tools (deprecated — use unified tools above)
+    # ═══════════════════════════════════════════════════════════════════════
+
     @server.tool()
     def code_get_partial_bundle(project_root: str, symbol: str, limit: int = 50) -> list[dict[str, Any]]:
-        """Return snippet bundles for all indexed partial definitions of a C# symbol."""
+        """DEPRECATED: Use `code_bundle(mode="partial")` instead. Return snippet bundles for all indexed partial definitions of a C# symbol."""
         return hub.code.get_partial_bundle(Path(project_root), symbol=symbol, limit=limit)
 
     @server.tool()
     def code_get_file_bundle(project_root: str, path: str) -> dict[str, Any]:
-        """Return a targeted bundle for one indexed code file."""
+        """DEPRECATED: Use `code_bundle(mode="file")` instead. Return a targeted bundle for one indexed code file."""
         return hub.code.get_file_bundle(Path(project_root), path=path)
 
     @server.tool()
     def code_get_component_bundle(project_root: str, path: str, limit: int = 20) -> dict[str, Any]:
-        """Return a frontend-oriented bundle for a component file and its imported neighbors."""
+        """DEPRECATED: Use `code_bundle(mode="component")` instead. Return a frontend-oriented bundle for a component file and its imported neighbors."""
         return hub.code.get_component_bundle(Path(project_root), path=path, limit=limit)
 
     @server.tool()
     def code_get_service_bundle(project_root: str, path: str, limit: int = 20) -> dict[str, Any]:
-        """Return a backend-oriented bundle for a service-like file and its related local neighbors."""
+        """DEPRECATED: Use `code_bundle(mode="service")` instead. Return a backend-oriented bundle for a service-like file and its related local neighbors."""
         return hub.code.get_service_bundle(Path(project_root), path=path, limit=limit)
 
     @server.tool()
     def code_get_query_bundle(project_root: str, path: str, limit: int = 20) -> dict[str, Any]:
-        """Return a query-oriented bundle for a query-heavy file, including schema hints and dependencies."""
+        """DEPRECATED: Use `code_bundle(mode="query")` instead. Return a query-oriented bundle for a query-heavy file, including schema hints and dependencies."""
         return hub.code.get_query_bundle(Path(project_root), path=path, limit=limit)
 
     @server.tool()
     def code_trace_query_shape(project_root: str, path: str, limit: int = 20) -> dict[str, Any]:
-        """Trace the likely shape of a query-heavy file across entities, fields, and relationships."""
+        """DEPRECATED: Use `code_trace(mode="query_shape")` instead. Trace the likely shape of a query-heavy file across entities, fields, and relationships."""
         return hub.code.trace_query_shape(Path(project_root), path=path, limit=limit)
 
     @server.tool()
     def code_get_component_tree(project_root: str, path: str, depth: int = 2, limit: int = 50) -> dict[str, Any]:
-        """Return a recursive local frontend import tree for a component/page/provider file."""
+        """DEPRECATED: Use `code_bundle(mode="tree")` instead. Return a recursive local frontend import tree for a component/page/provider file."""
         return hub.code.get_component_tree(Path(project_root), path=path, depth=depth, limit=limit)
 
     @server.tool()
     def code_get_style_bundle(project_root: str, class_names: str | list[str], limit: int = 100) -> dict[str, Any]:
-        """Return CSS selector matches for a set of class names.
+        """DEPRECATED: Use `code_bundle(mode="style")` instead. Return CSS selector matches for a set of class names.
 
         Args:
             class_names: One or more CSS class names. Accepts a single string (comma or space separated), or a list.
@@ -947,7 +1294,7 @@ def create_server() -> Any:
 
     @server.tool()
     def code_get_session_bundle(project_root: str, session_id: str) -> dict[str, Any]:
-        """Return a targeted code bundle guided by the selected session context."""
+        """DEPRECATED: Use `code_bundle(mode="session")` instead. Return a targeted code bundle guided by the selected session context."""
         return hub.code.get_session_code_bundle(Path(project_root), session_id=session_id)
 
     @server.tool()
@@ -958,7 +1305,7 @@ def create_server() -> Any:
         include_styles: bool = True,
         limit: int = 50,
     ) -> dict[str, Any]:
-        """Return a ranked code bundle guided by session context."""
+        """DEPRECATED: Use `code_bundle(mode="context")` instead. Return a ranked code bundle guided by session context."""
         return hub.code.get_context_bundle(
             Path(project_root),
             session_id=session_id,
@@ -969,7 +1316,7 @@ def create_server() -> Any:
 
     @server.tool()
     def code_get_preset_bundle(project_root: str, preset: str, value: str, limit: int = 50) -> dict[str, Any]:
-        """Return a higher-level bundle preset for common retrieval cases."""
+        """DEPRECATED: Use `code_bundle(mode="preset")` instead. Return a higher-level bundle preset for common retrieval cases."""
         return hub.code.get_preset_bundle(Path(project_root), preset=preset, value=value, limit=limit)
 
     @server.tool()
@@ -985,7 +1332,7 @@ def create_server() -> Any:
             kind: Memory category — 'rule', 'feedback', 'domain', 'project', 'user', 'reference', 'system'.
             content: The fact/rule to persist (any language).
             target_hint: Target filename or path. Use this to route to the right file:
-                - 'workflow' → rules/workflow.md (git, deploy, task lifecycle, CI rules)
+        - 'workflow' → rules/workflow-rules.md (git, deploy, task lifecycle, CI rules)
                 - 'coding-standards' → rules/coding-standards.md (code style, naming, patterns)
                 - 'communication' → rules/communication.md (response style, verbosity, tone)
                 - 'design' → rules/design.md (UI, colors, themes, layout preferences)
@@ -1009,26 +1356,169 @@ def create_server() -> Any:
         }
 
     @server.tool()
-    def project_init(project_root: str) -> dict[str, Any]:
+    def project_init(project_root: str, init_git: bool = True, create_remote: bool = False) -> dict[str, Any]:
         """Initialize AIDOCS structure on a new project — creates .MEMORY/, AGENTS.md/CLAUDE.md, and templates.
 
-        This is the MCP equivalent of running the install script's fix mode on a project.
+        Creates the full AIDOCS directory structure directly (no shell scripts).
         Safe to call on already-initialized projects (idempotent).
         Also ensures the project has a .mcp.json with the aidocs MCP server entry for Claude Code.
-        After initialization, call project_bootstrap_or_resume to activate managed mode.
+
+        Args:
+            init_git: If True (default), initialize a git repo if none exists.
+            create_remote: If True, create a private GitHub repo using `gh` CLI. Default: False (opt-in).
         """
+        import shutil as _shutil
+
         root = Path(project_root)
-        fix_result = hub.updater.run_fix(root)
-        if not fix_result.get("ok"):
-            return {
-                "initialized": False,
-                "reason": fix_result.get("stderr") or "Fix script failed",
-                "fix_result": fix_result,
-            }
+        if not root.is_dir():
+            root.mkdir(parents=True, exist_ok=True)
+
+        created: list[str] = []
+        skipped: list[str] = []
+
+        # 1. Copy .MEMORY template structure
+        templates_root = hub.sessions.templates_root
+        memory_template = templates_root.parent / "templates" / "memory"
+        memory_dest = root / ".MEMORY"
+
+        if memory_template.is_dir():
+            for src_file in memory_template.rglob("*"):
+                if src_file.is_file():
+                    rel = src_file.relative_to(memory_template)
+                    dest = memory_dest / rel
+                    if not dest.exists():
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        _shutil.copy2(str(src_file), str(dest))
+                        created.append(f".MEMORY/{rel}")
+                    else:
+                        skipped.append(f".MEMORY/{rel}")
+        else:
+            # No templates — create minimal structure
+            for d in [
+                ".MEMORY/.aidocs",
+                ".MEMORY/sessions",
+                ".MEMORY/rules",
+                ".MEMORY/domains",
+                ".MEMORY/system",
+                ".MEMORY/config",
+                ".MEMORY/archive/sessions",
+            ]:
+                (root / d).mkdir(parents=True, exist_ok=True)
+            # Create minimal INDEX.md
+            idx = memory_dest / "INDEX.md"
+            if not idx.exists():
+                idx.write_text(
+                    "# Memory Index\n\n"
+                    "## Sessions\n- `sessions/`\n\n"
+                    "## Rules\n"
+                    "- `rules/workflow-rules.md`\n"
+                    "- `rules/workflow-actions.md`\n",
+                    encoding="utf-8",
+                )
+                created.append(".MEMORY/INDEX.md")
+
+        # Ensure canonical split workflow files exist
+        workflow_rules = memory_dest / "rules" / "workflow-rules.md"
+        if not workflow_rules.exists():
+            workflow_rules.parent.mkdir(parents=True, exist_ok=True)
+            workflow_rules.write_text("# Workflow Rules\n\n## Workflow Rules\n", encoding="utf-8")
+            created.append(".MEMORY/rules/workflow-rules.md")
+        else:
+            skipped.append(".MEMORY/rules/workflow-rules.md")
+
+        workflow_actions = memory_dest / "rules" / "workflow-actions.md"
+        if not workflow_actions.exists():
+            workflow_actions.parent.mkdir(parents=True, exist_ok=True)
+            workflow_actions.write_text("# Workflow Actions\n\n## Workflow Actions\n", encoding="utf-8")
+            created.append(".MEMORY/rules/workflow-actions.md")
+        else:
+            skipped.append(".MEMORY/rules/workflow-actions.md")
+
+        # 2. Create AIDOCS router file
+        router = memory_dest / ".aidocs" / "index.aidocs"
+        if not router.exists():
+            router.parent.mkdir(parents=True, exist_ok=True)
+            # Copy from core templates if available
+            src_router = templates_root.parent / "index.aidocs"
+            if src_router.is_file():
+                _shutil.copy2(str(src_router), str(router))
+            else:
+                router.write_text("# AIDOCS Session Entry\n\nRead /.MEMORY/INDEX.md next.\n", encoding="utf-8")
+            created.append(".MEMORY/.aidocs/index.aidocs")
+
+        # 3. Create AGENTS.md / CLAUDE.md from core templates
+        for tmpl_name in ["AGENTS.md", "CLAUDE.md"]:
+            dest = root / tmpl_name
+            if not dest.exists():
+                src = templates_root.parents[1] / tmpl_name
+                if src.is_file():
+                    _shutil.copy2(str(src), str(dest))
+                else:
+                    dest.write_text(f"# {tmpl_name.replace('.md','')}\n\nAIDOCS-managed project.\n", encoding="utf-8")
+                created.append(tmpl_name)
+            else:
+                skipped.append(tmpl_name)
+
+        # 4. Git init if needed
+        git_result: dict[str, object] = {"action": "none"}
+        if init_git and not (root / ".git").exists():
+            try:
+                toplevel = _run_git(str(root), "rev-parse", "--show-toplevel")
+                git_result = {"action": "already_in_repo", "root": toplevel}
+            except FileNotFoundError:
+                git_result = {"action": "skipped", "reason": "git not installed"}
+            except RuntimeError:
+                # Not in any git repo — initialize
+                try:
+                    _run_git(str(root), "init")
+                    gitignore = root / ".gitignore"
+                    if not gitignore.exists():
+                        gitignore.write_text(
+                            "# AIDOCS defaults\n/.MEMORY/.index/\nnode_modules/\ndist/\n__pycache__/\n.venv/\n*.pyc\n.env\n",
+                            encoding="utf-8",
+                        )
+                        created.append(".gitignore")
+                    _run_git(str(root), "add", "-A")
+                    _run_git(str(root), "commit", "-m", "chore: initialize project with AIDOCS")
+                    git_result = {"action": "initialized", "initial_commit": True}
+                except Exception as exc:
+                    git_result = {"action": "failed", "reason": str(exc)}
+            except Exception as exc:
+                git_result = {"action": "failed", "reason": str(exc)}
+
+        # 5. Create private GitHub remote (opt-in only)
+        if create_remote and git_result.get("action") == "initialized":
+            try:
+                repo_name = root.name
+                output = _run_git(str(root), "remote", "get-url", "origin")
+                git_result["remote"] = {"created": False, "reason": f"Remote already exists: {output}"}
+            except RuntimeError:
+                try:
+                    import subprocess as _sp
+                    import tempfile as _tf
+                    with _tf.NamedTemporaryFile(mode="w", suffix=".out", delete=False) as f:
+                        out_path = f.name
+                    with open(out_path, "w") as fh:
+                        proc = _sp.run(
+                            ["gh", "repo", "create", repo_name, "--private", "--source", str(root), "--push"],
+                            cwd=str(root), stdout=fh, stderr=_sp.DEVNULL, text=True, timeout=30,
+                        )
+                    url = Path(out_path).read_text(encoding="utf-8", errors="ignore").strip()
+                    import os; os.unlink(out_path)
+                    git_result["remote"] = {"created": proc.returncode == 0, "name": repo_name, "url": url}
+                except FileNotFoundError:
+                    git_result["remote"] = {"created": False, "reason": "gh CLI not installed"}
+                except Exception as exc:
+                    git_result["remote"] = {"created": False, "reason": str(exc)}
+
+        # 6. Ensure .mcp.json
         mcp_config_result = runtime.ensure_claude_mcp_config(root)
+
         return {
             "initialized": True,
-            "fix_result": fix_result,
+            "created": created,
+            "skipped": skipped,
+            "git": git_result,
             "mcp_config": mcp_config_result,
             "next_step": "Call project_bootstrap_or_resume to activate managed mode and select a session.",
         }
@@ -1480,6 +1970,460 @@ def create_server() -> Any:
             return {"error": "Query timed out after 30 seconds", "rows": []}
         except Exception as exc:
             return {"error": str(exc), "rows": []}
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Git Analysis Tools
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @server.tool()
+    async def git_diag(
+        project_root: str,
+        upstream: str = "upstream/main",
+        local: str = "HEAD",
+    ) -> dict[str, Any]:
+        """Run a minimal git diagnostic inside the live MCP server process.
+
+        Helps distinguish raw git problems from MCP runtime/process issues.
+        """
+        import os
+        import platform
+        import threading
+        import time
+
+        start = time.perf_counter()
+        root = Path(project_root)
+        if not (root / ".git").exists():
+            for child in root.iterdir():
+                if child.is_dir() and (child / ".git").exists():
+                    root = child
+                    break
+
+        try:
+            merge_base = await _run_git(str(root), "merge-base", local, upstream, timeout=_GIT_TIMEOUT)
+            elapsed = round(time.perf_counter() - start, 3)
+            return {
+                "ok": True,
+                "project_root": project_root,
+                "git_root": str(root),
+                "local_ref": local,
+                "upstream_ref": upstream,
+                "merge_base": merge_base[:40],
+                "elapsed_seconds": elapsed,
+                "runtime": {
+                    "pid": os.getpid(),
+                    "thread": threading.current_thread().name,
+                    "platform": platform.platform(),
+                    "python": platform.python_version(),
+                    "git_timeout": _GIT_TIMEOUT,
+                    "cwd": os.getcwd(),
+                },
+            }
+        except Exception as exc:
+            elapsed = round(time.perf_counter() - start, 3)
+            return {
+                "ok": False,
+                "project_root": project_root,
+                "git_root": str(root),
+                "local_ref": local,
+                "upstream_ref": upstream,
+                "elapsed_seconds": elapsed,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "runtime": {
+                    "pid": os.getpid(),
+                    "thread": threading.current_thread().name,
+                    "platform": platform.platform(),
+                    "python": platform.python_version(),
+                    "git_timeout": _GIT_TIMEOUT,
+                    "cwd": os.getcwd(),
+                },
+            }
+
+    @server.tool()
+    async def git_fork_status(
+        project_root: str,
+        upstream: str = "upstream/main",
+        local: str = "HEAD",
+        include_files: bool = False,
+    ) -> dict[str, Any]:
+        """Analyze the state of a fork vs upstream: how far behind, how many local changes, conflict risk.
+
+        START HERE for fork/merge tasks. Returns commit counts and conflict predictions.
+        Set include_files=True for full file lists (slower on large repos).
+        Auto-detects the git root if project_root isn't one.
+
+        Args:
+            upstream: Upstream ref to compare against (e.g., "upstream/main", "upstream/dev").
+            local: Local ref (default: HEAD).
+            include_files: Include file-level details (slower). Default: False for fast overview.
+        """
+
+        import time
+
+        start = time.perf_counter()
+        step = "init"
+        times: dict[str, float] = {}
+
+        def mark(name: str) -> None:
+            times[name] = round(time.perf_counter() - start, 3)
+
+        # Find git root — check project_root itself first, then one level down
+        root = Path(project_root)
+        if not (root / ".git").exists():
+            for child in root.iterdir():
+                if child.is_dir() and (child / ".git").exists():
+                    root = child
+                    break
+        mark("root")
+
+        async def git(*args: str, timeout: int = _GIT_TIMEOUT) -> str:
+            return await _run_git(str(root), *args, timeout=timeout)
+
+        try:
+            # Merge base first
+            step = "merge_base"
+            merge_base = await git("merge-base", local, upstream, timeout=_GIT_TIMEOUT)
+            mark(step)
+            if not merge_base:
+                return {
+                    "error": f"No merge base found between {local} and {upstream}. Run 'git fetch upstream' first.",
+                    "debug": {"step": step, "times": times},
+                }
+
+            step = "counts"
+            counts = await git("rev-list", "--left-right", "--count", f"{local}...{upstream}", timeout=_GIT_TIMEOUT)
+            mark(step)
+            parts = counts.split()
+            ahead = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
+            behind = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+            divergence = ahead + behind
+
+            result: dict[str, Any] = {
+                "git_root": str(root),
+                "merge_base": merge_base[:12],
+                "behind": behind,
+                "ahead": ahead,
+                "local_ref": local,
+                "upstream_ref": upstream,
+                "divergence": divergence,
+            }
+
+            # File-level details (optional — can be slow on large repos)
+            if include_files:
+                step = "local_diff"
+                local_changed = [l for l in (await git("diff", "--name-only", "--no-renames", merge_base, local, timeout=_GIT_TIMEOUT)).splitlines() if l.strip()]
+                mark(step)
+                step = "upstream_diff"
+                upstream_changed = [l for l in (await git("diff", "--name-only", "--no-renames", merge_base, upstream, timeout=_GIT_TIMEOUT)).splitlines() if l.strip()]
+                mark(step)
+                local_set = set(local_changed)
+                upstream_set = set(upstream_changed)
+                conflict_candidates = sorted(local_set & upstream_set)
+
+                result.update({
+                    "local_stat": f"{len(local_changed)} files changed (exact)",
+                    "upstream_stat": f"{len(upstream_changed)} files changed (exact)",
+                    "local_changed_files": len(local_changed),
+                    "upstream_changed_files": len(upstream_changed),
+                    "conflict_candidates": len(conflict_candidates),
+                    "conflict_files": conflict_candidates[:50],
+                    "local_only_files": sorted(local_set - upstream_set)[:30],
+                    "upstream_only_files": sorted(upstream_set - local_set)[:30],
+                })
+            elif divergence > _GIT_FAST_DIVERGENCE:
+                step = "fast_path"
+                result.update({
+                    "local_stat": f"skipped fast-path due to large divergence ({divergence} commits)",
+                    "upstream_stat": f"skipped fast-path due to large divergence ({divergence} commits)",
+                    "local_changed_files_approx": None,
+                    "upstream_changed_files_approx": None,
+                    "note": (
+                        "Fast path used for a large branch gap. "
+                        "Set include_files=True for exact file lists, or narrow the comparison."
+                    ),
+                })
+                mark(step)
+            else:
+                step = "local_shortstat"
+                local_stat = await git("diff", "--shortstat", "--no-renames", merge_base, local, timeout=_GIT_TIMEOUT)
+                mark(step)
+                step = "upstream_shortstat"
+                upstream_stat = await git("diff", "--shortstat", "--no-renames", merge_base, upstream, timeout=_GIT_TIMEOUT)
+                mark(step)
+                # Estimate file counts from shortstat (fast)
+                import re as _re
+                local_files = int(m.group(1)) if (m := _re.search(r"(\d+) files? changed", local_stat)) else 0
+                upstream_files = int(m.group(1)) if (m := _re.search(r"(\d+) files? changed", upstream_stat)) else 0
+                result.update({
+                    "local_stat": local_stat or "no changes",
+                    "upstream_stat": upstream_stat or "no changes",
+                    "local_changed_files_approx": local_files,
+                    "upstream_changed_files_approx": upstream_files,
+                    "note": "Set include_files=True for file lists and conflict prediction (slower)",
+                })
+
+            result["summary"] = (
+                f"{behind} commits behind, {ahead} ahead. "
+                f"Local: {result.get('local_stat', 'n/a')}. "
+                f"Upstream: {result.get('upstream_stat', 'n/a')}."
+            )
+            mark("done")
+            result["debug"] = {"step": step, "times": times}
+            return result
+        except TimeoutError as exc:
+            mark("timeout")
+            return {"error": str(exc), "debug": {"step": step, "times": times}}
+        except Exception as exc:
+            mark("error")
+            return {"error": str(exc), "debug": {"step": step, "times": times}}
+
+    @server.tool()
+    async def git_upstream_changes(
+        project_root: str,
+        upstream: str = "upstream/main",
+        path_filter: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Summarize what changed upstream since the fork diverged.
+
+        Groups changes by directory/module and shows commit messages.
+
+        Args:
+            upstream: Upstream ref.
+            path_filter: Only show changes in this path (e.g., "packages/opencode/src/session/").
+        """
+        import subprocess
+        root = Path(project_root)
+        if not (root / ".git").exists():
+            for child in root.iterdir():
+                if child.is_dir() and (child / ".git").exists():
+                    root = child
+                    break
+
+        async def git(*args: str, timeout: int = _GIT_TIMEOUT) -> str:
+            return await _run_git(str(root), *args, timeout=timeout)
+
+        try:
+            merge_base = await git("merge-base", "HEAD", upstream)
+
+            # Get commits with a clear separator format for reliable parsing
+            log_args = ["log", f"--format=COMMIT:%h %s", "--name-only", f"{merge_base}..{upstream}"]
+            if path_filter:
+                log_args.extend(["--", path_filter])
+            log_args.append(f"-{limit}")
+            raw = await git(*log_args)
+
+            commits: list[dict[str, Any]] = []
+            current: dict[str, Any] | None = None
+            for line in raw.splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if stripped.startswith("COMMIT:"):
+                    if current:
+                        commits.append(current)
+                    rest = stripped[7:]
+                    parts = rest.split(" ", 1)
+                    current = {"hash": parts[0], "message": parts[1] if len(parts) > 1 else "", "files": []}
+                elif current:
+                    current["files"].append(stripped)
+            if current:
+                commits.append(current)
+
+            # Group files by top-level directory
+            dir_changes: dict[str, int] = {}
+            for c in commits:
+                for f in c["files"]:
+                    top = f.split("/")[0] if "/" in f else "(root)"
+                    dir_changes[top] = dir_changes.get(top, 0) + 1
+
+            return {
+                "merge_base": merge_base,
+                "commit_count": len(commits),
+                "commits": commits[:limit],
+                "changes_by_directory": dict(sorted(dir_changes.items(), key=lambda x: -x[1])[:20]),
+            }
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    @server.tool()
+    async def git_conflict_analysis(
+        project_root: str,
+        file_path: str,
+        upstream: str = "upstream/main",
+    ) -> dict[str, Any]:
+        """Deep analysis of a single file that will likely conflict during merge.
+
+        Shows what changed locally vs upstream, with line-level diff context.
+
+        Args:
+            file_path: The file to analyze.
+            upstream: Upstream ref.
+        """
+        import subprocess
+        root = Path(project_root)
+        if not (root / ".git").exists():
+            for child in root.iterdir():
+                if child.is_dir() and (child / ".git").exists():
+                    root = child
+                    break
+
+        async def git(*args: str, timeout: int = _GIT_TIMEOUT) -> str:
+            return await _run_git(str(root), *args, timeout=timeout)
+
+        try:
+            merge_base = await git("merge-base", "HEAD", upstream)
+
+            local_diff = await git("diff", merge_base, "HEAD", "--", file_path)
+            upstream_diff = await git("diff", merge_base, upstream, "--", file_path)
+
+            # Count changes
+            local_adds = sum(1 for l in local_diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
+            local_dels = sum(1 for l in local_diff.splitlines() if l.startswith("-") and not l.startswith("---"))
+            upstream_adds = sum(1 for l in upstream_diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
+            upstream_dels = sum(1 for l in upstream_diff.splitlines() if l.startswith("-") and not l.startswith("---"))
+
+            # Upstream commits that touched this file
+            upstream_commits = await git("log", "--oneline", f"{merge_base}..{upstream}", "--", file_path)
+
+            return {
+                "file": file_path,
+                "merge_base": merge_base,
+                "local_changes": {"additions": local_adds, "deletions": local_dels},
+                "upstream_changes": {"additions": upstream_adds, "deletions": upstream_dels},
+                "upstream_commits": upstream_commits.splitlines()[:20],
+                "local_diff": local_diff[:3000] if local_diff else "(no local changes)",
+                "upstream_diff": upstream_diff[:3000] if upstream_diff else "(no upstream changes)",
+                "recommendation": (
+                    "KEEP LOCAL" if not upstream_diff else
+                    "TAKE UPSTREAM" if not local_diff else
+                    "MANUAL MERGE REQUIRED — both sides changed this file"
+                ),
+            }
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    @server.tool()
+    async def git_merge_plan(
+        project_root: str,
+        upstream: str = "upstream/main",
+        local: str = "HEAD",
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Generate a merge plan: which files to keep, which to take from upstream, which need manual merge.
+
+        Args:
+            upstream: Upstream ref to merge from.
+        """
+        import subprocess
+        import time
+
+        start = time.perf_counter()
+        step = "init"
+        times: dict[str, float] = {}
+
+        def mark(name: str) -> None:
+            times[name] = round(time.perf_counter() - start, 3)
+
+        root = Path(project_root)
+        if not (root / ".git").exists():
+            for child in root.iterdir():
+                if child.is_dir() and (child / ".git").exists():
+                    root = child
+                    break
+        mark("root")
+
+        async def git(*args: str, timeout: int = _GIT_TIMEOUT) -> str:
+            return await _run_git(str(root), *args, timeout=timeout)
+
+        async def git_lines(*args: str, timeout: int = _GIT_TIMEOUT) -> list[str]:
+            return [l for l in (await git(*args, timeout=timeout)).splitlines() if l.strip()]
+
+        try:
+            step = "merge_base"
+            merge_base = await git("merge-base", local, upstream, timeout=_GIT_TIMEOUT)
+            mark(step)
+            step = "counts"
+            counts = await git("rev-list", "--left-right", "--count", f"{local}...{upstream}", timeout=_GIT_TIMEOUT)
+            mark(step)
+            parts = counts.split()
+            ahead = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
+            behind = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+            divergence = ahead + behind
+
+            if divergence > _GIT_SAMPLE_DIVERGENCE:
+                sample = max(limit * 8, 200)
+                step = "local_log"
+                local_changed = set(await git_lines("log", "--format=", "--name-only", "--no-renames", f"-{sample}", f"{merge_base}..{local}", timeout=_GIT_TIMEOUT))
+                mark(step)
+                step = "upstream_log"
+                upstream_changed = set(await git_lines("log", "--format=", "--name-only", "--no-renames", f"-{sample}", f"{merge_base}..{upstream}", timeout=_GIT_TIMEOUT))
+                mark(step)
+                keep_local = sorted(local_changed - upstream_changed)
+                take_upstream = sorted(upstream_changed - local_changed)
+                manual_merge = sorted(local_changed & upstream_changed)
+                return {
+                    "merge_base": merge_base,
+                    "local_ref": local,
+                    "upstream_ref": upstream,
+                    "divergence": divergence,
+                    "mode": "fast-sampled",
+                    "keep_local": keep_local[:limit],
+                    "keep_local_count": None,
+                    "take_upstream": take_upstream[:limit],
+                    "take_upstream_count": None,
+                    "manual_merge": manual_merge[:limit],
+                    "manual_merge_count": None,
+                    "strategy": (
+                        f"Large divergence fast path used ({divergence} commits). "
+                        f"Lists are sampled from the most recent {sample} commits per side, not exact full-history file sets."
+                    ),
+                    "debug": {"step": step, "times": times},
+                }
+
+            step = "local_diff"
+            local_changed = set(await git_lines("diff", "--name-only", "--no-renames", merge_base, local, timeout=_GIT_TIMEOUT))
+            mark(step)
+            step = "upstream_diff"
+            upstream_changed = set(await git_lines("diff", "--name-only", "--no-renames", merge_base, upstream, timeout=_GIT_TIMEOUT))
+            mark(step)
+
+            keep_local: list[str] = []  # only we changed
+            take_upstream: list[str] = []  # only upstream changed
+            manual_merge: list[str] = []  # both changed
+
+            for f in sorted(local_changed | upstream_changed):
+                in_local = f in local_changed
+                in_upstream = f in upstream_changed
+                if in_local and in_upstream:
+                    manual_merge.append(f)
+                elif in_local:
+                    keep_local.append(f)
+                else:
+                    take_upstream.append(f)
+
+            return {
+                "merge_base": merge_base,
+                "local_ref": local,
+                "upstream_ref": upstream,
+                "divergence": divergence,
+                "mode": "exact",
+                "keep_local": keep_local[:limit],
+                "keep_local_count": len(keep_local),
+                "take_upstream": take_upstream[:limit],
+                "take_upstream_count": len(take_upstream),
+                "manual_merge": manual_merge[:limit],
+                "manual_merge_count": len(manual_merge),
+                "strategy": (
+                    f"Safe auto-merge: {len(take_upstream)} files (upstream only). "
+                    f"Keep as-is: {len(keep_local)} files (local only). "
+                    f"Manual review: {len(manual_merge)} files (both changed)."
+                ),
+                "debug": {"step": step, "times": times},
+            }
+        except Exception as exc:
+            mark("error")
+            return {"error": str(exc), "debug": {"step": step, "times": times}}
 
     return server
 

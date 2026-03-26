@@ -1,6 +1,6 @@
 [project]
 name = "aidocs-mcp"
-version = "1.0.2"
+version = "1.1.0"
 description = "Optional file-backed MCP layer for AIDOCS"
 requires-python = ">=3.11"
 dependencies = [

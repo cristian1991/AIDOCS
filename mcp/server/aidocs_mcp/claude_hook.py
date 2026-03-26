@@ -376,34 +376,36 @@ class ClaudeHookHandler:
         "task_complete": "Use `task_complete` to finalize the task.",
         "task_update": "Use `task_update` to record progress on the current task.",
         "trace": (
-            "`code_find_references` (symbol usages) → `code_trace_field_flow` (cross-layer) → "
-            "`code_trace_css_class` (CSS defs + HTML usages). "
-            "For DB: `schema_trace_relationship_path`. For API→UI: `code_trace_api_to_ui`."
+            '`code_find(query, mode="references")` → `code_trace(query, mode="field_flow")` → '
+            '`code_trace(query, mode="css_class")`. '
+            'DB: `schema_query(query, mode="trace_path")`. API→UI: `code_trace(query, mode="api_to_ui")`.'
         ),
         "understand": (
-            "`code_get_outline` (structure) → `code_search_symbols` (find symbol) → "
+            "`code_get_outline` (structure) → `code_find(query, mode=\"symbols\")` (find symbol) → "
             "`code_get_symbol_snippet` (read it). "
-            "For broad context: `code_get_subsystem_bundle`. For DB: `schema_get_entity`."
+            'Broad: `code_bundle(concept, mode="subsystem")`. DB: `schema_query(name, mode="entity")`.'
         ),
         "code_bundle": (
-            "`code_get_context_bundle` (session-guided) or `code_get_file_bundle` (single file)."
+            '`code_bundle(path, mode="context", session_id=...)` (session-guided) or '
+            '`code_bundle(path, mode="file")` (single file).'
         ),
         "edit": (
-            "`task_begin` → `code_get_outline` → `code_search_symbols` → Edit → `task_complete`. "
-            "CSS: add `code_trace_css_class`. API: add `code_trace_api_to_ui`. DB: add `schema_get_entity`."
+            '`task_begin` → `code_get_outline` → `code_find(query, mode="symbols")` → Edit → `task_complete`. '
+            'CSS: add `code_trace(class, mode="css_class")`. API: add `code_trace(concept, mode="api_to_ui")`. '
+            'DB: add `schema_query(entity, mode="entity")`.'
         ),
         "inspect": (
             "`code_get_outline` → `code_get_dependencies` / `code_find_dependents` → "
             "`code_get_modules` (project boundaries). Read only after narrowing."
         ),
         "read_error": (
-            "`code_search_symbols` (find failing symbol) → `code_find_references` (trace usages) → "
-            "`code_get_symbol_snippet` (read the method). DB errors: add `schema_get_entity`."
+            '`code_find(symbol, mode="symbols")` (find it) → `code_find(symbol, mode="references")` (trace) → '
+            '`code_get_symbol_snippet` (read method). DB: add `schema_query(entity, mode="entity")`.'
         ),
         "investigate": (
-            "`code_get_subsystem_bundle` (broad analysis) → narrow with "
-            "`code_find_mutation_points` / `code_find_validation_surfaces` / `code_find_policy_surfaces`. "
-            "Or use `code_investigate` for a guided navigation plan."
+            "`code_investigate(concept)` for a guided navigation plan. "
+            'Or: `code_bundle(concept, mode="subsystem")` → narrow with '
+            '`code_find(concept, mode="mutations|validation|policy")`.'
         ),
     }
 

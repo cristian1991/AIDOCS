@@ -59,6 +59,7 @@ But it should be able to:
 | P0 | current-state reconstruction | answer “what is going on right now?” across sessions and projects with incremental resume logic |
 | P1 | cross-project linking | improve how one project references active work in another |
 | P1 | shared operator summaries | produce better summaries for humans and successor agents |
+| P1 | task lifecycle enforcement | ensure session journals are populated even when agents skip explicit task_complete calls |
 | P2 | workflow-assisted coordination | use workflow/execution signals to improve handoff quality |
 | P3 | host-aware collaboration upgrades | prepare for future host/session APIs without depending on them |
 
@@ -117,6 +118,12 @@ But it should be able to:
 ### Partial Goal E: Shared Operator Summaries
 - Build operator-facing “state of work” summaries across one or more sessions.
 - Make these useful for both humans and successor agents.
+
+### Partial Goal F: Task Lifecycle Enforcement
+- Track edit counts since last `task_complete` in PreToolUse hook.
+- Escalate nudges: advisory → urgent → blocking based on configurable thresholds.
+- Auto-journal on git commit and session release.
+- Works on git and non-git projects via tool-call counting.
 
 ## Workstreams
 
@@ -219,6 +226,43 @@ Future hosts may expose better session APIs. AIDOCS should be ready without bloc
 
 ### Done when
 - AIDOCS can adopt stronger host session capabilities later without redesigning the core collaboration model
+
+## 8. Task Lifecycle Enforcement
+
+### Why
+Agents know `task_complete` exists but skip it during rapid iteration. This means session journals stay empty, handoff context is lost, and successor agents have no record of what happened. The task lifecycle is advisory-only — nothing enforces it.
+
+### End Goal
+Every meaningful piece of work gets logged to the session journal without requiring the agent to remember to call `task_complete` manually. Works for git and non-git projects alike.
+
+### Partial Goal A: Edit-Count Tracking in PreToolUse Hook
+- Track the number of edit/write tool calls since the last `task_complete`.
+- After N edits without a `task_complete`, escalate the nudge:
+  - 3 edits: advisory reminder
+  - 6 edits: urgent reminder with summary of what changed
+  - 10 edits: block further edits until `task_complete` is called
+- Use execution evidence index (already tracks tool calls) as the data source.
+
+### Partial Goal B: Auto-Journal on Significant Milestones
+- When the agent calls git commit (detected via tool execution), auto-log the commit message to the session journal.
+- When the agent calls `task_complete`, log the result summary (already implemented).
+- When a session is released or archived, log a final summary entry.
+
+### Partial Goal C: Non-Git Project Support
+- Edit-count tracking works regardless of version control since it's based on tool call counts.
+- Journal entries come from task lifecycle, not git history.
+- Projects without git still get full session journal coverage.
+
+### Work
+- Add edit-count state to the PreToolUse hook (Claude) and tool.execute.after hook (OpenCode)
+- Add configurable thresholds to `aidocs.toml` (e.g., `[task] nudge_after = 3, block_after = 10`)
+- Add auto-journal on git commit detection
+- Test with real multi-edit sessions to calibrate thresholds
+
+### Done when
+- Session journals are reliably populated even when agents skip explicit task lifecycle calls
+- The enforcement is calibrated: not annoying for small edits, firm for substantial unreported work
+- Works on both git and non-git projects
 
 ## Suggested New Surfaces
 

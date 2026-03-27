@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.1.1-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.2.0-blue" alt="version">
   <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="license">
   <img src="https://img.shields.io/badge/python-3.11%2B-yellow" alt="python">
   <img src="https://img.shields.io/badge/tests-255%20passing-brightgreen" alt="tests">
@@ -191,7 +191,7 @@ enabled = "en"
 
 | Version | Highlights |
 |---------|------------|
-| **1.1.1** | Add `aidocs` CLI (`init`, `status`, `config`, `sync`, `benchmark`, `version`), package/install cleanup, and 255 tests |
+| **1.2.0** | Add `aidocs` CLI (`init`, `status`, `config`, `sync`, `benchmark`, `version`), package/install cleanup, and 255 tests |
 | 1.1.0 | Tool consolidation (6 unified entry points), git analysis tools, project_init rewrite (no shell deps), MCP subprocess fix for Windows, 194 tests |
 | 1.0.2 | Index hardening (16 languages, monorepo modules, os.walk pruning), `code_investigate` entry tool, CSS compound+HTML tracing, CamelCase search, session journal, `aidocs.toml` config |
 | 1.0.1 | Multilingual classifier, lightweight hook path, auto MCP config |

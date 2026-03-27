@@ -19,7 +19,7 @@ jobs:
 
       - name: Strip private files
         run: |
-          rm -rf mcp/tests/ tests/ mcp/ROADMAP.md
+          rm -rf mcp/tests/ tests/ mcp/ROADMAP.md mcp/ROADMAP_1_3_0.md mcp/INDEXING_2_0_0_SPEC.md mcp/RELEASE_SUMMARY_1_2_0.md mcp/benchmarks/ .github/PRIVATE_VALIDATION_TEMPLATE.md SECURITY_CI_MODEL.md
 
       - name: Verify public tree
         run: |

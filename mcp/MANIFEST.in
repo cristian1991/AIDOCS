@@ -1,0 +1,9 @@
+recursive-exclude tests *
+exclude ROADMAP.md
+exclude ROADMAP_1_3_0.md
+exclude INDEXING_2_0_0_SPEC.md
+exclude RELEASE_SUMMARY_1_2_0.md
+exclude BENCHMARKS.md
+exclude DOCS_SITE_STRUCTURE.md
+prune tests
+prune benchmarks

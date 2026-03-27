@@ -45,7 +45,6 @@ mcp/
     ...
   pyproject.toml           # Python package config
   README.md                # This file
-  ROADMAP.md               # Feature roadmap
   HOST_INTEGRATION.md      # Host integration contract
 ```
 
@@ -69,7 +68,7 @@ mcp/
 ## Benchmarking
 
 - Run `aidocs benchmark . --json --iterations 10 --scenario-set public` for the public benchmark set.
-- See `mcp/BENCHMARKS.md` for benchmark rules, output scope, and public/private scenario-set guidance.
+- Run `aidocs benchmark . --json --iterations 10` to see benchmark output format.
 
 ## Tool Model
 

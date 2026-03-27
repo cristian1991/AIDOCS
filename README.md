@@ -181,11 +181,7 @@ enabled = "en"
 - [Install Guide](README_INSTALL.md) — global routing, plugin, hook, and MCP install paths
 - [MCP Runtime](mcp/README.md) — runtime model, tool model, host caveats, CLI usage
 - [Host Integration](mcp/HOST_INTEGRATION.md) — Claude/OpenCode contract and routing behavior
-- [Benchmarks](mcp/BENCHMARKS.md) — public benchmark contract and scenario-set rules
-- [Docs Site Structure](mcp/DOCS_SITE_STRUCTURE.md) — proposed IA for `docs.codenexus.cloud/aidocs`
 - [Public Roadmap](PUBLIC_ROADMAP.md) — contributor-facing priorities and help-wanted areas
-- [Secure CI Model](SECURITY_CI_MODEL.md) — public PR testing rules and private-validation boundary
-- [Roadmap](mcp/ROADMAP.md) — v1.2.0 priorities and end goals
 
 ## Releases
 

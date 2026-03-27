@@ -15,6 +15,7 @@ function loadPluginConfig() {
   const defaults = {
     inject_message_directives: true,
     directive_style: "short",
+    disregard_compaction: false,
   }
   const candidates = [
     path.join(__dirname, "aidocs-plugin.json"),
@@ -346,6 +347,60 @@ function buildAidocsExecutionPrompt() {
   ].join(" ")
 }
 
+function takeFirstNonEmpty(lines, limit) {
+  const picked = []
+  for (const raw of lines) {
+    const line = String(raw || "").trim()
+    if (!line) continue
+    picked.push(line)
+    if (picked.length >= limit) break
+  }
+  return picked
+}
+
+async function buildCompactionContext(projectRoot, sessionID) {
+  const blocks = []
+  const memoryIndex = await readTextIfExists(path.join(projectRoot, ".MEMORY", "INDEX.md"))
+  const sessionFile = sessionID ? await readTextIfExists(path.join(projectRoot, ".MEMORY", "sessions", sessionID, "SESSION.md")) : null
+  const planFile = sessionID ? await readTextIfExists(path.join(projectRoot, ".MEMORY", "sessions", sessionID, "plans", "PLAN.md")) : null
+  const handoffFile = sessionID ? await readTextIfExists(path.join(projectRoot, ".MEMORY", "sessions", sessionID, `${sessionID}.handoff.md`)) : null
+  const journalFile = sessionID ? await readTextIfExists(path.join(projectRoot, ".MEMORY", "sessions", sessionID, "journal.md")) : null
+
+  const roadmapCandidates = [
+    path.join(projectRoot, "ROADMAP_2_0_0.md"),
+    path.join(projectRoot, "ROADMAP.md"),
+    path.join(projectRoot, "mcp", "ROADMAP.md"),
+  ]
+  let roadmapText = null
+  for (const candidate of roadmapCandidates) {
+    roadmapText = await readTextIfExists(candidate)
+    if (roadmapText) break
+  }
+
+  if (memoryIndex) {
+    blocks.push("Memory index:\n" + takeFirstNonEmpty(memoryIndex.split(/\r?\n/), 10).map((line) => `- ${line}`).join("\n"))
+  }
+  if (roadmapText) {
+    blocks.push("Roadmap:\n" + takeFirstNonEmpty(roadmapText.split(/\r?\n/), 10).map((line) => `- ${line}`).join("\n"))
+  }
+  if (sessionFile) {
+    blocks.push("Session:\n" + takeFirstNonEmpty(sessionFile.split(/\r?\n/), 12).map((line) => `- ${line}`).join("\n"))
+  }
+  if (planFile) {
+    blocks.push("Plan:\n" + takeFirstNonEmpty(planFile.split(/\r?\n/), 12).map((line) => `- ${line}`).join("\n"))
+  }
+  if (handoffFile) {
+    blocks.push("Handoff:\n" + takeFirstNonEmpty(handoffFile.split(/\r?\n/), 12).map((line) => `- ${line}`).join("\n"))
+  }
+  if (journalFile) {
+    const journalLines = journalFile.split(/\r?\n/).filter((line) => line.trim().startsWith("- `")).slice(-8)
+    if (journalLines.length) {
+      blocks.push("Recent journal:\n" + journalLines.map((line) => `- ${line.trim()}`).join("\n"))
+    }
+  }
+  return blocks
+}
+
 function normalizeCommandName(command) {
   return String(command || "").trim().replace(/^\//, "").toLowerCase()
 }
@@ -407,6 +462,25 @@ async function AIDOCSPlugin(input) {
         return
       }
       output.system.push(context)
+    },
+
+    "experimental.session.compacting": async ({ sessionID }, output) => {
+      const config = loadPluginConfig()
+      if (!config.disregard_compaction) {
+        return
+      }
+      const state = await resolveAidocsState(projectRoot)
+      const compactSessionID = state.sessionID || sessionID
+      const blocks = await buildCompactionContext(projectRoot, compactSessionID)
+      output.prompt = [
+        "Ignore the default generic compaction style.",
+        "Create a continuation summary that preserves AIDOCS structured state first.",
+        "Read and preserve the important information from project memory, roadmap, session plan, handoff, and session journal.",
+        "Prioritize current actionable work, blockers, what failed, and next steps over conversational filler.",
+        "Do not duplicate long prose if the same information already exists in structured artifacts.",
+        "Produce a concise but complete continuation summary for the next agent.",
+        ...blocks,
+      ].join("\n\n")
     },
 
     "experimental.chat.messages.transform": async ({ sessionID }, output) => {

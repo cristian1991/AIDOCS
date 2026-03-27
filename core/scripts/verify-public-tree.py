@@ -9,7 +9,15 @@ from pathlib import Path
 FORBIDDEN_PATHS = (
     "mcp/tests/",
     "tests/",
-    "mcp/ROADMAP.md",
+)
+
+FORBIDDEN_GLOBS = (
+    "archive/roadmaps/**",
+    "**/ROADMAP*.md",
+    "**/*ROADMAP*.md",
+)
+ALLOWED_GLOB_EXCEPTIONS = (
+    "PUBLIC_ROADMAP.md",
 )
 
 
@@ -37,6 +45,14 @@ def _working_tree_entries(root: Path) -> list[str]:
                         entries.append(child.relative_to(root).as_posix())
             else:
                 entries.append(target.relative_to(root).as_posix())
+    for pattern in FORBIDDEN_GLOBS:
+        for path in root.glob(pattern):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(root).as_posix()
+            if any(rel.endswith(exc) for exc in ALLOWED_GLOB_EXCEPTIONS):
+                continue
+            entries.append(rel)
     return sorted(entries)
 
 
@@ -61,6 +77,11 @@ def _ref_entries(root: Path, ref: str) -> list[str]:
             elif path == forbidden:
                 blocked.append(path)
                 break
+        else:
+            for pattern in FORBIDDEN_GLOBS:
+                if Path(path).match(pattern) and not any(path.endswith(exc) for exc in ALLOWED_GLOB_EXCEPTIONS):
+                    blocked.append(path)
+                    break
     return sorted(blocked)
 
 

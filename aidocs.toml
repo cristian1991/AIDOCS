@@ -26,6 +26,17 @@ max_json_size = 100000
 # Examples: "en" (English only, fastest), "en, it" (English + Italian), "all" (every .yaml)
 enabled = "all"
 
+[tools]
+# Default timeout for general MCP tool calls (seconds). Agent can override per-call.
+tool_call_timeout = 10
+# Default timeout for sync/index operations (code_index_sync, project_sync, etc.)
+# Small projects: 10s. Medium: 30s. Large monorepos: 60-120s.
+sync_functions_timeout = 30
+# Default timeout for git operations (fork_status, merge_plan, etc.)
+git_functions_timeout = 30
+# Maximum allowed timeout for any call (prevents runaway)
+max_timeout = 120
+
 [agent]
 # How action directives are delivered: "short" (3-step chains) or "detailed" (full lists)
 directive_style = "short"

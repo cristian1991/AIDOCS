@@ -1,18 +1,94 @@
 from __future__ import annotations
 
+import asyncio
+import functools
 import re
+import signal
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MethodType
 from typing import Any
 from uuid import uuid4
 
+from .config import TOOLS_CALL_TIMEOUT, TOOLS_SYNC_TIMEOUT, TOOLS_GIT_TIMEOUT, TOOLS_MAX_TIMEOUT
+from .file_ops import get_lines as _file_get_lines, edit_lines as _file_edit_lines, batch_edit as _file_batch_edit
+from .language_descriptors import descriptor_match_summary, descriptor_registry_summary, descriptor_semantics_summary, validate_language_descriptors
 from .runtime_service import RuntimeService
 from .service_hub import AidocsServiceHub
 
 
+# ── Tool timeout infrastructure ──────────────────────────────────────
+
+_tool_executor = ThreadPoolExecutor(max_workers=4)
+
+
+def _run_with_timeout(fn, timeout_seconds: int, *args, **kwargs) -> Any:
+    """Run a sync function with a timeout. Returns result or raises TimeoutError."""
+    future = _tool_executor.submit(fn, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FuturesTimeoutError:
+        future.cancel()
+        raise TimeoutError(f"Tool call timed out after {timeout_seconds}s. Use timeout= parameter for longer operations.")
+
+
+def _resolve_timeout(kwargs: dict, default: int | None = None) -> int:
+    """Extract and validate timeout from kwargs, falling back to category default."""
+    timeout = kwargs.pop("timeout", None)
+    fallback = default or TOOLS_CALL_TIMEOUT
+    if timeout is None:
+        return fallback
+    timeout = int(timeout)
+    if timeout <= 0:
+        return fallback
+    return min(timeout, TOOLS_MAX_TIMEOUT)
+
+
+def _make_timed_decorator(default_timeout_value: int):
+    """Factory for timed tool decorators with a specific default timeout."""
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            timeout = _resolve_timeout(kwargs, default=default_timeout_value)
+            try:
+                return _run_with_timeout(fn, timeout, *args, **kwargs)
+            except TimeoutError as exc:
+                return {"error": str(exc), "timeout": timeout}
+            except Exception as exc:
+                return {"error": f"Tool failed: {exc}"}
+        return wrapper
+    return decorator
+
+# Category-specific decorators
+timed_tool = _make_timed_decorator(TOOLS_CALL_TIMEOUT)         # 10s default
+timed_sync = _make_timed_decorator(TOOLS_SYNC_TIMEOUT)         # 30s default
+timed_git = _make_timed_decorator(TOOLS_GIT_TIMEOUT)           # 30s default
+
+
 _GIT_SAFE_DIR = ["-c", "safe.directory=*"]
 _GIT_TIMEOUT = 10
+def _make_timed_async_decorator(default_timeout_value: int):
+    """Factory for async timed tool decorators."""
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            timeout = _resolve_timeout(kwargs, default=default_timeout_value)
+            try:
+                return await asyncio.wait_for(fn(*args, **kwargs), timeout=timeout)
+            except asyncio.TimeoutError:
+                return {"error": f"Tool call timed out after {timeout}s. Use timeout= parameter for slower operations.", "timeout": timeout}
+            except Exception as exc:
+                return {"error": f"Tool failed: {exc}"}
+        return wrapper
+    return decorator
+
+timed_tool_async = _make_timed_async_decorator(TOOLS_CALL_TIMEOUT)
+timed_git_async = _make_timed_async_decorator(TOOLS_GIT_TIMEOUT)
+
+
 _GIT_FAST_DIVERGENCE = 500
 _GIT_SAMPLE_DIVERGENCE = 1500
 
@@ -353,11 +429,13 @@ def create_server() -> Any:
         )
 
     @server.tool()
+    @timed_sync
     def project_bootstrap_or_resume(
         project_root: str,
         session_id: str | None = None,
         include_code_bundle: bool = False,
         include_tests: bool = False,
+        timeout: int | None = None,
     ) -> dict[str, Any]:
         """Run the mandatory project setup/index/session bootstrap flow."""
         return runtime.project_bootstrap_or_resume(
@@ -585,6 +663,11 @@ def create_server() -> Any:
         return {"session_id": handoff.session_id, "path": str(handoff.path), "sections": handoff.sections}
 
     @server.tool()
+    def session_compliance_get(project_root: str, session_id: str) -> dict[str, Any]:
+        """Return task/logging debt and actionable continuity state for a session."""
+        return runtime.session_compliance_summary(Path(project_root), session_id)
+
+    @server.tool()
     def session_resume_bundle(
         project_root: str,
         session_id: str,
@@ -771,7 +854,8 @@ def create_server() -> Any:
         return hub.index.status(Path(project_root))
 
     @server.tool()
-    def schema_index_sync(project_root: str) -> dict[str, int]:
+    @timed_sync
+    def schema_index_sync(project_root: str, timeout: int | None = None) -> dict[str, int]:
         """Rebuild the derived schema catalog from code and SQL files."""
         return hub.schema.sync_schema(Path(project_root))
 
@@ -781,7 +865,8 @@ def create_server() -> Any:
         return hub.index.search_memory(Path(project_root), query=query, limit=limit)
 
     @server.tool()
-    def code_index_sync(project_root: str, include_tests: bool = False) -> dict[str, int]:
+    @timed_sync
+    def code_index_sync(project_root: str, include_tests: bool = False, timeout: int | None = None) -> dict[str, int]:
         """Rebuild the derived code file manifest and summary index."""
         return {
             "code_files": hub.code.sync_code_files(Path(project_root), include_tests=include_tests),
@@ -918,13 +1003,100 @@ def create_server() -> Any:
         """Return a lightweight property list for an entity or DTO."""
         return hub.code.get_entity_properties(Path(project_root), entity_name=entity_name)
 
+    # ── File operations (line-based read/edit with safety) ──
+
     @server.tool()
+    def code_get_lines(
+        project_root: str,
+        path: str,
+        start_line: int = 1,
+        count: int = 50,
+        show_line_numbers: bool = True,
+    ) -> dict[str, Any]:
+        """Read specific lines from any file (no index needed).
+
+        Fast line-based retrieval for any file type — Razor, HTML, TOML, config, etc.
+        Use this instead of Read when you know the file and approximate line range.
+
+        Args:
+            path: Relative path to the file from project root.
+            start_line: First line to read (1-indexed).
+            count: Number of lines to read (max 200).
+            show_line_numbers: Prefix each line with its number for easy reference.
+        """
+        return _file_get_lines(
+            Path(project_root), path,
+            start_line=start_line, count=count,
+            show_line_numbers=show_line_numbers,
+        )
+
+    @server.tool()
+    def code_edit_lines(
+        project_root: str,
+        path: str,
+        start_line: int,
+        end_line: int,
+        new_content: str,
+        expect: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Replace a range of lines with new content, with safety verification.
+
+        Line-based editing that works for any file type. Returns old content for verification.
+        Use `expect` for safe edits — the edit is rejected if current content doesn't match.
+        Use `dry_run=True` to preview changes without writing.
+
+        Set end_line < start_line to INSERT before start_line without removing lines.
+
+        Args:
+            path: Relative path to the file from project root.
+            start_line: First line to replace (1-indexed, inclusive).
+            end_line: Last line to replace (inclusive). Use < start_line for insert mode.
+            new_content: Replacement text (can be multi-line).
+            expect: If set, current content of the line range must match this or edit is rejected.
+            dry_run: Preview changes without writing.
+        """
+        return _file_edit_lines(
+            Path(project_root), path,
+            start_line=start_line, end_line=end_line,
+            new_content=new_content,
+            expect=expect, dry_run=dry_run,
+        )
+
+    @server.tool()
+    def code_batch_edit(
+        project_root: str,
+        edits: list[dict[str, Any]],
+        dry_run: bool = False,
+        atomic: bool = True,
+    ) -> dict[str, Any]:
+        """Apply multiple line edits atomically across one or more files.
+
+        Each edit: { "path": str, "start_line": int, "end_line": int, "new_content": str, "expect": str? }
+
+        If atomic=True (default), ALL edits are validated first. If any would fail, NONE are applied.
+        Edits within the same file are applied bottom-up to preserve line numbers.
+        Max 20 edits per call.
+
+        Args:
+            edits: List of edit operations.
+            dry_run: Preview all changes without writing.
+            atomic: All-or-nothing mode (default True).
+        """
+        return _file_batch_edit(
+            Path(project_root), edits,
+            dry_run=dry_run, atomic=atomic,
+        )
+
+    @server.tool()
+    @timed_tool
     def code_investigate(
         project_root: str,
         concept: str,
         limit: int = 5,
         depth: str = "standard",
         focus: str = "general",
+        timeout: int | None = None,
     ) -> dict[str, Any]:
         """START HERE — investigate a concept, feature, or bug area.
 
@@ -970,6 +1142,7 @@ def create_server() -> Any:
     }
 
     @server.tool()
+    @timed_tool
     def code_find(
         project_root: str,
         query: str,
@@ -978,6 +1151,7 @@ def create_server() -> Any:
         role: str | None = None,
         include_tests: bool = False,
         limit: int = 50,
+        timeout: int | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Unified find tool — replaces all code_find_* and code_search_* tools.
 
@@ -1017,7 +1191,7 @@ def create_server() -> Any:
         if m == "entrypoints":
             return hub.code.find_entrypoints(root, concept=query, limit=limit)
         if m == "duplicates":
-            return hub.code.find_duplicate_structures(root, query=query, limit=limit)
+            return hub.code.find_duplicate_structures(root, role_filter=query or None, limit=limit)
         if m == "partial_group":
             return hub.code.find_partial_group(root, symbol=query, limit=limit)
         if m == "partial_consumers":
@@ -1062,12 +1236,14 @@ def create_server() -> Any:
     }
 
     @server.tool()
+    @timed_tool
     def code_trace(
         project_root: str,
         query: str,
         mode: str = "field_flow",
         limit: int = 50,
         max_depth: int | None = None,
+        timeout: int | None = None,
     ) -> dict[str, Any]:
         """Unified trace tool — replaces all code_trace_* tools.
 
@@ -1114,12 +1290,14 @@ def create_server() -> Any:
     }
 
     @server.tool()
+    @timed_tool
     def code_bundle(
         project_root: str,
         target: str,
         mode: str = "file",
         session_id: str | None = None,
         limit: int = 20,
+        timeout: int | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Unified bundle tool — replaces all code_get_*_bundle tools.
 
@@ -1175,12 +1353,14 @@ def create_server() -> Any:
         return {"error": f"Unknown mode: {mode}", "available_modes": list(create_server._BUNDLE_MODES.keys())}
 
     @server.tool()
+    @timed_tool
     def schema_query(
         project_root: str,
         query: str,
         mode: str = "entities",
         limit: int = 50,
         include_related: bool = False,
+        timeout: int | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Unified schema tool — replaces all schema_find_*, schema_get_*, schema_trace_* tools.
 
@@ -1256,7 +1436,8 @@ def create_server() -> Any:
         }
 
     @server.tool()
-    def project_init(project_root: str, init_git: bool = True, create_remote: bool = False) -> dict[str, Any]:
+    @timed_sync
+    def project_init(project_root: str, init_git: bool = True, create_remote: bool = False, timeout: int | None = None) -> dict[str, Any]:
         """Initialize AIDOCS structure on a new project — creates .MEMORY/, AGENTS.md/CLAUDE.md, and templates.
 
         Creates the full AIDOCS directory structure directly (no shell scripts).
@@ -1299,7 +1480,8 @@ def create_server() -> Any:
         return hub.updater.inspect_legacy_runtime(Path(project_root))
 
     @server.tool()
-    def project_sync_indexes(project_root: str, include_tests: bool = False) -> dict[str, Any]:
+    @timed_sync
+    def project_sync_indexes(project_root: str, include_tests: bool = False, timeout: int | None = None) -> dict[str, Any]:
         """Refresh all derived indexes for a project in one call."""
         root = Path(project_root)
         capability_count = hub.capabilities.sync_capabilities(root, _registered_tools())
@@ -1341,6 +1523,26 @@ def create_server() -> Any:
         """Return git remote/origin context, including private/public split hints."""
         root = Path(project_root)
         return runtime.project_origins(root)
+
+    @server.tool()
+    def index_language_descriptors_get(project_root: str) -> dict[str, Any]:
+        """Return the active built-in + project-local language descriptor registry summary."""
+        return descriptor_registry_summary(Path(project_root))
+
+    @server.tool()
+    def index_language_descriptors_validate(project_root: str) -> dict[str, Any]:
+        """Validate built-in and project-local TOML language descriptors."""
+        return validate_language_descriptors(Path(project_root))
+
+    @server.tool()
+    def index_language_descriptor_semantics_get() -> dict[str, Any]:
+        """Return the available built-in descriptor semantic families/tags."""
+        return descriptor_semantics_summary()
+
+    @server.tool()
+    def index_language_descriptor_match_get(project_root: str, relative_path: str) -> dict[str, Any]:
+        """Show which descriptor would classify a given project-relative path."""
+        return descriptor_match_summary(Path(project_root), relative_path)
 
     @server.tool()
     def capability_index_status(project_root: str) -> dict[str, Any]:
@@ -1812,11 +2014,13 @@ def create_server() -> Any:
             }
 
     @server.tool()
+    @timed_git_async
     async def git_fork_status(
         project_root: str,
         upstream: str = "upstream/main",
         local: str = "HEAD",
         include_files: bool = False,
+        timeout: int | None = None,
     ) -> dict[str, Any]:
         """Analyze the state of a fork vs upstream: how far behind, how many local changes, conflict risk.
 
@@ -1950,11 +2154,13 @@ def create_server() -> Any:
             return {"error": str(exc), "debug": {"step": step, "times": times}}
 
     @server.tool()
+    @timed_git_async
     async def git_upstream_changes(
         project_root: str,
         upstream: str = "upstream/main",
         path_filter: str | None = None,
         limit: int = 50,
+        timeout: int | None = None,
     ) -> dict[str, Any]:
         """Summarize what changed upstream since the fork diverged.
 
@@ -2019,10 +2225,12 @@ def create_server() -> Any:
             return {"error": str(exc)}
 
     @server.tool()
+    @timed_git_async
     async def git_conflict_analysis(
         project_root: str,
         file_path: str,
         upstream: str = "upstream/main",
+        timeout: int | None = None,
     ) -> dict[str, Any]:
         """Deep analysis of a single file that will likely conflict during merge.
 
@@ -2076,11 +2284,13 @@ def create_server() -> Any:
             return {"error": str(exc)}
 
     @server.tool()
+    @timed_git_async
     async def git_merge_plan(
         project_root: str,
         upstream: str = "upstream/main",
         local: str = "HEAD",
         limit: int = 50,
+        timeout: int | None = None,
     ) -> dict[str, Any]:
         """Generate a merge plan: which files to keep, which to take from upstream, which need manual merge.
 
@@ -2201,6 +2411,19 @@ def create_server() -> Any:
 
 
 def main() -> None:
+    import atexit
+    import os
+
+    # Ensure clean exit when parent process dies (Windows: no SIGHUP)
+    def _cleanup():
+        _tool_executor.shutdown(wait=False, cancel_futures=True)
+    atexit.register(_cleanup)
+
+    # On Unix, handle SIGHUP/SIGTERM for graceful shutdown
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, lambda *_: os._exit(0))
+    signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+
     server = create_server()
     server.run()
 

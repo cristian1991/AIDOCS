@@ -261,6 +261,8 @@ class RuntimeService:
         schema_entities = 0
         schema_fields = 0
         session_count = 0
+        language_tiers: dict[str, int] = {}
+        language_sources: dict[str, int] = {}
 
         try:
             with self.hub.code.connect(project_root) as conn:
@@ -271,6 +273,10 @@ class RuntimeService:
                 row = conn.execute("SELECT COUNT(*) FROM code_modules").fetchone()
                 if row:
                     modules = int(row[0] or 0)
+                for row in conn.execute("SELECT COALESCE(language_tier, 'unknown') AS tier, COUNT(*) AS count FROM code_files GROUP BY COALESCE(language_tier, 'unknown')"):
+                    language_tiers[str(row["tier"])] = int(row["count"] or 0)
+                for row in conn.execute("SELECT COALESCE(language_source, 'unknown') AS source, COUNT(*) AS count FROM code_files GROUP BY COALESCE(language_source, 'unknown')"):
+                    language_sources[str(row["source"])] = int(row["count"] or 0)
         except Exception:
             pass
 
@@ -297,6 +303,10 @@ class RuntimeService:
             f"{schema_entities} schema entities / {schema_fields} fields",
             f"{session_count} sessions",
         ]
+        if language_tiers:
+            bullets.append("language tiers: " + ", ".join(f"{k}={v}" for k, v in sorted(language_tiers.items())))
+        if language_sources:
+            bullets.append("language sources: " + ", ".join(f"{k}={v}" for k, v in sorted(language_sources.items())))
         notes = origins.get("notes") if isinstance(origins.get("notes"), list) else []
         bullets.extend(str(note) for note in notes[:2])
         return {
@@ -308,6 +318,8 @@ class RuntimeService:
             "schema_entities": schema_entities,
             "schema_fields": schema_fields,
             "sessions": session_count,
+            "language_tiers": language_tiers,
+            "language_sources": language_sources,
             "origins": origins,
             "headline": f"{project_root.name}: indexed project summary",
             "bullets": bullets,
@@ -536,6 +548,7 @@ class RuntimeService:
         context = self.hub.sessions.read_context(project_root, session_id)
         handoff = self.hub.sessions.read_handoff(project_root, session_id)
         handoff_steps = self.hub.sessions.read_handoff_steps(project_root, session_id)
+        compliance = self.session_compliance_summary(project_root, session_id)
 
         if sync_indexes:
             self.hub.code.sync_session_code(project_root, session_id=session_id, include_tests=include_tests)
@@ -559,6 +572,7 @@ class RuntimeService:
                 "sections": handoff.sections,
             },
             "handoff_steps": handoff_steps,
+            "compliance": compliance,
             "sessions": session_summaries,
         }
 
@@ -586,6 +600,7 @@ class RuntimeService:
         handoff_steps = self.hub.sessions.read_handoff_steps(project_root, session_id)
         actionable_steps = [step for step in handoff_steps if step.get("status") in {"open", "reset", "failed", "stale"}]
         recently_changed_steps = [step for step in handoff_steps if self._step_changed_recently(step)]
+        compliance = self.session_compliance_summary(project_root, session_id)
 
         result: dict[str, object] = {
             "session": {"session_id": session.session_id, "path": str(session.path), "sections": session.sections},
@@ -596,6 +611,7 @@ class RuntimeService:
             "actionable_handoff_steps": actionable_steps,
             "recently_changed_handoff_steps": recently_changed_steps,
             "handoff_freshness": freshness,
+            "compliance": compliance,
             "journal": journal,
             "repo_summary": self.repo_summary(project_root),
         }
@@ -607,6 +623,60 @@ class RuntimeService:
                 sync_indexes=True,
             )
         return result
+
+    def session_compliance_summary(self, project_root: Path, session_id: str) -> dict[str, object]:
+        session = self.hub.sessions.read_session(project_root, session_id)
+        plan = self.hub.sessions.read_plan(project_root, session_id)
+        handoff_steps = self.hub.sessions.read_handoff_steps(project_root, session_id)
+        journal = self.hub.sessions.read_journal(project_root, session_id, last_n=20)
+        execution_summary = self.hub.execution.query_execution_summary(project_root, session_id=session_id)
+        recent_events = self.hub.execution.query_last_execution(project_root, session_id=session_id, limit=20)
+
+        status_values = self._clean_bullets(session.sections.get("Status", []))
+        task_open = any(value == "active" for value in status_values)
+        partial_goals = self._clean_bullets(plan.sections.get("Partial Goals", []))
+        upcoming = self._clean_bullets(session.sections.get("Upcoming", []))
+        actionable_steps = [step for step in handoff_steps if str(step.get("status")) in {"open", "reset", "failed", "stale"}]
+
+        latest_journal_ts = None
+        if journal:
+            try:
+                latest_journal_ts = max(datetime.strptime(entry["timestamp"], "%Y-%m-%d %H:%M") for entry in journal if entry.get("timestamp"))
+            except Exception:
+                latest_journal_ts = None
+
+        work_events = [
+            event for event in recent_events
+            if str(event.get("action_kind") or "") not in {"", "task_begin", "task_update", "task_complete"}
+        ]
+        latest_work_ts = None
+        if work_events:
+            try:
+                latest_work_ts = max(datetime.strptime(str(event["observed_at"]), "%Y-%m-%d %H:%M:%S") for event in work_events if event.get("observed_at"))
+            except Exception:
+                latest_work_ts = None
+
+        logging_debt = bool(latest_work_ts and (latest_journal_ts is None or latest_work_ts > latest_journal_ts))
+        summary = {
+            "task_open": task_open,
+            "logging_debt": logging_debt,
+            "actionable_step_count": len(actionable_steps),
+            "partial_goal_count": len(partial_goals),
+            "upcoming_count": len(upcoming),
+            "execution_events": int(execution_summary.get("total_events", 0)),
+            "latest_work_event_at": latest_work_ts.strftime("%Y-%m-%d %H:%M:%S") if latest_work_ts else None,
+            "latest_journal_at": latest_journal_ts.strftime("%Y-%m-%d %H:%M") if latest_journal_ts else None,
+            "warnings": [],
+        }
+        warnings: list[str] = []
+        if task_open:
+            warnings.append("task remains open")
+        if logging_debt:
+            warnings.append("work occurred after the latest journal entry")
+        if actionable_steps:
+            warnings.append(f"{len(actionable_steps)} actionable handoff steps remain")
+        summary["warnings"] = warnings
+        return summary
 
     def _registered_tools_snapshot(self) -> list[object]:
         from .mcp_server import create_server
@@ -669,6 +739,9 @@ class RuntimeService:
             bullets.append(f"Handoff freshness is stale ({freshness.get('age_hours')}h old).")
         elif freshness.get("status") == "unknown":
             bullets.append("Handoff freshness is unknown.")
+        compliance = response.get("compliance") if isinstance(response.get("compliance"), dict) else {}
+        for warning in compliance.get("warnings", [])[:3] if isinstance(compliance.get("warnings"), list) else []:
+            bullets.append(f"Compliance: {warning}.")
         return {
             "headline": "Session context is ready.",
             "bullets": bullets,

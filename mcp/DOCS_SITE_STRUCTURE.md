@@ -143,7 +143,7 @@ It is a structure proposal, not a full site implementation.
 - `mcp/README.md` -> MCP Runtime
 - `mcp/HOST_INTEGRATION.md` -> Host Integrations
 - `mcp/BENCHMARKS.md` -> Benchmarks
-- `mcp/ROADMAP.md` -> Roadmap
+- `ROADMAP_2_0_0.md` -> Roadmap
 
 ## Content Rules
 

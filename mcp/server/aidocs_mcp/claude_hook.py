@@ -127,33 +127,18 @@ class ClaudeHookHandler:
         if not managed.get("active"):
             return None
 
-        session_id = str(managed.get("session_id") or "").strip()
         tool_name = str(payload.get("tool_name") or "").strip()
         tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
-        workflow_summary = self._build_compiled_workflow_summary(self.runtime.hub.workflow.read_compiled(project_root))
-        additional_context = (
-            "AIDOCS-managed mode is active"
-            + (f" for session `{session_id}`" if session_id else "")
-            + ". Keep MCP-first behavior: prefer session-guided retrieval over ad-hoc repo scanning, "
-            "and when the work is an edit task, maintain task lifecycle state with `task_begin` and `task_complete`."
-        )
-        if workflow_summary:
-            additional_context += f" Compiled workflow actions: {workflow_summary}."
 
-        # Nudge toward MCP alternatives when raw tools are used for code exploration
+        # Only inject context when there's a concrete MCP alternative to suggest
         mcp_nudge = self._suggest_mcp_alternative(tool_name, tool_input)
-        if mcp_nudge:
-            additional_context += f" {mcp_nudge}"
+        if not mcp_nudge:
+            return None
 
-        # Surface pending post-action workflow items for edit-type tools
-        if tool_name.lower() in {"edit", "write", "bash"}:
-            pending = self.runtime._collect_pending_workflow("edit", project_root)
-            if pending:
-                additional_context += f" When this edit task completes, these workflow actions are pending: {pending}."
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
-                "additionalContext": additional_context,
+                "additionalContext": mcp_nudge,
             }
         }
 
@@ -299,23 +284,15 @@ class ClaudeHookHandler:
         recommended_text = ", ".join(str(item) for item in recommended if str(item).strip())
 
         parts = [
-            "AIDOCS-managed mode is active for this project.",
-            f"AIDOCS suggests action kind: `{action_kind}` (advisory — use your judgment if the classification seems wrong).",
+            f"AIDOCS managed. Action: `{action_kind}`.",
         ]
         if session_id:
-            parts.append(f"Bound session: `{session_id}`.")
-        if route.get("allowed_direct_inspection"):
-            parts.append("Inspect the explicit target first, then return to MCP-first flow for broader work.")
-        else:
-            parts.append("Route this turn through the AIDOCS MCP flow before broad repo inspection.")
-        if recommended_text:
-            parts.append(f"Recommended MCP flow: {recommended_text}.")
+            parts.append(f"Session: `{session_id}`.")
 
         action_directive = self._action_directive(action_kind)
         if action_directive:
             parts.append(action_directive)
 
-        parts.append("Avoid ad-hoc broad repo scanning when the MCP routing result already provides the path forward.")
         return " ".join(parts)
 
     def _build_prompt_context(self, result: dict[str, object]) -> str:

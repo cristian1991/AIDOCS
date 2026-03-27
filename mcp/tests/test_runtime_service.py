@@ -150,6 +150,37 @@ def test_session_resume_bundle_marks_stale_handoff(tmp_path: Path) -> None:
     assert result["handoff_freshness"]["status"] == "stale"
 
 
+def test_session_resume_bundle_includes_compliance_debt_when_work_is_unlogged(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    hub = AidocsServiceHub(templates_root=templates)
+    runtime = RuntimeService(hub)
+    project_root = tmp_path / "project"
+    _seed_project(project_root)
+    session = hub.sessions.create_session(project_root, "2026-03-23-a", "A", "Agent", "Goal A")
+    hub.execution.record_event(project_root, event_kind="tool_call_completed", source_kind="mcp_tool_call", session_id=session.session_id, action_kind="edit", observed_at="2026-03-27 10:00:00")
+
+    result = runtime.session_resume_bundle(project_root, session.session_id, include_code_bundle=False)
+
+    assert result["compliance"]["logging_debt"] is True
+    assert "work occurred after the latest journal entry" in result["compliance"]["warnings"]
+
+
+def test_session_start_report_surfaces_compliance_warnings(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    hub = AidocsServiceHub(templates_root=templates)
+    runtime = RuntimeService(hub)
+    project_root = tmp_path / "project"
+    _seed_project(project_root)
+    session = hub.sessions.create_session(project_root, "2026-03-23-a", "A", "Agent", "Goal A")
+    hub.execution.record_event(project_root, event_kind="tool_call_completed", source_kind="mcp_tool_call", session_id=session.session_id, action_kind="edit", observed_at="2026-03-27 10:00:00")
+
+    result = runtime.session_start(project_root, session_id=session.session_id, include_code_bundle=False, sync_indexes=False)
+
+    assert any("Compliance: work occurred after the latest journal entry." == bullet for bullet in result["report"]["bullets"])
+
+
 def test_project_bootstrap_repairs_partial_structure(tmp_path: Path) -> None:
     templates = tmp_path / "templates"
     _write_templates(templates)
@@ -165,6 +196,30 @@ def test_project_bootstrap_repairs_partial_structure(tmp_path: Path) -> None:
     assert (project_root / ".MEMORY" / ".aidocs" / "index.aidocs").is_file()
     assert result["repaired"] is not None
     assert any("Repaired canonical AIDOCS structure" in bullet for bullet in result["report"]["bullets"])
+
+
+def test_repo_summary_includes_language_tier_and_source_counts(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    hub = AidocsServiceHub(templates_root=templates)
+    runtime = RuntimeService(hub)
+    project_root = tmp_path / "project"
+    (project_root / "index_languages").mkdir(parents=True, exist_ok=True)
+    (project_root / "index_languages" / "r.toml").write_text(
+        'name = "r"\n'
+        'extensions = [".r"]\n'
+        'tier = "heuristic"\n',
+        encoding="utf-8",
+    )
+    (project_root / "R").mkdir(parents=True, exist_ok=True)
+    (project_root / "R" / "analysis.r").write_text("summary <- function(x) x\n", encoding="utf-8")
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    hub.code.sync_code_files(project_root)
+    summary = runtime.repo_summary(project_root)
+
+    assert summary["language_tiers"]["heuristic"] >= 1
+    assert summary["language_sources"]["project"] >= 1
 
 
 def test_session_resume_bundle_includes_structured_handoff_steps(tmp_path: Path) -> None:

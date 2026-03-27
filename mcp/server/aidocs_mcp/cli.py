@@ -8,6 +8,8 @@ Usage:
     aidocs config --languages  Open action_tokens/ directory
     aidocs sync [path]         Run code/schema/memory index sync
     aidocs benchmark [path]    Run repeatable benchmark scenarios
+    aidocs descriptors [path]  Inspect or validate index language descriptors
+    aidocs snapshots           Inspect local copied index snapshots
     aidocs version             Show version
 """
 from __future__ import annotations
@@ -20,6 +22,7 @@ import time
 from pathlib import Path
 
 from . import __version__
+from .language_descriptors import descriptor_match_summary, descriptor_registry_summary, validate_language_descriptors
 
 
 def _resolve_root(args: list[str]) -> Path:
@@ -774,6 +777,111 @@ def cmd_benchmark(args: list[str]) -> int:
     return 0
 
 
+def cmd_descriptors(args: list[str]) -> int:
+    """Inspect or validate index language descriptors."""
+    root = _resolve_root(args)
+    as_json = _wants_json(args)
+    match_path = _option_value(args, "--match", "")
+    validate = "--validate" in args
+    show_semantics = "--semantics" in args
+
+    if show_semantics:
+        from .language_descriptors import descriptor_semantics_summary
+        payload = descriptor_semantics_summary()
+    elif match_path:
+        payload = descriptor_match_summary(root, match_path)
+    elif validate:
+        payload = validate_language_descriptors(root)
+    else:
+        payload = descriptor_registry_summary(root)
+
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if show_semantics:
+        families = payload.get("outline_families") if isinstance(payload.get("outline_families"), list) else []
+        tags = payload.get("semantic_tags") if isinstance(payload.get("semantic_tags"), list) else []
+        print(f"Built-in descriptors: {payload.get('built_in_descriptor_count', 0)}")
+        print(f"  with extractor family: {payload.get('built_in_with_extractor_family', 0)}")
+        print(f"  with outline family:   {payload.get('built_in_with_outline_family', 0)}")
+        print(f"  with raw outlines:     {payload.get('built_in_with_outline_patterns', 0)}")
+        print(f"  with role semantics:   {payload.get('built_in_with_role_semantics', 0)}")
+        print(f"  with module hints:     {payload.get('built_in_with_module_hints', 0)}")
+        print(f"Outline families: {len(families)}")
+        for item in families:
+            print(f"  - {item}")
+        print(f"Semantic tags: {len(tags)}")
+        for item in tags:
+            print(f"  - {item}")
+        return 0
+
+    if match_path:
+        print(f"Descriptor match: {match_path}")
+        print(f"  matched:   {payload.get('matched')}")
+        print(f"  language:  {payload.get('language')}")
+        if payload.get("predicted_role"):
+            print(f"  role:      {payload.get('predicted_role')}")
+        descriptor = payload.get("descriptor") if isinstance(payload.get("descriptor"), dict) else {}
+        if descriptor:
+            print(f"  source:    {descriptor.get('source')}")
+            print(f"  tier:      {descriptor.get('tier')}")
+            if descriptor.get("outline_family"):
+                print(f"  family:    {descriptor.get('outline_family')}")
+            if descriptor.get("role_hint"):
+                print(f"  role_hint: {descriptor.get('role_hint')}")
+            tags = descriptor.get("semantic_tags") if isinstance(descriptor.get("semantic_tags"), list) else []
+            if tags:
+                print(f"  tags:      {', '.join(str(tag) for tag in tags)}")
+            embedded = descriptor.get("embedded_semantics") if isinstance(descriptor.get("embedded_semantics"), list) else []
+            if embedded:
+                print(f"  embeds:    {', '.join(str(item) for item in embedded)}")
+        return 0
+
+    if validate:
+        print(f"Descriptor validation: {'ok' if payload.get('valid') else 'issues found'}")
+        print(f"  descriptors: {payload.get('count', 0)}")
+        issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
+        for issue in issues[:20]:
+            if isinstance(issue, dict):
+                print(f"  - {issue.get('path')}: {issue.get('issue')}")
+        return 0
+
+    print(f"Active descriptor registry: {payload.get('count', 0)} descriptors")
+    descriptors = payload.get("descriptors") if isinstance(payload.get("descriptors"), list) else []
+    for item in descriptors[:20]:
+        if isinstance(item, dict):
+            extensions = item.get("extensions") if isinstance(item.get("extensions"), list) else []
+            sample_ext = ", ".join(extensions[:3]) if extensions else "-"
+            style = "tags" if item.get("uses_semantic_tags") else "raw" if item.get("uses_raw_outline_patterns") or item.get("uses_raw_role_patterns") else "basic"
+            print(f"  - {item.get('name')} ({item.get('source')}, tier={item.get('tier')}, style={style}, ext={sample_ext})")
+    return 0
+
+
+def cmd_snapshots(args: list[str]) -> int:
+    """Inspect local copied index snapshots."""
+    root = _find_aidocs_root() or Path.cwd()
+    as_json = _wants_json(args)
+    manifest = root / ".MEMORY" / "related-projects" / "index-snapshots" / "manifest.json"
+    if not manifest.is_file():
+        payload = {"ok": False, "message": f"Snapshot manifest not found: {manifest}"}
+        if as_json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(payload["message"])
+        return 1
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    snapshots = payload.get("snapshots") if isinstance(payload.get("snapshots"), list) else []
+    print(f"Index snapshots: {len(snapshots)}")
+    for item in snapshots:
+        if isinstance(item, dict):
+            print(f"  - {item.get('name')}: code={item.get('code_files')} schema={item.get('schema_entities')} workflow={item.get('workflow_rule_count')}")
+    return 0
+
+
 def cmd_version(args: list[str]) -> int:
     """Show version."""
     if _wants_json(args):
@@ -789,6 +897,8 @@ COMMANDS = {
     "config": cmd_config,
     "sync": cmd_sync,
     "benchmark": cmd_benchmark,
+    "descriptors": cmd_descriptors,
+    "snapshots": cmd_snapshots,
     "version": cmd_version,
     "--version": cmd_version,
     "-v": cmd_version,

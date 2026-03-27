@@ -181,7 +181,7 @@ enabled = "en"
 - [Install Guide](README_INSTALL.md) — global routing, plugin, hook, and MCP install paths
 - [MCP Runtime](mcp/README.md) — runtime model, tool model, host caveats, CLI usage
 - [Host Integration](mcp/HOST_INTEGRATION.md) — Claude/OpenCode contract and routing behavior
-- [Public Roadmap](PUBLIC_ROADMAP.md) — contributor-facing priorities and help-wanted areas
+- [Index Language Descriptors](mcp/INDEX_LANGUAGE_DESCRIPTORS.md) — TOML schema for built-in and project-local indexing descriptors
 
 ## Releases
 

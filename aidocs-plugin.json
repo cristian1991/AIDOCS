@@ -1,5 +1,6 @@
 {
   "inject_message_directives": true,
   "directive_style": "short",
-  "languages_enabled": "all"
+  "languages_enabled": "all",
+  "disregard_compaction": false
 }

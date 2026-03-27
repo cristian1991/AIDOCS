@@ -1,0 +1,32 @@
+name = "jsx"
+extensions = [".jsx"]
+extractor_family = "jsx_ast"
+embedded_semantics = ["html_like", "css_inline", "js_inline"]
+module_hints = ["pages", "components", "hooks"]
+
+# Entry-point files
+entry_points = ["index.jsx"]
+
+# ── Role from glob patterns ──
+role_patterns = [
+  { glob = "**/pages/**/*.jsx", role = "page" },
+  { glob = "**/*Provider.jsx", role = "context-provider" },
+  { glob = "**/components/**/*.jsx", role = "component" },
+  { glob = "**/hooks/**/*.jsx", role = "hook-module" },
+  { glob = "**/utils/**/*.jsx", role = "utility-module" },
+  { glob = "**/lib/**/*.jsx", role = "utility-module" },
+]
+
+line_patterns = [
+  { match = "function_call", function = "fetch", args_starts_with = "/api/", kind = "api_call" },
+  { match = "route_navigation", kind = "route_ref" },
+  { match = "function_call", function = "t", kind = "translation_key" },
+]
+
+# ── Layer inference tokens ──
+[layer_tokens]
+data = ["model", "store", "context"]
+api = ["api", "route"]
+logic = ["service", "handler", "hook"]
+ui = ["component", "page", "view", "form", "dialog", "screen", "layout"]
+

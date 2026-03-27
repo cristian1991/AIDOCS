@@ -92,7 +92,7 @@ def test_user_prompt_submit_adds_context_when_project_is_managed(tmp_path: Path)
     assert result is not None
     payload = result["hookSpecificOutput"]
     assert payload["hookEventName"] == "UserPromptSubmit"
-    assert "AIDOCS-managed mode is active" in payload["additionalContext"]
+    assert "AIDOCS managed" in payload["additionalContext"]
     assert "`2026-03-24-a`" in payload["additionalContext"]
     assert "`understand`" in payload["additionalContext"]
 
@@ -121,11 +121,12 @@ def test_pre_tool_use_adds_context_when_project_is_managed(tmp_path: Path) -> No
         }
     )
 
+    # PreToolUse now only injects context when there's an MCP alternative for raw tools
     assert result is not None
     payload = result["hookSpecificOutput"]
     assert payload["hookEventName"] == "PreToolUse"
-    assert "task_begin" in payload["additionalContext"]
-    assert "local_command" in payload["additionalContext"]
+    # Read tool should get a nudge toward code_get_outline / code_get_file_bundle
+    assert "code_get_outline" in payload["additionalContext"] or "code_get_file_bundle" in payload["additionalContext"]
 
 
 def test_non_aidocs_project_returns_no_hook_output(tmp_path: Path) -> None:

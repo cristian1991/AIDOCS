@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from aidocs_mcp import __version__
-from aidocs_mcp.cli import cmd_benchmark, cmd_config, cmd_init, cmd_status, cmd_sync, cmd_version
+from aidocs_mcp.cli import cmd_benchmark, cmd_config, cmd_descriptors, cmd_init, cmd_snapshots, cmd_status, cmd_sync, cmd_version
 
 
 def test_version(capsys: object) -> None:
@@ -286,3 +286,119 @@ def test_benchmark_writes_output_file(tmp_path: Path) -> None:
     assert payload["ok"] is True
     assert payload["scenario_set"] == "public"
     assert "comparative" in payload
+
+
+def test_descriptors_json_registry(monkeypatch) -> None:
+    """descriptors --json returns the active descriptor registry."""
+    import io
+    import sys
+
+    monkeypatch.setenv("AIDOCS_PATH", str(Path(__file__).resolve().parents[2]))
+
+    old_stdout = sys.stdout
+    sys.stdout = buf = io.StringIO()
+    result = cmd_descriptors([str(Path(__file__).resolve().parents[2]), "--json"])
+    sys.stdout = old_stdout
+
+    payload = json.loads(buf.getvalue())
+    assert result == 0
+    assert payload["count"] >= 1
+
+
+def test_descriptors_json_match(monkeypatch) -> None:
+    """descriptors --match --json returns the matching descriptor."""
+    import io
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.setenv("AIDOCS_PATH", str(root))
+
+    old_stdout = sys.stdout
+    sys.stdout = buf = io.StringIO()
+    result = cmd_descriptors([str(root), "--json", "--match", "src/app.py"])
+    sys.stdout = old_stdout
+
+    payload = json.loads(buf.getvalue())
+    assert result == 0
+    assert payload["matched"] is True
+    assert payload["language"] == "python"
+
+
+def test_descriptors_match_human_output_shows_embedded_semantics(monkeypatch) -> None:
+    """descriptors --match prints embedded semantics when present."""
+    import io
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.setenv("AIDOCS_PATH", str(root))
+
+    old_stdout = sys.stdout
+    sys.stdout = buf = io.StringIO()
+    result = cmd_descriptors([str(root), "--match", "Pages/Index.cshtml"])
+    sys.stdout = old_stdout
+
+    output = buf.getvalue()
+    assert result == 0
+    assert "embeds:" in output
+
+
+def test_snapshots_json_reads_manifest(monkeypatch, tmp_path: Path) -> None:
+    """snapshots --json returns the local snapshot manifest."""
+    import io
+    import sys
+
+    root = tmp_path / "aidocs-root"
+    manifest_dir = root / ".MEMORY" / "related-projects" / "index-snapshots"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    (manifest_dir / "manifest.json").write_text(
+        json.dumps({"snapshots": [{"name": "OpenCode", "code_files": 10, "schema_entities": 0, "workflow_rule_count": 1}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AIDOCS_PATH", str(root))
+
+    old_stdout = sys.stdout
+    sys.stdout = buf = io.StringIO()
+    result = cmd_snapshots(["--json"])
+    sys.stdout = old_stdout
+
+    payload = json.loads(buf.getvalue())
+    assert result == 0
+    assert payload["snapshots"][0]["name"] == "OpenCode"
+
+
+def test_descriptors_json_semantics(monkeypatch) -> None:
+    """descriptors --semantics --json returns semantic families/tags."""
+    import io
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.setenv("AIDOCS_PATH", str(root))
+
+    old_stdout = sys.stdout
+    sys.stdout = buf = io.StringIO()
+    result = cmd_descriptors([str(root), "--json", "--semantics"])
+    sys.stdout = old_stdout
+
+    payload = json.loads(buf.getvalue())
+    assert result == 0
+    assert "outline_families" in payload
+    assert "semantic_tags" in payload
+
+
+def test_descriptors_semantics_human_output_includes_coverage(monkeypatch) -> None:
+    """descriptors --semantics prints built-in migration coverage."""
+    import io
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.setenv("AIDOCS_PATH", str(root))
+
+    old_stdout = sys.stdout
+    sys.stdout = buf = io.StringIO()
+    result = cmd_descriptors([str(root), "--semantics"])
+    sys.stdout = old_stdout
+
+    output = buf.getvalue()
+    assert result == 0
+    assert "Built-in descriptors:" in output
+    assert "with extractor family:" in output

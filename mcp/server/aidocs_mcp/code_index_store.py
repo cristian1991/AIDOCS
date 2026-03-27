@@ -8,6 +8,17 @@ import sqlite3
 from pathlib import Path
 
 from .frontend_ast import FrontendAstExtractor
+from .language_descriptors import descriptor_for_language, entry_points_from_descriptors, extractor_family_for_language, language_for_builtin_descriptor, language_for_custom_descriptor, layer_from_descriptor, line_patterns_for_language, load_index_config, module_hints_from_descriptors, outline_family_for_language, outline_patterns_for_language, role_from_descriptor, role_from_descriptor_extended
+from .outline_extractors import (
+    extract_css_outline,
+    extract_csharp_outline,
+    extract_generic_outline,
+    extract_line_patterns,
+    extract_python_outline,
+    extract_resx_outline,
+    generic_outline_patterns,
+    outline_family_patterns,
+)
 from .session_store import SessionStore
 
 
@@ -35,6 +46,7 @@ class CodeIndexStore:
         return conn
 
     def init_db(self, project_root: Path) -> None:
+        self._last_project_root = project_root
         with self.connect(project_root) as conn:
             conn.executescript(
                 """
@@ -46,6 +58,8 @@ class CodeIndexStore:
                 CREATE TABLE IF NOT EXISTS code_files (
                     path TEXT PRIMARY KEY,
                     language TEXT,
+                    language_tier TEXT,
+                    language_source TEXT,
                     checksum TEXT NOT NULL,
                     line_count INTEGER NOT NULL,
                     summary TEXT NOT NULL,
@@ -88,6 +102,8 @@ class CodeIndexStore:
             self._ensure_column(conn, "code_files", "size_bytes", "INTEGER")
             self._ensure_column(conn, "code_files", "mtime_ns", "INTEGER")
             self._ensure_column(conn, "code_files", "parsed", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "code_files", "language_tier", "TEXT")
+            self._ensure_column(conn, "code_files", "language_source", "TEXT")
             self._ensure_column(conn, "code_files", "module", "TEXT")
             self._ensure_column(conn, "code_outlines", "container", "TEXT")
             self._ensure_column(conn, "code_outlines", "is_partial", "INTEGER NOT NULL DEFAULT 0")
@@ -111,8 +127,8 @@ class CodeIndexStore:
 
     # ── Module detection ────────────────────────────────────────────────
 
-    # Manifest files that indicate a directory is a self-contained module.
-    _MODULE_MANIFESTS: dict[str, str] = {
+    # Fallback manifest files (overridden by _index_config.toml module_manifests)
+    _MODULE_MANIFESTS_DEFAULT: dict[str, str] = {
         "package.json": "javascript",
         "Cargo.toml": "rust",
         "pyproject.toml": "python",
@@ -126,8 +142,8 @@ class CodeIndexStore:
         "composer.json": "php",
     }
 
-    # Entry-point files that hint at a module boundary even without a manifest.
-    _ENTRY_POINT_PATTERNS: list[tuple[str, str]] = [
+    # Fallback entry points (overridden by per-language descriptor entry_points)
+    _ENTRY_POINT_PATTERNS_DEFAULT: list[tuple[str, str]] = [
         ("index.ts", "typescript"),
         ("index.js", "javascript"),
         ("index.tsx", "tsx"),
@@ -147,13 +163,35 @@ class CodeIndexStore:
         ("app.py", "python"),
     ]
 
-    # Directories that are never modules even if they have entry points.
-    _MODULE_SKIP_DIRS: set[str] = {
+    # Fallback skip dirs (overridden by _index_config.toml module_detection.skip_dirs)
+    _MODULE_SKIP_DIRS_DEFAULT: set[str] = {
         "node_modules", "dist", "build", "coverage", "obj", "bin",
         "__pycache__", ".venv", "venv", ".git", ".MEMORY", ".opencode",
         ".claude", ".github", ".next", ".docusaurus", "vendor", "vendors",
         "tmp", "temp", ".BACKUP", ".backups", "compiled", "target",
     }
+
+    @property
+    def _MODULE_MANIFESTS(self) -> dict[str, str]:
+        config = load_index_config()
+        manifests = config.get("module_manifests")
+        return dict(manifests) if manifests and isinstance(manifests, dict) else self._MODULE_MANIFESTS_DEFAULT
+
+    @property
+    def _MODULE_SKIP_DIRS(self) -> set[str]:
+        config = load_index_config()
+        skip = config.get("skip_dirs")
+        return set(skip) if skip and isinstance(skip, set) else self._MODULE_SKIP_DIRS_DEFAULT
+
+    def _get_entry_point_patterns(self, project_root: Path) -> list[tuple[str, str]]:
+        """Get entry point patterns: descriptor-defined first, then defaults."""
+        try:
+            eps = entry_points_from_descriptors(project_root)
+            if eps:
+                return list(eps.items())
+        except Exception:
+            pass
+        return self._ENTRY_POINT_PATTERNS_DEFAULT
 
     # Well-known top-level directory names that strongly suggest a module.
     _MODULE_HINT_DIRS_BASE: set[str] = {
@@ -428,10 +466,10 @@ class CodeIndexStore:
                 continue
 
             # Check if this is a well-known module-like directory with source files
-            if name_lower in self._module_hint_dirs():
-                source_count = sum(1 for _ in child.rglob("*") if _.is_file() and self._language_for(_) is not None)
+            if name_lower in self._module_hint_dirs(project_root):
+                source_count = sum(1 for _ in child.rglob("*") if _.is_file() and self._language_for(_, project_root=project_root) is not None)
                 if source_count > 0:
-                    stack = self._guess_stack_from_dir(child)
+                    stack = self._guess_stack_from_dir(project_root, child)
                     seen.add(rel)
                     modules.append(self._build_module_entry(
                         project_root, rel, "module", stack,
@@ -446,13 +484,13 @@ class CodeIndexStore:
                 checked += 1
                 if checked > 500:
                     break  # cap walk to avoid deep traversals
-                if f.is_file() and self._language_for(f) is not None:
+                if f.is_file() and self._language_for(f, project_root=project_root) is not None:
                     if not any(skip in f.relative_to(child).as_posix().lower().split("/") for skip in self._MODULE_SKIP_DIRS):
                         source_count += 1
                         if source_count >= 2:
                             break
             if source_count >= 2:
-                stack = self._guess_stack_from_dir(child)
+                stack = self._guess_stack_from_dir(project_root, child)
                 seen.add(rel)
                 modules.append(self._build_module_entry(
                     project_root, rel, "module", stack,
@@ -473,7 +511,7 @@ class CodeIndexStore:
         file_count = 0
         try:
             for f in module_dir.rglob("*"):
-                if f.is_file() and self._language_for(f) is not None:
+                if f.is_file() and self._language_for(f, project_root=project_root) is not None:
                     if not self._should_skip(project_root, f, include_tests=False):
                         file_count += 1
         except OSError:
@@ -490,25 +528,27 @@ class CodeIndexStore:
         }
 
     def _find_entry_point(self, directory: Path) -> str | None:
-        for pattern, _ in self._ENTRY_POINT_PATTERNS:
+        patterns = self._get_entry_point_patterns(getattr(self, '_last_project_root', None) or directory)
+        for pattern, _ in patterns:
             candidate = directory / pattern
             if candidate.is_file():
                 return candidate.name
         return None
 
     def _stack_from_entry(self, entry: str) -> str | None:
-        for pattern, stack in self._ENTRY_POINT_PATTERNS:
+        patterns = self._get_entry_point_patterns(getattr(self, '_last_project_root', None) or Path('.'))
+        for pattern, stack in patterns:
             if entry == pattern:
                 return stack
         return None
 
-    def _guess_stack_from_dir(self, directory: Path) -> str | None:
+    def _guess_stack_from_dir(self, project_root: Path, directory: Path) -> str | None:
         """Guess the primary stack of a directory by counting file extensions."""
         counts: dict[str, int] = {}
         try:
             for f in directory.rglob("*"):
                 if f.is_file():
-                    lang = self._language_for(f)
+                    lang = self._language_for(f, project_root=project_root)
                     if lang:
                         counts[lang] = counts.get(lang, 0) + 1
         except OSError:
@@ -568,20 +608,23 @@ class CodeIndexStore:
 
     def sync_code_manifest(self, project_root: Path, include_tests: bool = False) -> int:
         self.init_db(project_root)
-        manifest_rows: list[tuple[str, str, int, int]] = []
+        manifest_rows: list[tuple[str, str, str | None, str | None, str, int, int]] = []
         seen_paths: set[str] = set()
 
         for path in self._walk_source_files(project_root, include_tests=include_tests):
             if not path.is_file():
                 continue
             rel = path.relative_to(project_root).as_posix()
-            language = self._language_for(path)
-            if language is None:
+            code_language = self._language_for(path, project_root=project_root)
+            if code_language is None:
                 continue
+            descriptor = descriptor_for_language(project_root, rel, path.suffix.lower())
+            language_tier = descriptor.tier if descriptor else None
+            language_source = descriptor.source if descriptor else None
             stat = path.stat()
             seen_paths.add(rel)
-            role = self._infer_code_role(project_root, rel, language, [])
-            manifest_rows.append((rel, language, role, int(stat.st_size), int(stat.st_mtime_ns)))
+            role = self._infer_code_role(project_root, rel, code_language, [])
+            manifest_rows.append((rel, code_language, language_tier, language_source, role, int(stat.st_size), int(stat.st_mtime_ns)))
 
         with self.connect(project_root) as conn:
             existing_paths = {row["path"] for row in conn.execute("SELECT path FROM code_files")}
@@ -591,7 +634,7 @@ class CodeIndexStore:
                 conn.execute("DELETE FROM code_outlines WHERE path = ?", (stale,))
                 conn.execute("DELETE FROM code_edges WHERE source_path = ?", (stale,))
 
-            for rel, language, role, size_bytes, mtime_ns in manifest_rows:
+            for rel, language, language_tier, language_source, role, size_bytes, mtime_ns in manifest_rows:
                 current = conn.execute(
                     "SELECT size_bytes, mtime_ns FROM code_files WHERE path = ? LIMIT 1",
                     (rel,),
@@ -602,10 +645,12 @@ class CodeIndexStore:
                     parsed = int(parsed_row["parsed"]) if parsed_row else 0
                 conn.execute(
                     """
-                    INSERT INTO code_files (path, language, checksum, line_count, summary, role, size_bytes, mtime_ns, parsed)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO code_files (path, language, language_tier, language_source, checksum, line_count, summary, role, size_bytes, mtime_ns, parsed)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(path) DO UPDATE SET
                       language=excluded.language,
+                      language_tier=excluded.language_tier,
+                      language_source=excluded.language_source,
                       role=excluded.role,
                       size_bytes=excluded.size_bytes,
                       mtime_ns=excluded.mtime_ns,
@@ -614,7 +659,7 @@ class CodeIndexStore:
                         ELSE 0
                       END
                     """,
-                    (rel, language, "", 0, "", role, size_bytes, mtime_ns, parsed),
+                    (rel, language, language_tier, language_source, "", 0, "", role, size_bytes, mtime_ns, parsed),
                 )
         return len(manifest_rows)
 
@@ -626,7 +671,7 @@ class CodeIndexStore:
     ) -> int:
         self.init_db(project_root)
         self.sync_code_manifest(project_root, include_tests=include_tests)
-        rows: list[tuple[str, str, str, int, str, str | None, int, int, int]] = []
+        rows: list[tuple[str, str, str | None, str | None, str, int, str, str | None, int, int, int]] = []
         outline_rows: list[tuple[str, str, str, int, str | None, int]] = []
         edge_rows: list[tuple[str, str, str]] = []
 
@@ -636,7 +681,7 @@ class CodeIndexStore:
 
         existing_meta = {}
         with self.connect(project_root) as conn:
-            for row in conn.execute("SELECT path, checksum, size_bytes, mtime_ns, language, line_count, summary, role, parsed FROM code_files"):
+            for row in conn.execute("SELECT path, checksum, size_bytes, mtime_ns, language, language_tier, language_source, line_count, summary, role, parsed FROM code_files"):
                 existing_meta[row["path"]] = dict(row)
 
         seen_paths: set[str] = set()
@@ -647,9 +692,12 @@ class CodeIndexStore:
             if scoped_paths is not None and rel not in scoped_paths:
                 continue
             seen_paths.add(rel)
-            language = self._language_for(path)
-            if language is None:
+            code_language = self._language_for(path, project_root=project_root)
+            if code_language is None:
                 continue
+            descriptor = descriptor_for_language(project_root, rel, path.suffix.lower())
+            language_tier = descriptor.tier if descriptor else None
+            language_source = descriptor.source if descriptor else None
             stat = path.stat()
             size_bytes = int(stat.st_size)
             mtime_ns = int(stat.st_mtime_ns)
@@ -662,6 +710,8 @@ class CodeIndexStore:
                         (
                             rel,
                             str(existing["language"]),
+                            existing.get("language_tier"),
+                            existing.get("language_source"),
                             str(existing["checksum"]),
                             int(existing["line_count"]),
                             str(existing["summary"]),
@@ -687,15 +737,15 @@ class CodeIndexStore:
             checksum = hashlib.sha256(text.encode("utf-8")).hexdigest()
             line_count = len(text.splitlines())
             summary = self._summarize(text, path.name)
-            outlines = self._extract_outline(text, language)
-            role = self._infer_code_role(project_root, rel, language, outlines)
-            rows.append((rel, language, checksum, line_count, summary, role, size_bytes, mtime_ns))
+            outlines = self._extract_outline(project_root, text, code_language)
+            role = self._infer_code_role(project_root, rel, code_language, outlines)
+            rows.append((rel, code_language, language_tier, language_source, checksum, line_count, summary, role, size_bytes, mtime_ns))
             rows[-1] = (*rows[-1], 1)
             outline_rows.extend(
                 (rel, symbol, kind, line_number, container, 1 if is_partial else 0)
                 for symbol, kind, line_number, container, is_partial in outlines
             )
-            edge_rows.extend((rel, target, kind) for target, kind in self._extract_edges(text, language))
+            edge_rows.extend((rel, target, kind) for target, kind in self._extract_edges(text, code_language))
 
         with self.connect(project_root) as conn:
             targets_to_replace = scoped_paths if scoped_paths is not None else seen_paths
@@ -705,7 +755,7 @@ class CodeIndexStore:
             outline_rows = list(dict.fromkeys(outline_rows))
             edge_rows = list(dict.fromkeys(edge_rows))
             conn.executemany(
-                "INSERT OR REPLACE INTO code_files (path, language, checksum, line_count, summary, role, size_bytes, mtime_ns, parsed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO code_files (path, language, language_tier, language_source, checksum, line_count, summary, role, size_bytes, mtime_ns, parsed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
             conn.executemany(
@@ -735,7 +785,15 @@ class CodeIndexStore:
             role_rows = conn.execute(
                 "SELECT COALESCE(role, 'unknown') AS role, COUNT(*) AS count FROM code_files GROUP BY COALESCE(role, 'unknown') ORDER BY count DESC, role ASC"
             ).fetchall()
+            tier_rows = conn.execute(
+                "SELECT COALESCE(language_tier, 'unknown') AS tier, COUNT(*) AS count FROM code_files GROUP BY COALESCE(language_tier, 'unknown') ORDER BY count DESC, tier ASC"
+            ).fetchall()
+            source_rows = conn.execute(
+                "SELECT COALESCE(language_source, 'unknown') AS source, COUNT(*) AS count FROM code_files GROUP BY COALESCE(language_source, 'unknown') ORDER BY count DESC, source ASC"
+            ).fetchall()
         roles = {row["role"]: int(row["count"]) for row in role_rows}
+        tiers = {row["tier"]: int(row["count"]) for row in tier_rows}
+        sources = {row["source"]: int(row["count"]) for row in source_rows}
         role_groups: dict[str, int] = {}
         for role, count in roles.items():
             group = self._role_group(role)
@@ -749,6 +807,8 @@ class CodeIndexStore:
             "code_edges": int(edge_count),
             "roles": roles,
             "role_groups": role_groups,
+            "language_tiers": tiers,
+            "language_sources": sources,
         }
 
     def search_code(self, project_root: Path, query: str, limit: int = 10) -> list[dict[str, str | int]]:
@@ -760,7 +820,7 @@ class CodeIndexStore:
         with self.connect(project_root) as conn:
             rows = conn.execute(
                 """
-                SELECT path, language, line_count, summary, role
+                SELECT path, language, language_tier, language_source, line_count, summary, role
                 FROM code_files
                 WHERE path LIKE ? OR summary LIKE ?
                 LIMIT 250
@@ -777,6 +837,11 @@ class CodeIndexStore:
             score += path_weight
             if path_weight:
                 reasons.append(f"path_weight:{path_weight}")
+            tier = str(row["language_tier"] or "unknown")
+            tier_weight = {"rich": 10, "heuristic": 3, "summary": 1}.get(tier, 0)
+            score += tier_weight
+            if tier_weight:
+                reasons.append(f"tier_weight:{tier_weight}")
             score -= row["path"].count("/")
             ranked.append((score, row, reasons))
         ranked.sort(key=lambda item: (-item[0], item[1]["path"]))
@@ -784,6 +849,8 @@ class CodeIndexStore:
             {
                 "path": row["path"],
                 "language": row["language"],
+                "language_tier": row["language_tier"] or "unknown",
+                "language_source": row["language_source"] or "unknown",
                 "line_count": int(row["line_count"]),
                 "summary": row["summary"],
                 "role": row["role"] or "unknown",
@@ -1346,17 +1413,19 @@ class CodeIndexStore:
                 continue
             seen.add(key)
 
+            # Only fetch snippets for high-scoring method/property matches to prevent output overflow
             snippet = None
-            try:
-                snippet = self.get_symbol_snippet(
-                    project_root,
-                    path=path,
-                    symbol=symbol,
-                    kind=kind,
-                    line_number=int(item["line_number"]),
-                )
-            except FileNotFoundError:
-                snippet = None
+            if score >= 60 and kind in ("method", "property", "field"):
+                try:
+                    snippet = self.get_symbol_snippet(
+                        project_root,
+                        path=path,
+                        symbol=symbol,
+                        kind=kind,
+                        line_number=int(item["line_number"]),
+                    )
+                except FileNotFoundError:
+                    snippet = None
 
             merged.append(
                 {
@@ -1386,6 +1455,10 @@ class CodeIndexStore:
             if score <= 0:
                 continue
             seen.add(key)
+            # Truncate file summaries to prevent oversized results
+            summary = str(item["summary"] or "")
+            if len(summary) > 300:
+                summary = summary[:300] + "..."
             merged.append(
                 {
                     "score": score,
@@ -1395,7 +1468,7 @@ class CodeIndexStore:
                     "kind": "file_match",
                     "line_number": None,
                     "container": None,
-                    "snippet": item["summary"],
+                    "snippet": summary,
                 }
             )
 
@@ -2517,7 +2590,11 @@ class CodeIndexStore:
         merged: list[dict[str, object]] = []
         seen: set[tuple[str, str | None, int | None]] = set()
 
-        policy_tokens = ("policy", "permission", "role", "claim", "guard", "authorize", "auth")
+        policy_tokens = (
+            "policy", "permission", "role", "claim", "guard", "authorize", "auth",
+            "middleware", "filter", "tenant", "scope", "isolation", "security",
+            "require", "attribute", "handler", "interceptor", "validator",
+        )
 
         for item in symbol_matches:
             path = str(item["path"])
@@ -3663,7 +3740,16 @@ class CodeIndexStore:
             findings.append({
                 "area": "files",
                 "count": len(code_files),
-                "top": [{"path": f["path"], "role": f["role"]} for f in code_files[:3]],
+                "top": [
+                    {
+                        "path": f["path"],
+                        "role": f["role"],
+                        "language": f.get("language"),
+                        "language_tier": f.get("language_tier"),
+                        "language_source": f.get("language_source"),
+                    }
+                    for f in code_files[:3]
+                ],
                 "roles_found": roles,
             })
             next_tools.append({"tool": "code_get_outline", "why": "Understand structure of the top files"})
@@ -4441,9 +4527,12 @@ class CodeIndexStore:
         return cls._PRUNE_DIRS_BASE | INDEX_EXTRA_SKIP_DIRS
 
     @classmethod
-    def _module_hint_dirs(cls) -> set[str]:
+    def _module_hint_dirs(cls, project_root: Path | None = None) -> set[str]:
         from .config import INDEX_EXTRA_MODULE_HINTS
-        return cls._MODULE_HINT_DIRS_BASE | INDEX_EXTRA_MODULE_HINTS
+        base = cls._MODULE_HINT_DIRS_BASE | INDEX_EXTRA_MODULE_HINTS
+        if project_root is not None:
+            base = base | module_hints_from_descriptors(project_root)
+        return base
 
     @staticmethod
     def _max_json_size() -> int:
@@ -4462,6 +4551,7 @@ class CodeIndexStore:
             dirnames[:] = [
                 d for d in dirnames
                 if d.lower() not in self._prune_dirs()
+                and d.lower() != "index_languages"
                 and not d.startswith(".")
                 and not (d.lower() == "build" and "website" in rel_parts)
                 and not (d.lower() == "lib" and "wwwroot" in rel_parts)
@@ -4522,6 +4612,8 @@ class CodeIndexStore:
         if rel.startswith(prefixes):
             return True
         parts = rel.lower().split("/")
+        if "index_languages" in parts:
+            return True
         if any(segment.startswith(".temp-") for segment in parts):
             return True
         if any(
@@ -4576,52 +4668,11 @@ class CodeIndexStore:
                 return True
         return False
 
-    def _language_for(self, path: Path) -> str | None:
-        lower = path.name.lower()
-        # .cshtml.cs is C# code-behind, not razor
-        if lower.endswith(".cshtml.cs"):
-            return "csharp"
-        if lower.endswith(".cshtml"):
-            return "razor"
-        mapping = {
-            ".py": "python",
-            ".js": "javascript",
-            ".ts": "typescript",
-            ".tsx": "tsx",
-            ".jsx": "jsx",
-            ".cs": "csharp",
-            ".rs": "rust",
-            ".go": "go",
-            ".java": "java",
-            ".kt": "kotlin",
-            ".kts": "kotlin",
-            ".rb": "ruby",
-            ".php": "php",
-            ".ex": "elixir",
-            ".exs": "elixir",
-            ".swift": "swift",
-            ".dart": "dart",
-            ".lua": "lua",
-            ".sh": "shell",
-            ".bash": "shell",
-            ".ps1": "powershell",
-            ".sql": "sql",
-            ".html": "html",
-            ".htm": "html",
-            ".css": "css",
-            ".scss": "scss",
-            ".sass": "sass",
-            ".less": "less",
-            ".vue": "vue",
-            ".svelte": "svelte",
-            ".resx": "resx",
-            ".toml": "toml",
-            ".yaml": "yaml",
-            ".yml": "yaml",
-            ".json": "json",
-            ".prisma": "prisma",
-        }
-        return mapping.get(path.suffix.lower())
+    def _language_for(self, path: Path, project_root: Path | None = None) -> str | None:
+        if project_root is not None:
+            rel = path.relative_to(project_root).as_posix()
+            return language_for_custom_descriptor(project_root, rel, path.suffix.lower())
+        return language_for_builtin_descriptor(path.as_posix(), path.suffix.lower())
 
     def _summarize(self, text: str, file_name: str, max_lines: int = 8) -> str:
         lines = [line.strip() for line in text.splitlines() if line.strip()][:max_lines]
@@ -4629,132 +4680,68 @@ class CodeIndexStore:
             return file_name
         return " | ".join(lines)[:400]
 
-    def _extract_outline(self, text: str, language: str) -> list[tuple[str, str, int, str | None, bool]]:
+    def _extract_outline(self, project_root: Path, text: str, code_language: str) -> list[tuple[str, str, int, str | None, bool]]:
         outlines: list[tuple[str, str, int, str | None, bool]] = []
         patterns: list[tuple[str, str]] = []
-        if language == "python":
-            return self._extract_python_outline(text)
-        elif language in {"javascript", "typescript", "jsx", "tsx"}:
-            ast_outline = self.frontend_ast.extract_outline(text, language)
+        line_patterns = line_patterns_for_language(project_root, code_language)
+        extractor_family = extractor_family_for_language(project_root, code_language)
+        if extractor_family == "python_ast":
+            outlines.extend(extract_python_outline(text))
+        elif extractor_family in {"javascript_ast", "typescript_ast", "jsx_ast", "tsx_ast"}:
+            ast_outline = self.frontend_ast.extract_outline(text, code_language)
             if ast_outline is not None:
                 outlines.extend(ast_outline)
                 for line_number, line in enumerate(text.splitlines(), start=1):
                     initializer = self._extract_js_initializer(line)
                     if initializer is not None:
                         outlines.append((initializer, "initializer", line_number, None, False))
-                return outlines
-            patterns = [
-                (r"^\s*(?:export\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)", "class"),
-                (r"^\s*(?:export\s+)?interface\s+([A-Za-z_][A-Za-z0-9_]*)", "interface"),
-                (r"^\s*(?:export\s+)?type\s+([A-Za-z_][A-Za-z0-9_]*)\s*=", "type_alias"),
-                (r"^\s*(?:export\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)", "enum"),
-                (r"^\s*(?:export\s+)?(?:default\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)", "function"),
-                (r"^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)", "function"),
-                (r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?\(", "function"),
-                (r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?[A-Za-z_][A-Za-z0-9_]*\s*=>", "function"),
-                # Namespace patterns: window.Foo = { ... } or window.Foo = window.Foo || {}
-                (r"^\s*window\.([A-Za-z_][A-Za-z0-9_]*)\s*=", "namespace"),
-                # Object method assignment: Foo.bar = function(...)
-                (r"^\s*([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s+)?function", "method"),
-                # AJAX/fetch endpoints: fetch('/api/...')
-                (r"""fetch\(\s*['"`](/api/[^'"`]+)['"`]""", "api_call"),
-            ]
-        elif language == "csharp":
-            return self._extract_csharp_outline(text)
-        elif language == "razor":
-            return self._extract_razor_outline(text)
-        elif language == "resx":
-            return self._extract_resx_outline(text)
-        elif language == "css":
-            return self._extract_css_outline(text)
-        elif language == "rust":
-            patterns = [
-                (r"^\s*(?:pub(?:\(crate\))?\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)", "struct"),
-                (r"^\s*(?:pub(?:\(crate\))?\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)", "enum"),
-                (r"^\s*(?:pub(?:\(crate\))?\s+)?trait\s+([A-Za-z_][A-Za-z0-9_]*)", "trait"),
-                (r"^\s*(?:pub(?:\(crate\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)", "function"),
-                (r"^\s*(?:pub(?:\(crate\))?\s+)?type\s+([A-Za-z_][A-Za-z0-9_]*)", "type_alias"),
-                (r"^\s*(?:pub(?:\(crate\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)", "module"),
-                (r"^\s*impl(?:<[^>]*>)?\s+([A-Za-z_][A-Za-z0-9_:<>]*)", "impl"),
-            ]
-        elif language == "go":
-            patterns = [
-                (r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\s+struct", "struct"),
-                (r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\s+interface", "interface"),
-                (r"^\s*func\s+(?:\([^)]*\)\s+)?([A-Za-z_][A-Za-z0-9_]*)", "function"),
-                (r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\s+", "type_alias"),
-            ]
-        elif language == "java":
-            patterns = [
-                (r"^\s*(?:public|private|protected|static|abstract|final|\s)*class\s+([A-Za-z_][A-Za-z0-9_]*)", "class"),
-                (r"^\s*(?:public|private|protected|static|abstract|final|\s)*interface\s+([A-Za-z_][A-Za-z0-9_]*)", "interface"),
-                (r"^\s*(?:public|private|protected|static|abstract|final|\s)*enum\s+([A-Za-z_][A-Za-z0-9_]*)", "enum"),
-                (r"^\s*(?:public|private|protected|static|abstract|final|synchronized|\s)+[A-Za-z_<>,\[\]?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", "method"),
-            ]
-        elif language == "kotlin":
-            patterns = [
-                (r"^\s*(?:data\s+|sealed\s+|abstract\s+|open\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)", "class"),
-                (r"^\s*(?:fun\s+)([A-Za-z_][A-Za-z0-9_]*)", "function"),
-                (r"^\s*interface\s+([A-Za-z_][A-Za-z0-9_]*)", "interface"),
-                (r"^\s*(?:enum\s+class|enum)\s+([A-Za-z_][A-Za-z0-9_]*)", "enum"),
-                (r"^\s*object\s+([A-Za-z_][A-Za-z0-9_]*)", "object"),
-            ]
-        elif language == "ruby":
-            patterns = [
-                (r"^\s*class\s+([A-Za-z_][A-Za-z0-9_:]*)", "class"),
-                (r"^\s*module\s+([A-Za-z_][A-Za-z0-9_:]*)", "module"),
-                (r"^\s*def\s+(?:self\.)?([A-Za-z_][A-Za-z0-9_!?]*)", "method"),
-            ]
-        elif language == "php":
-            patterns = [
-                (r"^\s*(?:abstract\s+|final\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)", "class"),
-                (r"^\s*interface\s+([A-Za-z_][A-Za-z0-9_]*)", "interface"),
-                (r"^\s*trait\s+([A-Za-z_][A-Za-z0-9_]*)", "trait"),
-                (r"^\s*(?:public|private|protected|static|\s)*function\s+([A-Za-z_][A-Za-z0-9_]*)", "function"),
-            ]
-        elif language == "elixir":
-            patterns = [
-                (r"^\s*defmodule\s+([A-Za-z_][A-Za-z0-9_.]*)", "module"),
-                (r"^\s*(?:def|defp)\s+([A-Za-z_][A-Za-z0-9_!?]*)", "function"),
-            ]
-        elif language in {"vue", "svelte"}:
-            # Extract script content patterns similar to JS/TS
-            patterns = [
-                (r"^\s*(?:export\s+)?(?:default\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)", "function"),
-                (r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?\(", "function"),
-                (r"^\s*(?:export\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)", "class"),
-            ]
-        elif language == "sql":
-            patterns = [
-                (r"(?i)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:\")?([A-Za-z_][A-Za-z0-9_.]*)(?:\")?", "table"),
-                (r"(?i)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:\")?([A-Za-z_][A-Za-z0-9_.]*)(?:\")?", "index"),
-                (r"(?i)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:\")?([A-Za-z_][A-Za-z0-9_.]*)(?:\")?", "view"),
-                (r"(?i)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(?:\")?([A-Za-z_][A-Za-z0-9_.]*)(?:\")?", "function"),
-            ]
-        elif language == "html":
-            # Minimal: just detect script/link references
-            patterns = []
+            else:
+                patterns = [
+                    (r"^\s*(?:export\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)", "class"),
+                    (r"^\s*(?:export\s+)?interface\s+([A-Za-z_][A-Za-z0-9_]*)", "interface"),
+                    (r"^\s*(?:export\s+)?type\s+([A-Za-z_][A-Za-z0-9_]*)\s*=", "type_alias"),
+                    (r"^\s*(?:export\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)", "enum"),
+                    (r"^\s*(?:export\s+)?(?:default\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)", "function"),
+                    (r"^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)", "function"),
+                    (r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?\(", "function"),
+                    (r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?[A-Za-z_][A-Za-z0-9_]*\s*=>", "function"),
+                    (r"^\s*window\.([A-Za-z_][A-Za-z0-9_]*)\s*=", "namespace"),
+                    (r"^\s*([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s+)?function", "method"),
+                    (r"""fetch\(\s*['"`](/api/[^'"`]+)['"`]""", "api_call"),
+                ]
+        elif extractor_family == "csharp_rich":
+            outlines.extend(extract_csharp_outline(text))
+        elif extractor_family == "resx_rich":
+            outlines.extend(extract_resx_outline(text))
+        elif extractor_family == "css_rich":
+            outlines.extend(extract_css_outline(text))
+        else:
+            patterns = outline_patterns_for_language(project_root, code_language)
+            if not patterns:
+                family = outline_family_for_language(project_root, code_language)
+                if family:
+                    patterns = outline_family_patterns(family)
+            if not patterns:
+                patterns = generic_outline_patterns(code_language)
 
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            for pattern, kind in patterns:
-                match = re.match(pattern, line)
-                if match:
-                    symbol = match.group(1)
-                    js_kind = kind
-                    if language in {"javascript", "typescript", "jsx", "tsx"}:
-                        if symbol.startswith("use") and len(symbol) > 3 and symbol[3:4].isupper():
-                            js_kind = "hook"
-                        elif symbol[:1].isupper() and symbol.endswith("Provider"):
-                            js_kind = "context_provider"
-                        elif symbol[:1].isupper():
-                            js_kind = "component"
-                    outlines.append((symbol, js_kind, line_number, None, False))
-                    break
-            if language in {"javascript", "typescript", "jsx", "tsx"}:
+        for symbol, kind, line_number, container, is_partial in extract_generic_outline(text, patterns):
+            js_kind = kind
+            if code_language in {"javascript", "typescript", "jsx", "tsx"}:
+                if symbol.startswith("use") and len(symbol) > 3 and symbol[3:4].isupper():
+                    js_kind = "hook"
+                elif symbol[:1].isupper() and symbol.endswith("Provider"):
+                    js_kind = "context_provider"
+                elif symbol[:1].isupper():
+                    js_kind = "component"
+            outlines.append((symbol, js_kind, line_number, container, is_partial))
+        for symbol, kind, line_number, container, is_partial in extract_line_patterns(text, line_patterns):
+            outlines.append((symbol, kind, line_number, container, is_partial))
+        if code_language in {"javascript", "typescript", "jsx", "tsx"}:
+            for line_number, line in enumerate(text.splitlines(), start=1):
                 initializer = self._extract_js_initializer(line)
                 if initializer is not None:
                     outlines.append((initializer, "initializer", line_number, None, False))
-        return outlines
+        return list(dict.fromkeys(outlines))
 
     def _extract_csharp_outline(self, text: str) -> list[tuple[str, str, int, str | None, bool]]:
         outlines: list[tuple[str, str, int, str | None, bool]] = []
@@ -5500,42 +5487,25 @@ class CodeIndexStore:
     def _path_weight(self, project_root: Path, path: str) -> int:
         lower = path.lower()
         score = 0
-        positive_tokens = (
-            "/src/",
-            "/app/",
-            "/web/",
-            "/components/",
-            "/services/",
-            "/controllers/",
-            "/models/",
-            "/domain/",
-            "/infrastructure/",
-            "/application/",
-        )
-        negative_tokens = (
-            "/test/",
-            "/tests/",
-            "/fixture/",
-            "/fixtures/",
-            "/mock/",
-            "/mocks/",
-            "/example/",
-            "/examples/",
-            "/template/",
-            "/templates/",
-            "/generated/",
-            "/snapshot/",
-            "/assets/",
-            "/pwaassets/",
-            "/wwwroot/lib/",
-            "/static/",
-        )
+        config = load_index_config()
+        positive_tokens = config.get("path_weight_positive", (
+            "/src/", "/app/", "/web/", "/components/", "/services/",
+            "/controllers/", "/models/", "/domain/", "/infrastructure/", "/application/",
+        ))
+        negative_tokens = config.get("path_weight_negative", (
+            "/test/", "/tests/", "/fixture/", "/fixtures/",
+            "/mock/", "/mocks/", "/example/", "/examples/",
+            "/template/", "/templates/", "/generated/",
+            "/snapshot/", "/assets/", "/pwaassets/", "/wwwroot/lib/", "/static/",
+        ))
+        pos_score = config.get("path_weight_positive_score", 20)
+        neg_score = config.get("path_weight_negative_score", -35)
         for token in positive_tokens:
             if token in lower:
-                score += 20
+                score += pos_score
         for token in negative_tokens:
             if token in lower:
-                score -= 35
+                score += neg_score
         hints = self._load_indexing_hints(project_root)
         for root in hints["preferred_roots"]:
             if lower.startswith(root):
@@ -5545,12 +5515,20 @@ class CodeIndexStore:
                 score -= 60
         return score
 
-    _ROLE_RELEVANCE: dict[str, int] = {
+    _ROLE_RELEVANCE_DEFAULT: dict[str, int] = {
         "service": 25, "controller": 20, "page-model": 18, "page-view": 15,
         "data-model": 15, "policy": 15, "partial-view": 12, "abstraction": 10,
         "configuration": 8, "utility": 5, "script": 3, "resource": 2,
         "asset-style": 1, "asset-style-source": 1,
     }
+
+    @property
+    def _ROLE_RELEVANCE(self) -> dict[str, int]:
+        config = load_index_config()
+        config_relevance = config.get("role_relevance")
+        if config_relevance and isinstance(config_relevance, dict):
+            return {k: int(v) for k, v in config_relevance.items()}
+        return self._ROLE_RELEVANCE_DEFAULT
 
     def _role_relevance_boost(self, project_root: Path, path: str) -> int:
         """Score boost based on file role — services and controllers rank highest."""
@@ -5617,6 +5595,25 @@ class CodeIndexStore:
 
     def _infer_layer_from_path(self, path: str) -> str:
         lower = path.lower()
+        suffix = Path(path).suffix.lower()
+        # 1. Try language-descriptor layer_tokens first
+        try:
+            # Use the most recent project_root from init_db if available
+            project_root = getattr(self, '_last_project_root', None)
+            if project_root:
+                layer = layer_from_descriptor(project_root, path, suffix)
+                if layer:
+                    return layer
+        except Exception:
+            pass
+        # 2. Fall back to global config default_layer_tokens
+        config = load_index_config()
+        default_tokens = config.get("default_layer_tokens", {})
+        if isinstance(default_tokens, dict):
+            for layer, tokens in default_tokens.items():
+                if any(token in lower for token in tokens):
+                    return layer
+        # 3. Hardcoded fallback (for when no config is loaded)
         if any(token in lower for token in ("dto", "viewmodel", "model", "entity")):
             return "data"
         if any(token in lower for token in ("controller", "api", "endpoint", "route")):
@@ -5631,35 +5628,26 @@ class CodeIndexStore:
         self,
         project_root: Path,
         path: str,
-        language: str,
+        code_language: str,
         outlines: list[tuple[str, str, int, str | None, bool]],
     ) -> str | None:
+        descriptor_role = role_from_descriptor(project_root, path, Path(path).suffix.lower())
+        if descriptor_role:
+            return descriptor_role
         lower = path.lower()
         parts = lower.split("/")
         name = Path(path).stem.lower()
         kinds = {item[1] for item in outlines}
-        if language in {"jsx", "tsx"}:
-            if lower.endswith("/page.tsx") or lower.endswith("/page.jsx"):
-                return "page"
-            if "pages" in parts:
-                return "page"
-            if lower.endswith("/layout.tsx") or lower.endswith("/layout.jsx"):
-                return "layout"
-            if name.endswith("provider") or name == "providers":
-                return "context-provider"
-            if "hooks" in parts:
-                return "hook-module"
+        if code_language in {"jsx", "tsx"}:
             if "context_provider" in kinds:
                 return "context-provider"
             if "hook" in kinds and kinds <= {"hook"}:
                 return "hook-module"
             if "component" in kinds:
                 return "component"
-            if "components" in parts:
-                return "component"
             if self._looks_like_component_name(Path(path).stem):
                 return "component"
-        if language in {"javascript", "typescript"}:
+        if code_language in {"javascript", "typescript"}:
             plugin_role = self._infer_plugin_structure_role(project_root, path)
             if plugin_role is not None:
                 return plugin_role
@@ -5671,47 +5659,25 @@ class CodeIndexStore:
                 return "framework-generator"
             if "core" in parts:
                 return "core-module"
-            if lower.endswith("/route.ts") or lower.endswith("/route.js"):
-                return "route-handler"
-            if name == "middleware" or lower.endswith("/middleware.ts") or lower.endswith("/middleware.js"):
-                return "middleware"
             if lower.endswith((".config.js", ".config.ts", ".config.mjs", ".config.cjs")) or any(token in parts for token in ("schemas", "schema")):
                 return "config-module"
             if lower.endswith((".d.ts", "-env.d.ts")) or name in {"next-env", "sst-env", "env", "sidebars"}:
                 return "config-module"
             if name in {"vite", "happydom", "vitest", "jest", "tsconfig"}:
                 return "config-module"
-            if any(token in parts for token in ("scripts", "script", "bin", "cli")):
-                return "script"
             if any(token in parts for token in ("lib", "utils", "helpers")):
                 return "utility-module"
-            if any(token in parts for token in ("server", "runtime")):
-                return "server-module"
             if any(token in parts for token in ("prisma", "db", "database")):
                 return "data-access"
-            if "hooks" in parts and (name.startswith("use") or "hook" in name):
-                return "hook-module"
-            if any(token in parts for token in ("components", "features")) and language == "typescript" and name == "index":
-                return "barrel-module"
             if name in {"types", "type", "storage", "registry", "constants", "page-key", "evidence"}:
                 return "utility-module"
             if any(token in parts for token in ("assets", "pwaassets", "static")):
                 return "asset-script"
-            if any(token in parts for token in ("api",)):
-                return "route-handler"
-            if any(token in parts for token in ("models", "types", "entities")):
-                return "data-model"
-            if any(token in parts for token in ("services",)):
-                return "service"
-            if any(token in parts for token in ("middleware",)):
-                return "middleware"
-            if any(token in parts for token in ("workers", "worker", "jobs")):
-                return "worker"
             if "initializer" in kinds:
                 return "initializer-module"
             if "hook" in kinds and kinds <= {"hook"}:
                 return "hook-module"
-        if language == "csharp":
+        if code_language == "csharp":
             logical_name = name.split(".", 1)[0]
             if lower.endswith(".cshtml.cs"):
                 return "page-model"
@@ -5719,14 +5685,6 @@ class CodeIndexStore:
                 return "page-model"
             if "pages" in parts and logical_name.endswith("pagebase"):
                 return "page-model"
-            if "dto" in parts or "dtos" in parts:
-                return "data-model"
-            if "entities" in parts:
-                return "data-model"
-            if "enums" in parts:
-                return "data-model"
-            if "interfaces" in parts:
-                return "abstraction"
             if lower.endswith("program.cs"):
                 return "initializer-module"
             if lower.endswith("dependencyinjection.cs"):
@@ -5735,18 +5693,6 @@ class CodeIndexStore:
                 return "data-access"
             if "seeding" in parts or logical_name.startswith("seed"):
                 return "script"
-            if "hubs" in parts or name.endswith("hub"):
-                return "hub"
-            if "viewcomponents" in parts or name.endswith("viewcomponent"):
-                return "component"
-            if "authorization" in parts or name.endswith(("handler", "provider", "requirement", "attribute")):
-                return "policy"
-            if name.endswith("controller"):
-                return "controller"
-            if logical_name.endswith(("service", "renderer", "sanitizer", "processor", "provider")):
-                return "service"
-            if name.endswith("policy"):
-                return "policy"
             if logical_name.endswith(("converter", "binder")):
                 return "configuration"
             if name.endswith(("configuration", "config")) or any(token in parts for token in ("configurations", "entityconfigurations", "mapping")):
@@ -5769,40 +5715,25 @@ class CodeIndexStore:
                 return "data-access"
             if any(token in parts for token in ("areas",)):
                 return "controller"
-            if "xtrareports" in parts or "reports" in parts:
-                return "report"
-            if "properties" in parts:
-                return "configuration"
-        if language == "python":
-            if lower.endswith("__init__.py"):
-                return "module-init"
-            if any(token in parts for token in ("scripts", "bin", "cli", "tools")):
-                return "script"
-            if any(token in parts for token in ("utils", "helpers")):
-                return "utility-module"
-        if language == "razor":
-            if lower.endswith("_layout.cshtml"):
-                return "layout"
-            if lower.endswith("_viewstart.cshtml") or lower.endswith("_viewimports.cshtml"):
-                return "configuration"
+        if code_language == "python":
+            pass
+        if code_language == "razor":
             if name.startswith("_"):
                 return "partial-view"
-            if "shared" in parts:
-                return "shared-view"
             return "page-view"
-        if language == "resx":
+        if code_language == "resx":
             return "resource"
-        if language == "css":
+        if code_language == "css":
             if "input" in name or "tailwind" in name:
                 return "asset-style-source"
             return "asset-style"
-        if language == "powershell":
+        if code_language == "powershell":
             return "script"
-        if language == "shell":
+        if code_language == "shell":
             return "script"
 
         # ── New language role inference ──────────────────────────────────
-        if language == "rust":
+        if code_language == "rust":
             if name in ("main", "lib"):
                 return "core-module"
             if name == "mod":
@@ -5818,7 +5749,7 @@ class CodeIndexStore:
             if any(token in parts for token in ("services", "engine", "core")):
                 return "service"
             return "core-module"
-        if language == "go":
+        if code_language == "go":
             if name == "main":
                 return "core-module"
             if any(token in parts for token in ("handlers", "api", "routes")):
@@ -5832,7 +5763,7 @@ class CodeIndexStore:
             if name.endswith("_test"):
                 return "script"
             return "core-module"
-        if language == "java":
+        if code_language == "java":
             if name.endswith(("controller", "resource")):
                 return "controller"
             if name.endswith("service") or name.endswith("serviceimpl"):
@@ -5846,7 +5777,7 @@ class CodeIndexStore:
             if name.endswith(("test", "spec")):
                 return "script"
             return "core-module"
-        if language == "kotlin":
+        if code_language == "kotlin":
             if name.endswith(("controller", "resource")):
                 return "controller"
             if name.endswith("service"):
@@ -5856,7 +5787,7 @@ class CodeIndexStore:
             if name.endswith(("entity", "model", "dto")):
                 return "data-model"
             return "core-module"
-        if language == "ruby":
+        if code_language == "ruby":
             if any(token in parts for token in ("controllers",)):
                 return "controller"
             if any(token in parts for token in ("models",)):
@@ -5868,7 +5799,7 @@ class CodeIndexStore:
             if name.endswith("_spec") or name.endswith("_test"):
                 return "script"
             return "core-module"
-        if language == "php":
+        if code_language == "php":
             if name.endswith("controller"):
                 return "controller"
             if name.endswith("model") or any(token in parts for token in ("models", "entities")):
@@ -5878,7 +5809,7 @@ class CodeIndexStore:
             if any(token in parts for token in ("views", "templates", "resources")):
                 return "page-view"
             return "core-module"
-        if language == "elixir":
+        if code_language == "elixir":
             if any(token in parts for token in ("controllers",)):
                 return "controller"
             if any(token in parts for token in ("views", "templates")):
@@ -5886,21 +5817,21 @@ class CodeIndexStore:
             if name.endswith("_test"):
                 return "script"
             return "core-module"
-        if language == "sql":
+        if code_language == "sql":
             if any(token in parts for token in ("schema", "db", "database")):
                 return "data-access"
             return "data-access"
-        if language in {"scss", "sass", "less"}:
+        if code_language in {"scss", "sass", "less"}:
             if "input" in name or "tailwind" in name:
                 return "asset-style-source"
             return "asset-style"
-        if language == "html":
+        if code_language == "html":
             if any(token in parts for token in ("templates", "email", "emailtemplates")):
                 return "template"
             if "wwwroot" in parts:
                 return "asset-html"
             return "template"
-        if language == "vue":
+        if code_language == "vue":
             if "pages" in parts:
                 return "page"
             if "layouts" in parts:
@@ -5908,21 +5839,21 @@ class CodeIndexStore:
             if "components" in parts:
                 return "component"
             return "component"
-        if language == "svelte":
+        if code_language == "svelte":
             if "routes" in parts:
                 return "page"
             if "components" in parts:
                 return "component"
             return "component"
-        if language == "prisma":
+        if code_language == "prisma":
             return "data-access"
-        if language == "toml":
+        if code_language == "toml":
             return "configuration"
-        if language in {"yaml", "yml"}:
+        if code_language in {"yaml", "yml"}:
             if any(token in parts for token in ("ci", "workflows", ".github")):
                 return "configuration"
             return "configuration"
-        if language == "json":
+        if code_language == "json":
             if name == "package":
                 return "configuration"
             if name == "tsconfig" or name.endswith("config"):

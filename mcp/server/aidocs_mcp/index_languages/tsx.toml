@@ -1,0 +1,36 @@
+name = "tsx"
+extensions = [".tsx"]
+extractor_family = "tsx_ast"
+embedded_semantics = ["html_like", "css_inline", "typescript_inline"]
+module_hints = ["pages", "components", "hooks", "layouts"]
+
+# Entry-point files
+entry_points = ["index.tsx"]
+
+# ── Role from glob patterns ──
+role_patterns = [
+  { glob = "**/pages/**/*.tsx", role = "page" },
+  { glob = "**/app/**/page.tsx", role = "page" },
+  { glob = "**/app/**/layout.tsx", role = "layout" },
+  { glob = "**/*Provider.tsx", role = "context-provider" },
+  { glob = "**/components/**/index.tsx", role = "barrel-module" },
+  { glob = "**/components/**/*.tsx", role = "component" },
+  { glob = "**/hooks/**/*.tsx", role = "hook-module" },
+  { glob = "**/layouts/**/*.tsx", role = "layout" },
+  { glob = "**/utils/**/*.tsx", role = "utility-module" },
+  { glob = "**/lib/**/*.tsx", role = "utility-module" },
+]
+
+line_patterns = [
+  { match = "function_call", function = "fetch", args_starts_with = "/api/", kind = "api_call" },
+  { match = "route_navigation", kind = "route_ref" },
+  { match = "function_call", function = "t", kind = "translation_key" },
+]
+
+# ── Layer inference tokens ──
+[layer_tokens]
+data = ["model", "store", "context", "type", "types"]
+api = ["api", "route", "server"]
+logic = ["service", "handler", "hook", "middleware"]
+ui = ["component", "page", "view", "form", "dialog", "screen", "layout"]
+

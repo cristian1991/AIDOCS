@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 
 from aidocs_mcp.code_index_store import CodeIndexStore
@@ -221,6 +222,302 @@ def test_frontend_ast_extractor_falls_back_cleanly_when_parser_unavailable(tmp_p
     assert outline[0]["symbol"] == "Header"
     assert outline[0]["kind"] == "component"
 
+
+def test_razor_descriptor_line_patterns_drive_inline_semantics(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages" / "Index.cshtml").write_text(
+        '@page\n'
+        '<partial name="_Toolbar" />\n'
+        '@Lang.T("Patients.Save")\n'
+        '<input asp-for="PatientName" />\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "Pages/Index.cshtml")
+
+    kinds = {(item["symbol"], item["kind"]) for item in outline}
+    assert ("_Toolbar", "partial_ref") in kinds
+    assert ("Patients.Save", "translation_key") in kinds
+    assert ("PatientName", "asp_for_binding") in kinds
+
+
+def test_razor_descriptor_line_patterns_drive_model_and_inject_semantics(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages" / "Edit.cshtml").write_text(
+        '@model DentalApp.Pages.EditModel\n'
+        '@inject DentalApp.Services.PatientService PatientService\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "Pages/Edit.cshtml")
+
+    kinds = {(item["symbol"], item["kind"]) for item in outline}
+    assert ("DentalApp.Pages.EditModel", "model_binding") in kinds
+    assert ("PatientService", "inject") in kinds
+
+
+def test_razor_descriptor_line_patterns_drive_page_and_layout_semantics(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages" / "List.cshtml").write_text(
+        '@page "/patients/list"\n'
+        'Layout = "_Layout"\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "Pages/List.cshtml")
+
+    kinds = {(item["symbol"], item["kind"]) for item in outline}
+    assert ("/patients/list", "page_route") in kinds
+    assert ("_Layout", "layout_ref") in kinds
+
+
+def test_razor_descriptor_line_patterns_handle_implicit_page_route(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages" / "Implicit.cshtml").write_text(
+        '@page\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "Pages/Implicit.cshtml")
+
+    assert {("@page", "page_route")} <= {(item["symbol"], item["kind"]) for item in outline}
+
+
+def test_razor_descriptor_line_patterns_drive_sections(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages" / "Sectioned.cshtml").write_text(
+        '@section Scripts { }\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "Pages/Sectioned.cshtml")
+
+    assert {("Scripts", "section")} <= {(item["symbol"], item["kind"]) for item in outline}
+
+
+def test_razor_descriptor_line_patterns_drive_code_blocks(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages" / "Code.cshtml").write_text(
+        '@functions { }\n@code { }\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "Pages/Code.cshtml")
+
+    kinds = [(item["symbol"], item["kind"]) for item in outline]
+    assert kinds.count(("@functions", "code_block")) >= 1
+
+
+def test_razor_descriptor_line_patterns_drive_inline_js_functions(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages" / "InlineJs.cshtml").write_text(
+        'function removeItem() { }\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "Pages/InlineJs.cshtml")
+
+    assert {("removeItem", "js_function")} <= {(item["symbol"], item["kind"]) for item in outline}
+
+
+def test_css_descriptor_line_patterns_drive_variables_and_keyframes(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "styles").mkdir(parents=True, exist_ok=True)
+    (project_root / "styles" / "site.css").write_text(
+        "--brand-color: #fff;\n"
+        "@keyframes fadeIn {}\n"
+        "@layer components {}\n"
+        "@variant dark {}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "styles/site.css")
+
+    kinds = {(item["symbol"], item["kind"]) for item in outline}
+    assert ("brand-color", "css_variable") in kinds
+    assert ("fadeIn", "keyframes") in kinds
+    assert ("components", "css_layer") in kinds
+    assert ("dark", "css_variant") in kinds
+
+
+def test_css_descriptor_line_patterns_drive_theme_block(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "styles").mkdir(parents=True, exist_ok=True)
+    (project_root / "styles" / "theme.css").write_text(
+        "@theme {\n"
+        "  --brand-color: #fff;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "styles/theme.css")
+
+    assert any(item["kind"] == "theme_block" for item in outline)
+
+
+def test_css_descriptor_line_patterns_drive_class_selectors(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "styles").mkdir(parents=True, exist_ok=True)
+    (project_root / "styles" / "classes.css").write_text(
+        ".glassmorphic { }\n.button-primary, .button-secondary { }\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "styles/classes.css")
+
+    kinds = {(item["symbol"], item["kind"]) for item in outline}
+    assert ("glassmorphic", "css_class") in kinds
+    assert ("button-primary", "css_class") in kinds
+    assert ("button-secondary", "css_class") in kinds
+
+
+def test_css_descriptor_line_patterns_drive_pseudo_selectors_and_combinators(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "styles").mkdir(parents=True, exist_ok=True)
+    (project_root / "styles" / "selectors.css").write_text(
+        ".menu-item:hover > .icon + .label ~ .hint { }\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "styles/selectors.css")
+
+    kinds = {(item["symbol"], item["kind"]) for item in outline}
+    assert ("hover", "pseudo_selector") in kinds
+    assert (">", "css_combinator") in kinds
+    assert ("+", "css_combinator") in kinds
+    assert ("~", "css_combinator") in kinds
+
+
+def test_css_descriptor_line_patterns_drive_media_queries(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "styles").mkdir(parents=True, exist_ok=True)
+    (project_root / "styles" / "responsive.css").write_text(
+        "@media (max-width: 768px) { .stack { display:block; } }\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "styles/responsive.css")
+
+    kinds = {(item["symbol"], item["kind"]) for item in outline}
+    assert ("(max-width: 768px)", "media_query") in kinds
+    assert ("max-width:768px", "media_feature") in kinds
+
+
+def test_css_class_outline_carries_media_scope_context(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "styles").mkdir(parents=True, exist_ok=True)
+    (project_root / "styles" / "scoped.css").write_text(
+        "@media (max-width: 768px) { .stack { display:block; } }\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "styles/scoped.css")
+
+    stack = next(item for item in outline if item["symbol"] == "stack" and item["kind"] == "css_class")
+    assert stack["container"] == "(max-width: 768px)"
+
+
+def test_razor_descriptor_line_patterns_drive_permission_checks(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages" / "Secure.cshtml").write_text(
+        '@if (Model.CanEdit) { }\n'
+        '@if (User.IsInRole("Admin")) { }\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "Pages/Secure.cshtml")
+
+    kinds = {(item["symbol"], item["kind"]) for item in outline}
+    assert ("CanEdit", "permission_check") in kinds
+    assert ("Admin", "permission_check") in kinds
+
+
+def test_razor_descriptor_line_patterns_drive_data_attributes(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages" / "Attrs.cshtml").write_text(
+        '<button data-action="delete" data-item-id="42"></button>\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "Pages/Attrs.cshtml")
+
+    kinds = {(item["symbol"], item["kind"]) for item in outline}
+    assert ("action", "data_attribute") in kinds
+    assert ("item-id", "data_attribute") in kinds
+
+
+def test_razor_descriptor_line_patterns_drive_api_calls(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages" / "Calls.cshtml").write_text(
+        'fetch("/api/patients/42")\n'
+        '$.getJSON("/api/quotes/1")\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "Pages/Calls.cshtml")
+
+    kinds = {(item["symbol"], item["kind"]) for item in outline}
+    assert ("/api/patients/42", "api_call") in kinds
+    assert ("/api/quotes/1", "api_call") in kinds
+
 def test_search_code_and_symbols_rank_exact_matches_first(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"
@@ -237,6 +534,27 @@ def test_search_code_and_symbols_rank_exact_matches_first(tmp_path: Path) -> Non
     assert code_results[0]["why"]
     assert symbol_results[0]["symbol"] == "startServer"
     assert symbol_results[0]["why"]
+
+
+def test_tsx_descriptor_line_patterns_drive_api_route_and_translation_refs(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "web").mkdir(parents=True, exist_ok=True)
+    (project_root / "web" / "Screen.tsx").write_text(
+        'fetch("/api/patients/42")\n'
+        'router.push("/patients/42")\n'
+        't("Patients.Save")\n',
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    outline = store.get_outline(project_root, "web/Screen.tsx")
+
+    kinds = {(item["symbol"], item["kind"]) for item in outline}
+    assert ("/api/patients/42", "api_call") in kinds
+    assert ("/patients/42", "route_ref") in kinds
+    assert ("Patients.Save", "translation_key") in kinds
 
 def test_path_weighting_prefers_source_over_template_like_paths(tmp_path: Path) -> None:
     store = CodeIndexStore()

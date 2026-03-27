@@ -72,9 +72,17 @@ JOURNAL_MIN_INTENT_LENGTH: int = int(_journal.get("min_intent_length", 10))
 INDEX_EXTRA_SKIP_DIRS: set[str] = _parse_comma_set(str(_index.get("extra_skip_dirs", "")))
 INDEX_EXTRA_MODULE_HINTS: set[str] = _parse_comma_set(str(_index.get("extra_module_hints", "")))
 INDEX_MAX_JSON_SIZE: int = int(_index.get("max_json_size", 100_000))
+INDEX_ENABLED_LANGUAGES: str = str(_index.get("enabled_languages", "all")).strip()
 
 # Language settings
 LANGUAGES_ENABLED: str = str(_languages.get("enabled", "all")).strip()
+
+# Tool timeout settings
+_tools = _raw.get("tools", {})
+TOOLS_CALL_TIMEOUT: int = int(_tools.get("tool_call_timeout", 10))
+TOOLS_SYNC_TIMEOUT: int = int(_tools.get("sync_functions_timeout", 30))
+TOOLS_GIT_TIMEOUT: int = int(_tools.get("git_functions_timeout", 30))
+TOOLS_MAX_TIMEOUT: int = int(_tools.get("max_timeout", 120))
 
 # Agent settings
 AGENT_DIRECTIVE_STYLE: str = str(_agent.get("directive_style", "short"))

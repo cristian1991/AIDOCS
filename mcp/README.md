@@ -54,6 +54,7 @@ mcp/
 - MCP server: optional execution layer over those files
 - Local index: SQLite, derived only, rebuildable
 - Code retrieval: symbol outlines, dependency edges, context bundles
+- Built-in language indexing now comes from shipped TOML descriptor files under `mcp/server/aidocs_mcp/index_languages/`, and project-local `index_languages/*.toml` files can extend or override that built-in descriptor set.
 
 ## Release Status
 
@@ -69,6 +70,22 @@ mcp/
 
 - Run `aidocs benchmark . --json --iterations 10 --scenario-set public` for the public benchmark set.
 - Run `aidocs benchmark . --json --iterations 10` to see benchmark output format.
+
+## Extensible Indexing
+
+- Built-in language descriptors live in `mcp/server/aidocs_mcp/index_languages/`.
+- Project-local descriptor files can be added in `index_languages/*.toml`.
+- See `mcp/INDEX_LANGUAGE_DESCRIPTORS.md` for the TOML schema, semantic keys, outline families, and validation model.
+- Inspect descriptor state with:
+  - `aidocs descriptors`
+  - `aidocs descriptors --validate`
+  - `aidocs descriptors --match <path>`
+
+## Index Snapshots
+
+- Local copied test snapshots can be inspected with:
+  - `aidocs snapshots`
+  - `aidocs snapshots --json`
 
 ## Tool Model
 

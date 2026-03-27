@@ -86,6 +86,120 @@ def test_session_start_with_explicit_session_returns_context_bundle(tmp_path: Pa
     assert result["code_bundle"]["primary_files"][0]["path"] == "src/app.py"
 
 
+def test_session_start_returns_handoff_context(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    hub = AidocsServiceHub(templates_root=templates)
+    runtime = RuntimeService(hub)
+    project_root = tmp_path / "project"
+    _seed_project(project_root)
+    session = hub.sessions.create_session(project_root, "2026-03-23-a", "A", "Agent", "Goal A")
+    hub.sessions.update_handoff(
+        project_root,
+        session.session_id,
+        {"What Matters Now": ["- Verify that successor agents see this handoff summary at session start."]},
+    )
+
+    result = runtime.session_start(project_root, session_id="2026-03-23-a", include_code_bundle=False, sync_indexes=False)
+
+    assert result["handoff"]["sections"]["What Matters Now"][0] == "- Verify that successor agents see this handoff summary at session start."
+    assert any("successor agents" in bullet for bullet in result["report"]["bullets"])
+
+
+def test_session_resume_bundle_combines_session_context_plan_handoff_and_journal(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    hub = AidocsServiceHub(templates_root=templates)
+    runtime = RuntimeService(hub)
+    project_root = tmp_path / "project"
+    _seed_project(project_root)
+    (project_root / "src").mkdir(parents=True, exist_ok=True)
+    (project_root / "src" / "app.py").write_text("class App:\n    pass\n", encoding="utf-8")
+    session = hub.sessions.create_session(project_root, "2026-03-23-a", "A", "Agent", "Goal A")
+    hub.sessions.update_context(project_root, session.session_id, {"Relevant Files": ["- `src/app.py`"]})
+    hub.sessions.update_handoff(project_root, session.session_id, {"What Matters Now": ["- Resume from this point."]})
+    hub.sessions.write_journal_entry(project_root, session.session_id, action_kind="edit", intent="Did a thing", outcome="It worked")
+
+    result = runtime.session_resume_bundle(project_root, session.session_id, include_code_bundle=True, journal_last_n=5)
+
+    assert result["session"]["session_id"] == "2026-03-23-a"
+    assert result["context"]["sections"]["Relevant Files"][0] == "- `src/app.py`"
+    assert result["plan"]["sections"]["End Goal"][0] == "- Goal A"
+    assert result["handoff"]["sections"]["What Matters Now"][0] == "- Resume from this point."
+    assert result["handoff_freshness"]["status"] in {"fresh", "unknown"}
+    assert result["journal"][0]["action_kind"] == "edit"
+    assert result["code_bundle"]["primary_files"][0]["path"] == "src/app.py"
+
+
+def test_session_resume_bundle_marks_stale_handoff(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    hub = AidocsServiceHub(templates_root=templates)
+    runtime = RuntimeService(hub)
+    project_root = tmp_path / "project"
+    _seed_project(project_root)
+    session = hub.sessions.create_session(project_root, "2026-03-23-a", "A", "Agent", "Goal A")
+    hub.sessions.update_handoff(
+        project_root,
+        session.session_id,
+        {"Freshness": ["- Updated 2025-01-01 00:00 manually."]},
+    )
+
+    result = runtime.session_resume_bundle(project_root, session.session_id, include_code_bundle=False)
+
+    assert result["handoff_freshness"]["status"] == "stale"
+
+
+def test_project_bootstrap_repairs_partial_structure(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    hub = AidocsServiceHub(templates_root=templates)
+    runtime = RuntimeService(hub)
+    project_root = tmp_path / "project"
+    (project_root / ".MEMORY" / ".index").mkdir(parents=True, exist_ok=True)
+    (project_root / "AGENTS.md").write_text("# AGENTS\n", encoding="utf-8")
+
+    result = runtime.project_bootstrap_or_resume(project_root, include_code_bundle=False)
+
+    assert (project_root / ".MEMORY" / "INDEX.md").is_file()
+    assert (project_root / ".MEMORY" / ".aidocs" / "index.aidocs").is_file()
+    assert result["repaired"] is not None
+    assert any("Repaired canonical AIDOCS structure" in bullet for bullet in result["report"]["bullets"])
+
+
+def test_session_resume_bundle_includes_structured_handoff_steps(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    hub = AidocsServiceHub(templates_root=templates)
+    runtime = RuntimeService(hub)
+    project_root = tmp_path / "project"
+    _seed_project(project_root)
+    session = hub.sessions.create_session(project_root, "2026-03-23-a", "A", "Agent", "Goal A")
+    hub.sessions.upsert_handoff_step(project_root, session.session_id, text="Re-test the patient flow", status="reset")
+
+    result = runtime.session_resume_bundle(project_root, session.session_id, include_code_bundle=False)
+
+    assert result["handoff_steps"][0]["status"] == "reset"
+    assert result["handoff_steps"][0]["text"] == "Re-test the patient flow"
+    assert result["actionable_handoff_steps"][0]["status"] == "reset"
+    assert result["recently_changed_handoff_steps"][0]["status"] == "reset"
+
+
+def test_session_start_reports_actionable_handoff_steps(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    hub = AidocsServiceHub(templates_root=templates)
+    runtime = RuntimeService(hub)
+    project_root = tmp_path / "project"
+    _seed_project(project_root)
+    session = hub.sessions.create_session(project_root, "2026-03-23-a", "A", "Agent", "Goal A")
+    hub.sessions.upsert_handoff_step(project_root, session.session_id, text="Re-open payment flow validation", status="reset")
+
+    result = runtime.session_start(project_root, session_id=session.session_id, include_code_bundle=False, sync_indexes=False)
+
+    assert any("Actionable handoff steps: 1." == bullet for bullet in result["report"]["bullets"])
+
+
 def test_project_bootstrap_or_resume_requires_setup_when_uninitialized(tmp_path: Path) -> None:
     templates = tmp_path / "templates"
     _write_templates(templates)
@@ -255,8 +369,8 @@ def test_aidocs_orchestrate_reports_memory_structure_sections(tmp_path: Path) ->
     result = runtime.aidocs_orchestrate(project_root, user_request="understand app")
 
     sections = {item["name"]: item for item in result["retrieval"]["memory_structure"]["sections"]}
-    assert sections["rules"]["file_count"] == 1
-    assert sections["rules"]["samples"] == ["a.md"]
+    assert sections["rules"]["file_count"] >= 3
+    assert "a.md" in sections["rules"]["samples"]
     assert sections["domains"]["file_count"] == 1
     assert sections["policy"]["file_count"] == 1
     assert sections["policy"]["legacy"] is True
@@ -433,21 +547,27 @@ def test_task_begin_update_and_complete(tmp_path: Path) -> None:
         goal="Investigate app entry",
         state=["Inspected the main app structure"],
         upcoming=["Read app.py"],
+        partial_goals=["Map the app entry path", "Confirm whether edits are needed"],
+        end_goal="Understand the entry path well enough to decide whether any code change is needed",
         relevant_files=["src/app.py"],
         relevant_snippets=['class="custom-shell text-red-500"'],
         constraints=["Keep changes minimal"],
         include_code_bundle=True,
     )
     assert started["session"]["sections"]["Goal"][0] == "- Investigate app entry"
+    assert started["plan"]["sections"]["Partial Goals"][0] == "- Map the app entry path"
+    assert started["plan"]["sections"]["End Goal"][0] == "- Understand the entry path well enough to decide whether any code change is needed"
     assert started["context"]["sections"]["Relevant Files"][0] == "- `src/app.py`"
     assert started["code_bundle"]["primary_files"][0]["path"] == "src/app.py"
 
     updated = runtime.task_update(
         project_root,
         session_id="2026-03-23-a",
+        partial_goals=["Map the app entry path", "Record the final conclusion"],
         blockers=["Waiting for design decision"],
     )
     assert updated["session"]["sections"]["Blockers"][0] == "- Waiting for design decision"
+    assert updated["plan"]["sections"]["Partial Goals"][1] == "- Record the final conclusion"
 
     completed = runtime.task_complete(
         project_root,
@@ -456,3 +576,5 @@ def test_task_begin_update_and_complete(tmp_path: Path) -> None:
     )
     assert completed["session"]["sections"]["Status"][0] == "- done"
     assert any("Confirmed the entry path" in item for item in completed["session"]["sections"]["State"])
+    assert any("Completion result:" in item for item in completed["plan"]["sections"]["Validation"])
+    assert completed["handoff"]["sections"]["What Was Done"][0] == "- Confirmed the entry path and no change was needed."

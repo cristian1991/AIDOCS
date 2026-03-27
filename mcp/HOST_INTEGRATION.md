@@ -38,15 +38,17 @@ The MCP server already provides the required primitives. This document describes
 
 ### Managed project
 1. User sends a normal prompt.
-2. Host calls `aidocs_handle_prompt`.
-3. Host obeys the returned mode:
+2. Host calls `aidocs_classify_prompt`.
+3. Host calls `aidocs_route_prompt` with the chosen `action_kind` and any explicit targets.
+4. Host obeys the route result:
    - `requires_aidocs_entry`
    - `blocked`
    - `direct_inspection_allowed`
-   - `mcp_orchestrated`
    - `preflight_only`
-4. Host should prefer the top-level `report` field for default user-facing output.
-5. Host should use deeper fields only when more detail is needed:
+   - route-guided MCP-first work
+5. If the route or action requires broader orchestration, the host may then call `aidocs_orchestrate` or a more specific MCP/runtime entrypoint.
+6. Host should prefer the top-level `report` field for default user-facing output.
+7. Host should use deeper fields only when more detail is needed:
    - `readiness_summary` for compact structured readiness
    - `operator_report` / `operator_summary` for richer managed-session understanding
    - full orchestration/bootstrap payloads for advanced inspection or debugging
@@ -54,7 +56,7 @@ The MCP server already provides the required primitives. This document describes
 ## Special Cases
 
 ### Explicit file or error target
-- Host passes explicit targets to `aidocs_handle_prompt`.
+- Host passes explicit targets to `aidocs_route_prompt`.
 - Direct inspection may be allowed before broader session-driven orchestration.
 - After inspection, broader work should return to MCP-first flow.
 
@@ -79,26 +81,31 @@ The MCP server already provides the required primitives. This document describes
 2. `aidocs_mode_set` is performed internally by the orchestrator on success
 
 ### Normal managed prompt
-1. `aidocs_handle_prompt`
-2. obey returned mode
+1. `aidocs_classify_prompt`
+2. `aidocs_route_prompt`
+3. obey returned route
+4. call `aidocs_orchestrate` or more specific MCP tools only when the route/work type requires it
 
 ### Broad understanding
-1. `aidocs_handle_prompt`
-2. use returned orchestration bundle
-3. only then read exact narrowed files if needed
+1. `aidocs_classify_prompt`
+2. `aidocs_route_prompt`
+3. if broader orchestration is warranted, call `aidocs_orchestrate`
+4. only then read exact narrowed files if needed
 
 ### Edit task
-1. `aidocs_handle_prompt`
-2. `task_begin`
-3. bundle retrieval
-4. edit
-5. `task_complete`
+1. `aidocs_classify_prompt`
+2. `aidocs_route_prompt`
+3. `task_begin`
+4. bundle retrieval
+5. edit
+6. `task_complete`
 
 ## What Is Implemented Already
 
 - `aidocs_orchestrate` with workflow context in result
 - `aidocs_mode_get` / `aidocs_mode_set` / `aidocs_mode_clear`
-- `aidocs_route_prompt` / `aidocs_handle_prompt` with advisory classification
+- `aidocs_classify_prompt` / `aidocs_route_prompt` with advisory classification and routing guidance
+- `aidocs_handle_prompt` as a higher-level convenience path where a host wants a single composite runtime entrypoint
 - `aidocs_classify_prompt` — keyword-based, advisory, synced with policy service
 - session lifecycle methods
 - task lifecycle methods (`task_begin`, `task_update`, `task_complete`)
@@ -121,7 +128,7 @@ The MCP server already provides the required primitives. This document describes
 
 ## Claude Code Implementation
 
-- AIDOCS ships a Claude Code hook entry script at `core/scripts/claude-hook.ps1`.
+- AIDOCS ships Claude Code hook entry scripts at `core/scripts/claude-hook.ps1` (Windows) and `core/scripts/claude-hook.sh` (Linux/macOS).
 - The installer wires user-level Claude hooks into `~/.claude/settings.json` for:
   - `UserPromptSubmit`
   - `PreToolUse` on `Read|Edit|Write|Glob|Grep|Bash`
@@ -235,6 +242,12 @@ Current boundary:
   - `hook_intercept` — raw hook observations (UserPromptSubmit, PreToolUse)
   - Tool invocations — recorded by MCP instrumentation layer
 - All events include: `event_kind`, `source_kind`, `session_id`, `action_kind`, `status`, `payload`
+
+### Procedure role
+- Capability and execution evidence are the default runtime story.
+- Procedures are optional structure derived from workflow/config definitions.
+- The system should still provide useful routing, execution evidence, and operator visibility even when no formal procedures are defined.
+- Hosts should not assume procedure definitions exist before using AIDOCS effectively.
 
 ### Ad-hoc execution
 - Execution events are recorded even when no formal procedure exists.

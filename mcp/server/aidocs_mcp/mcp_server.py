@@ -17,6 +17,26 @@ _GIT_FAST_DIVERGENCE = 500
 _GIT_SAMPLE_DIVERGENCE = 1500
 
 
+def _apply_trace_depth(payload: dict[str, Any], mode: str, max_depth: int | None) -> dict[str, Any]:
+    if not max_depth or max_depth <= 0:
+        return payload
+    m = mode.strip().lower()
+    if m in {"service", "component", "field_flow", "setting"} and isinstance(payload.get("matches"), list):
+        order = {"definition": 1, "reference": 2, "file_match": 3}
+        result = dict(payload)
+        result["matches"] = [item for item in payload["matches"] if order.get(str(item.get("source")), 3) <= max_depth]
+        return result
+    if m == "api_to_ui":
+        result = dict(payload)
+        if max_depth == 1:
+            result["logic"] = []
+            result["ui"] = []
+        elif max_depth == 2:
+            result["ui"] = []
+        return result
+    return payload
+
+
 def _run_git_sync(cwd: str, *args: str, timeout: int = _GIT_TIMEOUT) -> str:
     """Run a git command synchronously using temp files (no pipes — avoids MCP stdio conflicts on Windows)."""
     import subprocess
@@ -431,6 +451,7 @@ def create_server() -> Any:
         goal: str,
         scope: str = "-",
         status: str = "active",
+        predecessor_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a new session folder from canonical templates."""
         session = hub.sessions.create_session(
@@ -441,6 +462,7 @@ def create_server() -> Any:
             goal=goal,
             scope=scope,
             status=status,
+            predecessor_session_id=predecessor_session_id,
         )
         return {
             "session_id": session.session_id,
@@ -473,12 +495,121 @@ def create_server() -> Any:
         return {"session_id": session.session_id, "path": str(session.path), "sections": session.sections}
 
     @server.tool()
+    def session_handoff_get(project_root: str, session_id: str) -> dict[str, Any]:
+        """Read the structured collaboration handoff for a session."""
+        handoff = hub.sessions.read_handoff(Path(project_root), session_id)
+        return {"session_id": handoff.session_id, "path": str(handoff.path), "sections": handoff.sections}
+
+    @server.tool()
+    def session_handoff_update(
+        project_root: str,
+        session_id: str,
+        purpose: list[str] | None = None,
+        current_state: list[str] | None = None,
+        what_was_done: list[str] | None = None,
+        what_failed: list[str] | None = None,
+        what_matters_now: list[str] | None = None,
+        open_questions: list[str] | None = None,
+        risks_and_blockers: list[str] | None = None,
+        relevant_files: list[str] | None = None,
+        estimated_effort: list[str] | None = None,
+        suggested_next_steps: list[str] | None = None,
+        related_sessions: list[str] | None = None,
+        related_project_links: list[str] | None = None,
+        freshness: list[str] | None = None,
+        append: bool = False,
+    ) -> dict[str, Any]:
+        """Update the structured collaboration handoff for a session."""
+        patch: dict[str, list[str]] = {}
+        if purpose is not None:
+            patch["Purpose"] = runtime._as_bullets(purpose)
+        if current_state is not None:
+            patch["Current State"] = runtime._as_bullets(current_state)
+        if what_was_done is not None:
+            patch["What Was Done"] = runtime._as_bullets(what_was_done)
+        if what_failed is not None:
+            patch["What Failed / Dead Ends"] = runtime._as_bullets(what_failed)
+        if what_matters_now is not None:
+            patch["What Matters Now"] = runtime._as_bullets(what_matters_now)
+        if open_questions is not None:
+            patch["Open Questions"] = runtime._as_bullets(open_questions)
+        if risks_and_blockers is not None:
+            patch["Risks and Blockers"] = runtime._as_bullets(risks_and_blockers)
+        if relevant_files is not None:
+            patch["Relevant Files"] = runtime._as_file_bullets(relevant_files)
+        if estimated_effort is not None:
+            patch["Estimated Effort"] = runtime._as_bullets(estimated_effort)
+        if suggested_next_steps is not None:
+            patch["Suggested Next Steps"] = runtime._as_bullets(suggested_next_steps)
+        if related_sessions is not None:
+            patch["Related Sessions"] = runtime._as_bullets(related_sessions)
+        if related_project_links is not None:
+            normalized = []
+            for item in related_project_links:
+                text = item.strip()
+                if not text:
+                    continue
+                if "|" in text:
+                    normalized.append(text)
+                else:
+                    normalized.append(text)
+            patch["Related Project Links"] = runtime._as_bullets(normalized)
+        if freshness is not None:
+            patch["Freshness"] = runtime._as_bullets(freshness)
+        handoff = hub.sessions.update_handoff(Path(project_root), session_id, patch, append=append)
+        return {"session_id": handoff.session_id, "path": str(handoff.path), "sections": handoff.sections}
+
+    @server.tool()
+    def session_handoff_steps_get(project_root: str, session_id: str) -> dict[str, Any]:
+        """Read structured handoff steps for a session."""
+        return {"session_id": session_id, "steps": hub.sessions.read_handoff_steps(Path(project_root), session_id)}
+
+    @server.tool()
+    def session_handoff_step_update(
+        project_root: str,
+        session_id: str,
+        step_id: str | None = None,
+        text: str | None = None,
+        status: str = "open",
+        append: bool = True,
+    ) -> dict[str, Any]:
+        """Create or update one structured handoff step."""
+        handoff = hub.sessions.upsert_handoff_step(
+            Path(project_root),
+            session_id,
+            step_id=step_id,
+            text=text,
+            status=status,
+            append=append,
+        )
+        return {"session_id": handoff.session_id, "path": str(handoff.path), "sections": handoff.sections}
+
+    @server.tool()
+    def session_resume_bundle(
+        project_root: str,
+        session_id: str,
+        include_code_bundle: bool = False,
+        include_tests: bool = False,
+        journal_last_n: int = 10,
+    ) -> dict[str, Any]:
+        """Return a collaboration-oriented resume bundle for a session."""
+        return runtime.session_resume_bundle(
+            Path(project_root),
+            session_id=session_id,
+            include_code_bundle=include_code_bundle,
+            include_tests=include_tests,
+            journal_last_n=journal_last_n,
+        )
+
+    @server.tool()
     def task_begin(
         project_root: str,
         session_id: str,
         goal: str | None = None,
         state: list[str] | None = None,
         upcoming: list[str] | None = None,
+        partial_goals: list[str] | None = None,
+        end_goal: str | None = None,
         blockers: list[str] | None = None,
         relevant_files: list[str] | None = None,
         relevant_commands: list[str] | None = None,
@@ -495,6 +626,8 @@ def create_server() -> Any:
             goal=goal,
             state=state,
             upcoming=upcoming,
+            partial_goals=partial_goals,
+            end_goal=end_goal,
             blockers=blockers,
             relevant_files=relevant_files,
             relevant_commands=relevant_commands,
@@ -511,6 +644,8 @@ def create_server() -> Any:
         session_id: str,
         state: list[str] | None = None,
         upcoming: list[str] | None = None,
+        partial_goals: list[str] | None = None,
+        end_goal: str | None = None,
         blockers: list[str] | None = None,
         relevant_files: list[str] | None = None,
         relevant_commands: list[str] | None = None,
@@ -526,6 +661,8 @@ def create_server() -> Any:
             session_id=session_id,
             state=state,
             upcoming=upcoming,
+            partial_goals=partial_goals,
+            end_goal=end_goal,
             blockers=blockers,
             relevant_files=relevant_files,
             relevant_commands=relevant_commands,
@@ -705,7 +842,90 @@ def create_server() -> Any:
         )
 
     @server.tool()
-    def code_investigate(project_root: str, concept: str, limit: int = 5) -> dict[str, Any]:
+    def code_get_method_signature(
+        project_root: str,
+        method: str,
+        container: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Return exact method signatures so agents can call methods correctly without reading whole files."""
+        return hub.code.get_method_signature(Path(project_root), method_name=method, container=container, limit=limit)
+
+    @server.tool()
+    def code_get_method_signatures(
+        project_root: str,
+        methods: list[str],
+        container: str | None = None,
+        limit_per_method: int = 20,
+    ) -> dict[str, Any]:
+        """Return exact signatures for multiple methods in one call."""
+        return hub.code.get_method_signatures(
+            Path(project_root),
+            methods=methods,
+            container=container,
+            limit_per_method=limit_per_method,
+        )
+
+    @server.tool()
+    def code_get_enum_values(
+        project_root: str,
+        enum_name: str,
+        limit: int = 50,
+        include_related: bool = False,
+    ) -> dict[str, Any]:
+        """Return indexed enum definitions with their enum members."""
+        return hub.code.get_enum_values(Path(project_root), enum_name=enum_name, limit=limit, include_related=include_related)
+
+    @server.tool()
+    def code_get_constructor_params(
+        project_root: str,
+        type_name: str,
+        limit: int = 20,
+        include_related: bool = False,
+    ) -> dict[str, Any]:
+        """Return constructor or record positional parameter information for a type."""
+        return hub.code.get_constructor_params(Path(project_root), type_name=type_name, limit=limit, include_related=include_related)
+
+    @server.tool()
+    def code_get_constructor_params_batch(
+        project_root: str,
+        types: list[str],
+        include_related: bool = False,
+        limit_per_type: int = 20,
+    ) -> dict[str, Any]:
+        """Return constructor or record positional parameter information for multiple types."""
+        return hub.code.get_constructor_params_batch(
+            Path(project_root),
+            types=types,
+            include_related=include_related,
+            limit_per_type=limit_per_type,
+        )
+
+    @server.tool()
+    def code_get_service_api(
+        project_root: str,
+        service_name: str,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Return all indexed public method signatures for a service-like class."""
+        return hub.code.get_service_api(Path(project_root), service_name=service_name, limit=limit)
+
+    @server.tool()
+    def code_get_entity_properties(
+        project_root: str,
+        entity_name: str,
+    ) -> dict[str, Any]:
+        """Return a lightweight property list for an entity or DTO."""
+        return hub.code.get_entity_properties(Path(project_root), entity_name=entity_name)
+
+    @server.tool()
+    def code_investigate(
+        project_root: str,
+        concept: str,
+        limit: int = 5,
+        depth: str = "standard",
+        focus: str = "general",
+    ) -> dict[str, Any]:
         """START HERE — investigate a concept, feature, or bug area.
 
         Returns a navigation guide: what was found across symbols, files, schema, CSS, and modules,
@@ -715,8 +935,10 @@ def create_server() -> Any:
 
         Args:
             concept: The thing to investigate (e.g., "PDF generation", "authorization", "field-input", "Patient").
+            depth: `shallow`, `standard`, or `deep`.
+            focus: `general`, `workflow`, `service`, `schema`, `ui`, or `backend`.
         """
-        return hub.code.investigate(Path(project_root), concept=concept, limit=limit)
+        return hub.code.investigate(Path(project_root), concept=concept, limit=limit, depth=depth, focus=focus)
 
     # ═══════════════════════════════════════════════════════════════════════
     # Unified Tools (v1.1.0) — prefer these over granular tools below
@@ -744,6 +966,7 @@ def create_server() -> Any:
         "mismatches": "Find state/model representation conflicts",
         "clusters": "Find cross-layer grouping for a domain concept",
         "transitions": "Find migration seams, adapters, compatibility layers",
+        "factories": "Find Create* helpers, factory-style methods, and setup helpers",
     }
 
     @server.tool()
@@ -753,6 +976,7 @@ def create_server() -> Any:
         mode: str = "symbols",
         kind: str | None = None,
         role: str | None = None,
+        include_tests: bool = False,
         limit: int = 50,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Unified find tool — replaces all code_find_* and code_search_* tools.
@@ -760,16 +984,26 @@ def create_server() -> Any:
         Modes: symbols, references, routes, hotspots, query_hotspots, entrypoints,
         duplicates, partial_group, partial_consumers, api_consumers, frontend_symbols,
         data_structures, initializers, mutations, validation, async, policy,
-        touchpoints, mismatches, clusters, transitions.
+        touchpoints, mismatches, clusters, transitions, factories.
 
         Args:
             query: What to find (symbol name, concept, endpoint, class name, etc.).
             mode: Which find mode to use (see above).
             kind: Filter by symbol kind (only for mode=symbols).
             role: Filter by file role (only for mode=symbols).
+            include_tests: Include test/fixture files in search. Default False. Auto-enabled for mode=factories.
         """
         root = Path(project_root)
         m = mode.strip().lower()
+
+        # Auto-enable include_tests for modes that commonly need test/fixture content
+        if m in ("factories",) and not include_tests:
+            include_tests = True
+
+        # If include_tests requested, ensure test files are indexed
+        if include_tests:
+            hub.code.sync_code_files(root, include_tests=True)
+
         if m == "symbols":
             return hub.code.search_symbols(root, query=query, kind=kind, role=role, limit=limit)
         if m == "references":
@@ -812,6 +1046,8 @@ def create_server() -> Any:
             return hub.code.find_domain_clusters(root, concept=query, limit=limit)
         if m == "transitions":
             return hub.code.find_transition_points(root, concept=query, limit=limit)
+        if m == "factories":
+            return hub.code.find_factories(root, query=query, limit=limit)
         return {"error": f"Unknown mode: {mode}", "available_modes": list(create_server._FIND_MODES.keys())}
 
     _TRACE_MODES = {
@@ -831,6 +1067,7 @@ def create_server() -> Any:
         query: str,
         mode: str = "field_flow",
         limit: int = 50,
+        max_depth: int | None = None,
     ) -> dict[str, Any]:
         """Unified trace tool — replaces all code_trace_* tools.
 
@@ -843,21 +1080,21 @@ def create_server() -> Any:
         root = Path(project_root)
         m = mode.strip().lower()
         if m == "field_flow":
-            return hub.code.trace_field_flow(root, field_name=query, limit=limit)
+            return _apply_trace_depth(hub.code.trace_field_flow(root, field_name=query, limit=limit), m, max_depth)
         if m == "service":
-            return hub.code.trace_service_usage(root, service_name=query, limit=limit)
+            return _apply_trace_depth(hub.code.trace_service_usage(root, service_name=query, limit=limit), m, max_depth)
         if m == "model":
             return hub.code.trace_model_usage(root, model_name=query, limit=limit)
         if m == "component":
-            return hub.code.trace_component_usage(root, component_name=query, limit=limit)
+            return _apply_trace_depth(hub.code.trace_component_usage(root, component_name=query, limit=limit), m, max_depth)
         if m == "api_to_ui":
-            return hub.code.trace_api_to_ui(root, concept=query, limit=limit)
+            return _apply_trace_depth(hub.code.trace_api_to_ui(root, concept=query, limit=limit), m, max_depth)
         if m == "css_class":
             return hub.code.trace_css_class_usage(root, class_name=query, limit=limit)
         if m == "query_shape":
             return hub.code.trace_query_shape(root, path=query, limit=limit)
         if m == "setting":
-            return hub.code.trace_setting_usage(root, setting_name=query, limit=limit)
+            return _apply_trace_depth(hub.code.trace_setting_usage(root, setting_name=query, limit=limit), m, max_depth)
         return {"error": f"Unknown mode: {mode}", "available_modes": list(create_server._TRACE_MODES.keys())}
 
     _BUNDLE_MODES = {
@@ -943,6 +1180,7 @@ def create_server() -> Any:
         query: str,
         mode: str = "entities",
         limit: int = 50,
+        include_related: bool = False,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Unified schema tool — replaces all schema_find_*, schema_get_*, schema_trace_* tools.
 
@@ -958,8 +1196,15 @@ def create_server() -> Any:
             return hub.schema.find_schema_entities(root, query=query or None, limit=limit)
         if m == "entity":
             return hub.schema.get_schema_entity(root, entity_name=query)
+        if m == "batch_entity":
+            names = [part.strip() for part in re.split(r"[\n,]+", query) if part.strip()]
+            return hub.schema.get_schema_entities_batch(root, entity_names=names)
         if m == "field":
             return hub.schema.find_schema_field(root, field_name=query, limit=limit)
+        if m == "constructor":
+            return hub.schema.get_constructor_params(root, entity_name=query, include_related=include_related)
+        if m == "properties":
+            return hub.schema.get_entity_properties(root, entity_name=query)
         if m == "trace_flow":
             return hub.schema.trace_entity_flow(root, entity_name=query, limit=limit)
         if m == "trace_path":
@@ -1022,161 +1267,7 @@ def create_server() -> Any:
             init_git: If True (default), initialize a git repo if none exists.
             create_remote: If True, create a private GitHub repo using `gh` CLI. Default: False (opt-in).
         """
-        import shutil as _shutil
-
-        root = Path(project_root)
-        if not root.is_dir():
-            root.mkdir(parents=True, exist_ok=True)
-
-        created: list[str] = []
-        skipped: list[str] = []
-
-        # 1. Copy .MEMORY template structure
-        templates_root = hub.sessions.templates_root
-        memory_template = templates_root.parent / "templates" / "memory"
-        memory_dest = root / ".MEMORY"
-
-        if memory_template.is_dir():
-            for src_file in memory_template.rglob("*"):
-                if src_file.is_file():
-                    rel = src_file.relative_to(memory_template)
-                    dest = memory_dest / rel
-                    if not dest.exists():
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        _shutil.copy2(str(src_file), str(dest))
-                        created.append(f".MEMORY/{rel}")
-                    else:
-                        skipped.append(f".MEMORY/{rel}")
-        else:
-            # No templates — create minimal structure
-            for d in [
-                ".MEMORY/.aidocs",
-                ".MEMORY/sessions",
-                ".MEMORY/rules",
-                ".MEMORY/domains",
-                ".MEMORY/system",
-                ".MEMORY/config",
-                ".MEMORY/archive/sessions",
-            ]:
-                (root / d).mkdir(parents=True, exist_ok=True)
-            # Create minimal INDEX.md
-            idx = memory_dest / "INDEX.md"
-            if not idx.exists():
-                idx.write_text(
-                    "# Memory Index\n\n"
-                    "## Sessions\n- `sessions/`\n\n"
-                    "## Rules\n"
-                    "- `rules/workflow-rules.md`\n"
-                    "- `rules/workflow-actions.md`\n",
-                    encoding="utf-8",
-                )
-                created.append(".MEMORY/INDEX.md")
-
-        # Ensure canonical split workflow files exist
-        workflow_rules = memory_dest / "rules" / "workflow-rules.md"
-        if not workflow_rules.exists():
-            workflow_rules.parent.mkdir(parents=True, exist_ok=True)
-            workflow_rules.write_text("# Workflow Rules\n\n## Workflow Rules\n", encoding="utf-8")
-            created.append(".MEMORY/rules/workflow-rules.md")
-        else:
-            skipped.append(".MEMORY/rules/workflow-rules.md")
-
-        workflow_actions = memory_dest / "rules" / "workflow-actions.md"
-        if not workflow_actions.exists():
-            workflow_actions.parent.mkdir(parents=True, exist_ok=True)
-            workflow_actions.write_text("# Workflow Actions\n\n## Workflow Actions\n", encoding="utf-8")
-            created.append(".MEMORY/rules/workflow-actions.md")
-        else:
-            skipped.append(".MEMORY/rules/workflow-actions.md")
-
-        # 2. Create AIDOCS router file
-        router = memory_dest / ".aidocs" / "index.aidocs"
-        if not router.exists():
-            router.parent.mkdir(parents=True, exist_ok=True)
-            # Copy from core templates if available
-            src_router = templates_root.parent / "index.aidocs"
-            if src_router.is_file():
-                _shutil.copy2(str(src_router), str(router))
-            else:
-                router.write_text("# AIDOCS Session Entry\n\nRead /.MEMORY/INDEX.md next.\n", encoding="utf-8")
-            created.append(".MEMORY/.aidocs/index.aidocs")
-
-        # 3. Create AGENTS.md / CLAUDE.md from core templates
-        for tmpl_name in ["AGENTS.md", "CLAUDE.md"]:
-            dest = root / tmpl_name
-            if not dest.exists():
-                src = templates_root.parents[1] / tmpl_name
-                if src.is_file():
-                    _shutil.copy2(str(src), str(dest))
-                else:
-                    dest.write_text(f"# {tmpl_name.replace('.md','')}\n\nAIDOCS-managed project.\n", encoding="utf-8")
-                created.append(tmpl_name)
-            else:
-                skipped.append(tmpl_name)
-
-        # 4. Git init if needed
-        git_result: dict[str, object] = {"action": "none"}
-        if init_git and not (root / ".git").exists():
-            try:
-                toplevel = _run_git(str(root), "rev-parse", "--show-toplevel")
-                git_result = {"action": "already_in_repo", "root": toplevel}
-            except FileNotFoundError:
-                git_result = {"action": "skipped", "reason": "git not installed"}
-            except RuntimeError:
-                # Not in any git repo — initialize
-                try:
-                    _run_git(str(root), "init")
-                    gitignore = root / ".gitignore"
-                    if not gitignore.exists():
-                        gitignore.write_text(
-                            "# AIDOCS defaults\n/.MEMORY/.index/\nnode_modules/\ndist/\n__pycache__/\n.venv/\n*.pyc\n.env\n",
-                            encoding="utf-8",
-                        )
-                        created.append(".gitignore")
-                    _run_git(str(root), "add", "-A")
-                    _run_git(str(root), "commit", "-m", "chore: initialize project with AIDOCS")
-                    git_result = {"action": "initialized", "initial_commit": True}
-                except Exception as exc:
-                    git_result = {"action": "failed", "reason": str(exc)}
-            except Exception as exc:
-                git_result = {"action": "failed", "reason": str(exc)}
-
-        # 5. Create private GitHub remote (opt-in only)
-        if create_remote and git_result.get("action") == "initialized":
-            try:
-                repo_name = root.name
-                output = _run_git(str(root), "remote", "get-url", "origin")
-                git_result["remote"] = {"created": False, "reason": f"Remote already exists: {output}"}
-            except RuntimeError:
-                try:
-                    import subprocess as _sp
-                    import tempfile as _tf
-                    with _tf.NamedTemporaryFile(mode="w", suffix=".out", delete=False) as f:
-                        out_path = f.name
-                    with open(out_path, "w") as fh:
-                        proc = _sp.run(
-                            ["gh", "repo", "create", repo_name, "--private", "--source", str(root), "--push"],
-                            cwd=str(root), stdout=fh, stderr=_sp.DEVNULL, text=True, timeout=30,
-                        )
-                    url = Path(out_path).read_text(encoding="utf-8", errors="ignore").strip()
-                    import os; os.unlink(out_path)
-                    git_result["remote"] = {"created": proc.returncode == 0, "name": repo_name, "url": url}
-                except FileNotFoundError:
-                    git_result["remote"] = {"created": False, "reason": "gh CLI not installed"}
-                except Exception as exc:
-                    git_result["remote"] = {"created": False, "reason": str(exc)}
-
-        # 6. Ensure .mcp.json
-        mcp_config_result = runtime.ensure_claude_mcp_config(root)
-
-        return {
-            "initialized": True,
-            "created": created,
-            "skipped": skipped,
-            "git": git_result,
-            "mcp_config": mcp_config_result,
-            "next_step": "Call project_bootstrap_or_resume to activate managed mode and select a session.",
-        }
+        return runtime.project_init(Path(project_root), init_git=init_git, create_remote=create_remote)
 
     @server.tool()
     def project_ensure_mcp_config(project_root: str) -> dict[str, Any]:
@@ -1232,6 +1323,8 @@ def create_server() -> Any:
         """Return a consolidated status view for memory, code, and schema indexes."""
         root = Path(project_root)
         return {
+            "origins": runtime.project_origins(root),
+            "repo_summary": runtime.repo_summary(root),
             "memory": hub.index.status(root),
             "capabilities": hub.capabilities.capability_status(root),
             "code": hub.code.code_status(root),
@@ -1242,6 +1335,12 @@ def create_server() -> Any:
             "execution": hub.execution.execution_status(root),
             "legacy": hub.updater.inspect_legacy_runtime(root),
         }
+
+    @server.tool()
+    def project_origins_get(project_root: str) -> dict[str, Any]:
+        """Return git remote/origin context, including private/public split hints."""
+        root = Path(project_root)
+        return runtime.project_origins(root)
 
     @server.tool()
     def capability_index_status(project_root: str) -> dict[str, Any]:
@@ -1609,16 +1708,34 @@ def create_server() -> Any:
 
         env = {**__import__("os").environ, "PGPASSWORD": password}
         try:
-            result = subprocess.run(
-                ["psql", "-h", host, "-p", port, "-U", username, "-d", database,
-                 "-t", "-A", "-F", "\t", "-c", sql],
-                capture_output=True, text=True, timeout=30, env=env,
-            )
+            import tempfile as _tf
+            _db_out = _db_err = None
+            try:
+                with _tf.NamedTemporaryFile(mode="w", suffix=".db.out", delete=False) as f:
+                    _db_out = f.name
+                with _tf.NamedTemporaryFile(mode="w", suffix=".db.err", delete=False) as f:
+                    _db_err = f.name
+                with open(_db_out, "w") as out_fh, open(_db_err, "w") as err_fh:
+                    result = subprocess.run(
+                        ["psql", "-h", host, "-p", port, "-U", username, "-d", database,
+                         "-t", "-A", "-F", "\t", "-c", sql],
+                        stdout=out_fh, stderr=err_fh, text=True, timeout=30, env=env,
+                    )
+                stdout = Path(_db_out).read_text(encoding="utf-8", errors="ignore").strip()
+                stderr = Path(_db_err).read_text(encoding="utf-8", errors="ignore").strip()
+            finally:
+                import os as _os
+                for p in (_db_out, _db_err):
+                    if p:
+                        try:
+                            _os.unlink(p)
+                        except OSError:
+                            pass
             if result.returncode != 0:
-                return {"error": result.stderr.strip(), "rows": []}
+                return {"error": stderr, "rows": []}
 
-            lines = [line for line in result.stdout.strip().split("\n") if line.strip()]
-            return {"row_count": len(lines), "rows": lines[:200]}  # Cap at 200 rows
+            lines = [line for line in stdout.split("\n") if line.strip()]
+            return {"row_count": len(lines), "rows": lines[:200]}
         except FileNotFoundError:
             return {"error": "psql not found — install PostgreSQL client tools", "rows": []}
         except subprocess.TimeoutExpired:

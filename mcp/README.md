@@ -1,6 +1,6 @@
 # AIDOCS MCP
 
-**v1.1.0** — Optional MCP runtime layer for AIDOCS Core.
+**v1.1.1** — Optional MCP runtime layer for AIDOCS Core.
 
 `core/` remains the canonical Markdown-first system.
 `mcp/` adds runtime enforcement, indexing, and retrieval over that file-backed system.
@@ -28,7 +28,7 @@ pip install -e ".[ast]"   # with tree-sitter for JS/TS AST parsing
 ```
 mcp/
   server/aidocs_mcp/      # 21 Python service modules
-    mcp_server.py          # FastMCP tool registration (90+ tools)
+    mcp_server.py          # FastMCP tool registration (88 tools)
     service_hub.py         # Composition root
     runtime_service.py     # High-level orchestration
     session_store.py       # Session CRUD + lifecycle
@@ -58,7 +58,7 @@ mcp/
 
 ## Release Status
 
-- Current release: `1.1.0`
+- Current release: `1.1.1`
 
 ## OpenCode Caveats
 
@@ -66,106 +66,63 @@ mcp/
 - Claude currently uses runtime classification directly; OpenCode still relies on plugin-side context shaping plus command rewriting.
 - The installer creates `action_tokens/opencode/` links or fallback copies so OpenCode-visible language packs are accessible to users.
 
-## Implemented Tools (90+)
-  - `aidocs_orchestrate`
-  - `aidocs_mode_get`
-  - `aidocs_mode_set`
-  - `aidocs_mode_clear`
-  - `aidocs_classify_prompt`
-  - `aidocs_route_prompt`
-  - `aidocs_handle_prompt`
-  - `project_bootstrap_or_resume`
-  - `session_start`
-  - `session_list`
-  - `session_select`
-  - `session_read`
-  - `session_create`
-  - `session_claim_status`
-  - `session_claim`
-  - `session_release`
-  - `session_prune_stale_claims`
-  - `session_update`
-  - `task_begin`
-  - `task_update`
-  - `task_complete`
-  - `runtime_preflight`
-  - `memory_read`
-  - `memory_capture`
-  - `project_check`
-  - `project_check_legacy`
-  - `project_fix`
-  - `project_inspect_legacy`
-  - `project_sync_indexes`
-  - `project_status`
-  - `project_status_model_get`
-  - `project_status_evaluate`
-  - `project_status_area_bundle`
-  - `legacy_read_runtime`
-  - `legacy_build_session_proposal`
-  - `related_projects_list`
-  - `related_project_get`
-  - `related_project_code_search`
-  - `related_project_symbol_bundle`
-  - `related_project_subsystem_bundle`
-  - `related_project_compare_concept`
-  - `index_sync`
-  - `index_status`
-  - `memory_search`
-  - `schema_index_sync`
-  - `schema_index_status`
-  - `schema_find_entities`
-  - `schema_get_entity`
-  - `schema_find_field`
-  - `schema_trace_entity_flow`
-  - `schema_trace_relationship_path`
-  - `code_index_sync`
-  - `code_index_status`
-  - `code_search`
-  - `code_get_dependencies`
-  - `code_find_dependents`
-  - `code_get_dependency_bundle`
-  - `code_search_symbols`
-  - `code_find_references`
-  - `code_trace_field_flow`
-  - `code_trace_setting_usage`
-  - `code_trace_service_usage`
-  - `code_trace_model_usage`
-  - `code_trace_component_usage`
-  - `code_find_mutation_points`
-  - `code_find_validation_surfaces`
-  - `code_find_async_boundaries`
-  - `code_find_hotspots`
-  - `code_find_query_hotspots`
-  - `code_find_state_model_mismatch`
-  - `code_find_ui_backend_touchpoints`
-  - `code_find_policy_surfaces`
-  - `code_find_domain_clusters`
-  - `code_find_entrypoints`
-  - `code_find_routes`
-  - `code_trace_api_to_ui`
-  - `code_find_transition_points`
-  - `code_get_outline`
-  - `code_find_partial_group`
-  - `code_find_data_structures`
-  - `code_find_frontend_symbols`
-  - `code_find_initializers`
-  - `code_get_symbol_snippet`
-  - `code_get_symbol_bundle`
-  - `code_get_subsystem_bundle`
-  - `code_get_partial_bundle`
-  - `code_get_file_bundle`
-  - `code_get_component_bundle`
-  - `code_get_service_bundle`
-  - `code_get_query_bundle`
-  - `code_trace_query_shape`
-  - `code_get_component_tree`
-  - `code_get_session_bundle`
-  - `code_get_context_bundle`
-  - `code_get_preset_bundle`
+## Benchmarking
+
+- Run `aidocs benchmark . --json --iterations 10 --scenario-set public` for the public benchmark set.
+- See `mcp/BENCHMARKS.md` for benchmark rules, output scope, and public/private scenario-set guidance.
+
+## Tool Model
+
+The MCP server exposes 88 tools, but agents should not start by memorizing all 88.
+
+### Start Here
+
+Use these as the default entry points:
+
+- `aidocs_orchestrate` — `/aidocs` bootstrap/orchestration entry
+- `aidocs_classify_prompt` + `aidocs_route_prompt` — lightweight advisory routing
+- `code_investigate` — broad “start here” investigation
+- `code_find` — unified find surface
+- `code_trace` — unified trace surface
+- `code_bundle` — unified retrieval/context surface
+- `schema_query` — unified schema surface
+
+### Core Runtime Surfaces
+
+These make up the main operational AIDOCS runtime:
+
+- managed mode: `aidocs_mode_get`, `aidocs_mode_set`, `aidocs_mode_clear`
+- session lifecycle: `session_start`, `session_list`, `session_select`, `session_read`, `session_create`, `session_update`
+- task lifecycle: `task_begin`, `task_update`, `task_complete`
+- memory: `memory_read`, `memory_capture`, `memory_search`
+- project operations: `project_init`, `project_bootstrap_or_resume`, `project_sync_indexes`, `project_status`
+
+### Advanced / Specialist Surfaces
+
+These remain useful when the host or agent already knows what it needs:
+
+- code specialists such as `code_get_outline`, `code_get_symbol_snippet`, `code_search`, `code_get_dependencies`
+- precision helpers such as `code_get_method_signature`, `code_get_method_signatures`, `code_get_constructor_params`, `code_get_enum_values`, `code_get_service_api`
+- lighter schema helpers such as `schema_query(mode="properties")` and `schema_query(mode="batch_entity")`
+- git analysis tools such as `git_fork_status`, `git_merge_plan`, `git_conflict_analysis`, `git_upstream_changes`
+- action-surface and execution-evidence tools for operator-level debugging and runtime analysis
+- capability inspection tools for understanding the indexed MCP surface
+- procedure and procedure-link tools as advanced/optional structure derived from workflow definitions, not required for normal AIDOCS use
+
+### Important Guidance
+
+- Prefer unified entry points over old granular search habits.
+- Prefer advisory runtime routing over raw keyword guessing.
+- Treat many specialist tools as advanced surfaces, not the default starting point.
+- Treat procedures as optional structure for workflow/execution analysis, not as a prerequisite for runtime value.
+- For deep test or validation work, use test-inclusive indexing only when intentionally needed, then prefer the precision chain over guessing: service API -> method signatures -> constructor params -> enum values -> entity properties.
+- Use `mcp/HOST_INTEGRATION.md` for the host behavior contract instead of inferring it from the raw tool list.
 
 Run (after installing dependencies)
 ```bash
 cd mcp
 pip install -e .
+aidocs --version
+aidocs benchmark . --json --iterations 10
 aidocs-mcp
 ```

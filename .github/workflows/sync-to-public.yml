@@ -4,12 +4,15 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout private repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -17,6 +20,10 @@ jobs:
       - name: Strip private files
         run: |
           rm -rf mcp/tests/ tests/ mcp/ROADMAP.md
+
+      - name: Verify public tree
+        run: |
+          python core/scripts/verify-public-tree.py --repo-root .
 
       - name: Push to public repo
         run: |

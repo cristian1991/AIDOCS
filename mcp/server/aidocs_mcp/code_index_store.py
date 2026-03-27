@@ -896,6 +896,7 @@ class CodeIndexStore:
                     """,
                     params,
                 ).fetchall()
+        namespace_cache: dict[str, str | None] = {}
         ranked = []
         kind_weight = {
             "class": 30,
@@ -964,11 +965,193 @@ class CodeIndexStore:
                 "kind": row["kind"],
                 "line_number": int(row["line_number"]),
                 **({"container": row["container"]} if row["container"] else {}),
+                **(
+                    {"namespace": namespace}
+                    if (namespace := self._namespace_for_path(project_root, str(row["path"]), namespace_cache))
+                    else {}
+                ),
                 **({"is_partial": True} if row["is_partial"] else {}),
                 "why": reasons,
             }
             for _, row, reasons in ranked[:limit]
         ]
+
+    def get_method_signature(
+        self,
+        project_root: Path,
+        method_name: str,
+        container: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, object]:
+        self.init_db(project_root)
+        matches = self.search_symbols(project_root, query=method_name, kind="method", limit=max(limit * 3, 20))
+        filtered = [m for m in matches if not container or str(m.get("container") or "") == container][:limit]
+        signatures = []
+        for item in filtered:
+            signature = self._extract_method_signature(project_root, str(item["path"]), int(item["line_number"]))
+            signatures.append(
+                {
+                    **item,
+                    **signature,
+                }
+            )
+        return {
+            "method": method_name,
+            "container": container,
+            "matches": signatures,
+        }
+
+    def get_method_signatures(
+        self,
+        project_root: Path,
+        methods: list[str],
+        container: str | None = None,
+        limit_per_method: int = 20,
+    ) -> dict[str, object]:
+        results = []
+        for method in methods:
+            if not method or not method.strip():
+                continue
+            payload = self.get_method_signature(
+                project_root,
+                method_name=method.strip(),
+                container=None,
+                limit=max(limit_per_method * 3, 20),
+            )
+            matches = payload.get("matches", []) if isinstance(payload, dict) else []
+            if container:
+                preferred = [item for item in matches if str(item.get("container") or "") == container]
+                others = [item for item in matches if str(item.get("container") or "") != container]
+                matches = preferred + others
+            payload["container"] = container
+            payload["matches"] = matches[:limit_per_method]
+            results.append(payload)
+        return {
+            "container": container,
+            "methods": results,
+        }
+
+    def get_enum_values(self, project_root: Path, enum_name: str, limit: int = 50, include_related: bool = False) -> dict[str, object]:
+        self.init_db(project_root)
+        enums = self.search_symbols(project_root, query=enum_name, kind="enum", limit=limit)
+        exact = [item for item in enums if str(item.get("symbol") or "") == enum_name]
+        fuzzy = [item for item in enums if str(item.get("symbol") or "") != enum_name]
+        enums = exact + fuzzy if include_related else exact or fuzzy[:1]
+        matches = []
+        for enum_item in enums[:limit]:
+            values = self._enum_members_for_container(project_root, str(enum_item["path"]), str(enum_item["symbol"]))
+            matches.append({**enum_item, "values": values})
+        return {
+            "enum": enum_name,
+            "include_related": include_related,
+            "matches": matches,
+        }
+
+    def get_constructor_params(
+        self,
+        project_root: Path,
+        type_name: str,
+        limit: int = 20,
+        include_related: bool = False,
+    ) -> dict[str, object]:
+        self.init_db(project_root)
+        matches = self.search_symbols(project_root, query=type_name, kind="record", limit=max(limit * 2, 20))
+        if not matches:
+            matches = self.search_symbols(project_root, query=type_name, kind="class", limit=max(limit * 2, 20))
+        exact = [item for item in matches if str(item.get("symbol") or "") == type_name]
+        fuzzy = [item for item in matches if str(item.get("symbol") or "") != type_name]
+        matches = exact + fuzzy if include_related else exact or fuzzy[:1]
+        results = []
+        for item in matches[:limit]:
+            constructor = self._extract_constructor_params(project_root, str(item["path"]), str(item["symbol"]))
+            results.append({**item, **constructor})
+        return {
+            "type": type_name,
+            "include_related": include_related,
+            "matches": results,
+        }
+
+    def get_constructor_params_batch(
+        self,
+        project_root: Path,
+        types: list[str],
+        include_related: bool = False,
+        limit_per_type: int = 20,
+    ) -> dict[str, object]:
+        results = []
+        for type_name in types:
+            if not type_name or not type_name.strip():
+                continue
+            results.append(
+                self.get_constructor_params(
+                    project_root,
+                    type_name=type_name.strip(),
+                    limit=limit_per_type,
+                    include_related=include_related,
+                )
+            )
+        return {
+            "types": results,
+            "include_related": include_related,
+        }
+
+    def get_service_api(self, project_root: Path, service_name: str, limit: int = 100) -> dict[str, object]:
+        self.init_db(project_root)
+        service_matches = self.search_symbols(project_root, query=service_name, kind="class", limit=max(limit, 20))
+        exact = next((item for item in service_matches if str(item.get("symbol") or "") == service_name), None)
+        if not exact:
+            return {"service": service_name, "match": None, "methods": [], "not_found": True}
+        target = exact
+
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                "SELECT path, symbol, kind, line_number, container, is_partial FROM code_outlines WHERE kind = 'method' AND container = ? ORDER BY path, line_number LIMIT ?",
+                (service_name, limit),
+            ).fetchall()
+        methods = []
+        namespace_cache: dict[str, str | None] = {}
+        for row in rows:
+            base = {
+                "path": row["path"],
+                "symbol": row["symbol"],
+                "kind": row["kind"],
+                "line_number": int(row["line_number"]),
+                **({"container": row["container"]} if row["container"] else {}),
+                **(
+                    {"namespace": namespace}
+                    if (namespace := self._namespace_for_path(project_root, str(row["path"]), namespace_cache))
+                    else {}
+                ),
+            }
+            methods.append({**base, **self._extract_method_signature(project_root, str(row["path"]), int(row["line_number"]))})
+        if not methods or len({m["path"] for m in methods}) < 2:
+            fallback_methods = self._extract_service_methods_from_declaring_files(project_root, service_name, limit=limit)
+            seen = {(m.get("path"), m.get("symbol"), m.get("line_number")) for m in methods}
+            for item in fallback_methods:
+                key = (item.get("path"), item.get("symbol"), item.get("line_number"))
+                if key not in seen:
+                    seen.add(key)
+                    methods.append(item)
+        return {
+            "service": service_name,
+            "match": target,
+            "methods": methods,
+        }
+
+    def get_entity_properties(self, project_root: Path, entity_name: str) -> dict[str, object]:
+        try:
+            from .schema_index_store import SchemaIndexStore
+
+            result = SchemaIndexStore().get_entity_properties(project_root, entity_name)
+            if not result.get("properties"):
+                result["note"] = "No class-style properties found. If this is a record or constructor-heavy type, use code_get_constructor_params."
+            return result
+        except Exception:
+            return {
+                "entity_name": entity_name,
+                "properties": [],
+                "note": "No class-style properties found. If this is a record or constructor-heavy type, use code_get_constructor_params.",
+            }
 
     def find_references(self, project_root: Path, symbol: str, limit: int = 100) -> dict[str, object]:
         self.init_db(project_root)
@@ -1374,35 +1557,83 @@ class CodeIndexStore:
         references = self.find_references(project_root, symbol=needle, limit=limit)["matches"]
         code_matches = self.search_code(project_root, query=needle, limit=limit)
 
-        mutation_tokens = ("set", "update", "save", "create", "delete", "remove", "toggle", "apply", "sync", "write", "assign")
+        mutation_tokens = ("set", "update", "save", "create", "delete", "remove", "toggle", "apply", "sync", "write", "assign", "change", "complete")
+
+        # Also search for methods INSIDE the queried container (e.g., query="CashFlowService" finds CreateAccountAsync inside it)
+        with self.connect(project_root) as conn:
+            mutation_like_clauses = " OR ".join(["LOWER(co.symbol) LIKE ?" for _ in mutation_tokens])
+            mutation_like_params = [f"%{t}%" for t in mutation_tokens]
+            container_methods = conn.execute(
+                f"""
+                SELECT co.path, co.symbol, co.kind, co.line_number, co.container
+                FROM code_outlines co
+                WHERE co.container = ? AND co.kind = 'method'
+                  AND ({mutation_like_clauses})
+                LIMIT ?
+                """,
+                [needle] + mutation_like_params + [limit * 2],
+            ).fetchall()
+            for row in container_methods:
+                # Add as symbol match so the main loop processes it
+                symbol_matches.append({
+                    "path": row["path"], "symbol": row["symbol"],
+                    "kind": row["kind"], "line_number": row["line_number"],
+                    "container": row["container"],
+                })
+        factory_tokens = ("factory", "fixture", "testbase")
         merged: list[dict[str, object]] = []
         seen: set[tuple[str, str | None, int | None]] = set()
+
+        lower_needle = needle.lower()
+        # Extract concept tokens for container matching (e.g., "CashFlowService" -> "cashflowservice")
+        needle_tokens = [t.lower() for t in re.split(r'[.\s]+', needle) if t]
 
         for item in symbol_matches:
             path = str(item["path"])
             symbol = str(item["symbol"])
+            container = str(item.get("container") or "")
             lower_symbol = symbol.lower()
+            lower_path = path.lower()
+            lower_container = container.lower()
             score = self._score_text_match(needle, symbol, exact=90, prefix=60, contains=35)
+
+            # Also check if the query matches the container (e.g., query="CashFlowService", container="CashFlowService")
+            container_match = self._score_text_match(needle, container, exact=50, prefix=35, contains=20) if container else 0
+            # Or if any needle token appears in the container/path
+            context_match = any(t in lower_container or t in lower_path for t in needle_tokens)
+
             token_bonus = 0
             for token in mutation_tokens:
                 if token in lower_symbol:
                     token_bonus += 25
-            if token_bonus == 0:
+            # Skip only if: no mutation token AND no concept match (symbol, container, or path)
+            if token_bonus == 0 and score == 0 and container_match == 0 and not context_match:
                 continue
+            # If mutation token present but no direct symbol match, use container match as base
+            if score == 0 and container_match > 0:
+                score = container_match
             score += token_bonus
             layer = self._infer_layer_from_path(path)
             score += self._path_weight(project_root, path)
             if layer in {"logic", "api", "ui"}:
                 score += 10
+            if any(token in lower_path for token in factory_tokens) or any(token in lower_symbol for token in factory_tokens):
+                score -= 25
+            if "/test" in lower_path or "tests/" in lower_path:
+                score -= 20
             key = (path, symbol, int(item["line_number"]))
             if key in seen:
                 continue
             seen.add(key)
+            # Only fetch snippets for actual mutation methods (have token_bonus),
+            # skip snippets for class definitions and context-only matches to reduce output size
             snippet = None
-            try:
-                snippet = self.get_symbol_snippet(project_root, path=path, symbol=symbol, kind=str(item["kind"]), line_number=int(item["line_number"]))
-            except FileNotFoundError:
-                snippet = None
+            kind_str = str(item["kind"])
+            if token_bonus > 0 and kind_str in ("method", "function"):
+                try:
+                    snippet = self.get_symbol_snippet(project_root, path=path, symbol=symbol, kind=kind_str, line_number=int(item["line_number"]))
+                except FileNotFoundError:
+                    snippet = None
             merged.append(
                 {
                     "score": score,
@@ -1422,19 +1653,25 @@ class CodeIndexStore:
             path = str(item["path"])
             line = str(item["line"])
             lower_line = line.lower()
+            lower_path = path.lower()
             token_bonus = 0
             for token in mutation_tokens:
                 if token in lower_line:
                     token_bonus += 18
             if token_bonus == 0 or not line_pattern.search(line):
                 continue
+            score = 70 + token_bonus + self._path_weight(project_root, path)
+            if any(token in lower_path for token in factory_tokens):
+                score -= 20
+            if "/test" in lower_path or "tests/" in lower_path:
+                score -= 15
             key = (path, None, int(item["line_number"]))
             if key in seen:
                 continue
             seen.add(key)
             merged.append(
                 {
-                    "score": 70 + token_bonus + self._path_weight(project_root, path),
+                    "score": score,
                     "source": "reference",
                     "path": path,
                     "layer": item["layer"],
@@ -1449,15 +1686,22 @@ class CodeIndexStore:
         for item in code_matches:
             path = str(item["path"])
             lower_path = path.lower()
-            if not any(token in lower_path for token in mutation_tokens):
+            lower_summary = str(item["summary"] or "").lower()
+            token_hits = sum(1 for token in mutation_tokens if token in lower_summary)
+            if token_hits == 0 and not any(token in lower_path for token in mutation_tokens):
                 continue
             key = (path, None, None)
             if key in seen:
                 continue
             seen.add(key)
+            score = 15 + token_hits * 18 + self._path_weight(project_root, path)
+            if any(token in lower_path for token in factory_tokens) or any(token in lower_summary for token in factory_tokens):
+                score -= 25
+            if "/test" in lower_path or "tests/" in lower_path:
+                score -= 20
             merged.append(
                 {
-                    "score": 35 + self._path_weight(project_root, path),
+                    "score": score,
                     "source": "file_match",
                     "path": path,
                     "layer": self._infer_layer_from_path(path),
@@ -2085,13 +2329,78 @@ class CodeIndexStore:
         return {"query": query, "matches": merged[:limit]}
 
     def trace_api_to_ui(self, project_root: Path, concept: str, limit: int = 50) -> dict[str, object]:
-        routes = self.find_routes(project_root, query=concept, limit=limit)["matches"]
-        touchpoints = self.find_ui_backend_touchpoints(project_root, concept=concept, limit=limit)["matches"]
-        clusters = self.find_domain_clusters(project_root, concept=concept, limit=limit)["cluster"]
+        query = concept.strip()
+        service_name = ""
+        method_name = ""
+        if "." in query:
+            left, right = query.split(".", 1)
+            service_name = left.strip()
+            method_name = right.strip()
 
-        api_side = [item for item in routes + touchpoints + clusters if item.get("layer") == "api"]
-        ui_side = [item for item in touchpoints + clusters if item.get("layer") == "ui"]
-        logic_side = [item for item in touchpoints + clusters if item.get("layer") == "logic"]
+        routes = self.find_routes(project_root, query=query, limit=limit)["matches"]
+        touchpoints = self.find_ui_backend_touchpoints(project_root, concept=query, limit=limit)["matches"]
+        clusters = self.find_domain_clusters(project_root, concept=query, limit=limit)["cluster"]
+
+        if method_name:
+            refs = self.find_references(project_root, symbol=method_name, limit=limit * 3).get("matches", [])
+            for ref in refs:
+                path = str(ref.get("path") or "")
+                layer = str(ref.get("layer") or self._infer_layer_from_path(path))
+                touchpoints.append(
+                    {
+                        "score": 130 if layer == "api" else 90 if layer == "ui" else 75,
+                        "path": path,
+                        "layer": layer,
+                        "symbol": method_name,
+                        "kind": "reference",
+                        "line_number": ref.get("line_number"),
+                        "container": None,
+                        "snippet": ref.get("line"),
+                    }
+                )
+        if service_name:
+            service_symbols = self.search_symbols(project_root, query=service_name, limit=limit * 3)
+            for item in service_symbols:
+                path = str(item.get("path") or "")
+                symbol = str(item.get("symbol") or "")
+                container = str(item.get("container") or "")
+                # Only include symbols that actually relate to the service
+                text_match = self._score_text_match(service_name, symbol, exact=80, prefix=50, contains=30)
+                container_match = self._score_text_match(service_name, container, exact=60, prefix=40, contains=20)
+                if text_match == 0 and container_match == 0:
+                    continue
+                layer = self._infer_layer_from_path(path)
+                base_score = max(text_match, container_match)
+                layer_bonus = 30 if layer == "api" else 15 if layer == "logic" else 0
+                touchpoints.append(
+                    {
+                        "score": base_score + layer_bonus,
+                        "path": path,
+                        "layer": layer,
+                        "symbol": symbol,
+                        "kind": item.get("kind"),
+                        "line_number": item.get("line_number"),
+                        "container": item.get("container"),
+                        "snippet": None,
+                    }
+                )
+
+        def dedupe(items: list[dict[str, object]]) -> list[dict[str, object]]:
+            seen: set[tuple[str, str | None, int | None]] = set()
+            ordered: list[dict[str, object]] = []
+            for item in sorted(items, key=lambda x: (-int(x.get("score", 0)), str(x.get("path") or ""), int(x.get("line_number") or 0))):
+                key = (str(item.get("path") or ""), str(item.get("symbol") or ""), int(item.get("line_number") or 0) or None)
+                if key in seen:
+                    continue
+                seen.add(key)
+                ordered.append(item)
+            return ordered
+
+        api_side = dedupe([item for item in routes + touchpoints + clusters if item.get("layer") == "api"])
+        ui_side = dedupe([item for item in touchpoints + clusters if item.get("layer") == "ui"])
+        # Filter logic results by minimum score to suppress unrelated interface noise
+        min_logic_score = 30
+        logic_side = dedupe([item for item in touchpoints + clusters if item.get("layer") == "logic" and int(item.get("score", 0)) >= min_logic_score])
 
         return {
             "concept": concept,
@@ -2120,8 +2429,14 @@ class CodeIndexStore:
                 continue
             kind = str(item["kind"])
             symbol = str(item["symbol"])
-            score = 0
-            score += self._score_text_match(needle, symbol, exact=120, prefix=90, contains=60)
+            container = str(item.get("container") or "")
+            text_score = self._score_text_match(needle, symbol, exact=120, prefix=90, contains=60)
+            # Also check container match (e.g., query="CompleteItemAsync" in container "DocumentService")
+            container_score = self._score_text_match(needle, container, exact=80, prefix=50, contains=30) if container else 0
+            # Skip symbols with no relevance to the query — prevents logic noise
+            if text_score == 0 and container_score == 0:
+                continue
+            score = max(text_score, container_score)
             if layer == "api":
                 score += 25
             elif layer == "ui":
@@ -2372,6 +2687,116 @@ class CodeIndexStore:
         return {
             "concept": concept,
             "matches": merged[:limit],
+        }
+
+    def find_factories(self, project_root: Path, query: str, include_tests: bool = True, limit: int = 50) -> dict[str, object]:
+        """Find factory/setup/create helpers. Includes test paths by default since factories often live there."""
+        self.init_db(project_root)
+        # Factories often live in test/fixture paths — ensure they're indexed
+        if include_tests:
+            self.sync_code_files(project_root, include_tests=True)
+        needle = query.strip()
+        symbol_matches = []
+        seen: set[tuple[str, str, int]] = set()
+        for term in [needle, "Create", "Factory"]:
+            if not term:
+                continue
+            for item in self.search_symbols(project_root, term, limit=max(limit * 3, 50)):
+                key = (str(item.get("path")), str(item.get("symbol")), int(item.get("line_number") or 0))
+                if key not in seen:
+                    seen.add(key)
+                    symbol_matches.append(item)
+
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                """
+                SELECT path, symbol, kind, line_number, container, is_partial
+                FROM code_outlines
+                WHERE kind IN ('method', 'function', 'class', 'record')
+                  AND (symbol LIKE 'Create%' OR symbol LIKE '%Factory%')
+                ORDER BY path, line_number
+                LIMIT ?
+                """,
+                (max(limit * 4, 50),),
+            ).fetchall()
+        for row in rows:
+            item = {
+                "path": row["path"],
+                "symbol": row["symbol"],
+                "kind": row["kind"],
+                "line_number": int(row["line_number"]),
+                **({"container": row["container"]} if row["container"] else {}),
+                **({"is_partial": True} if row["is_partial"] else {}),
+            }
+            key = (str(item.get("path")), str(item.get("symbol")), int(item.get("line_number") or 0))
+            if key not in seen:
+                seen.add(key)
+                symbol_matches.append(item)
+        factory_matches = []
+        for item in symbol_matches:
+            symbol = str(item.get("symbol") or "")
+            path = str(item.get("path") or "")
+            if not symbol:
+                continue
+            lower_symbol = symbol.lower()
+            lower_path = path.lower()
+            if lower_symbol.startswith("create") or "factory" in lower_symbol or "factory" in lower_path or "/test" in lower_path or "tests/" in lower_path:
+                score = 0
+                if needle:
+                    lower_needle = needle.lower()
+                    if lower_needle in lower_symbol:
+                        score += 100
+                    if lower_needle in lower_path:
+                        score += 60
+                if lower_symbol.startswith("create"):
+                    score += 20
+                if "factory" in lower_symbol:
+                    score += 20
+                if "factory" in lower_path:
+                    score += 10
+                if "/test" in lower_path or "tests/" in lower_path:
+                    score += 5
+                factory_matches.append({**item, "score": score})
+        if len(factory_matches) < limit:
+            file_matches = []
+            for term in [needle, "Create", "Factory"]:
+                if not term:
+                    continue
+                for item in self.search_code(project_root, term, limit=max(limit * 3, 50)):
+                    path = str(item.get("path") or "")
+                    lower_path = path.lower()
+                    summary = str(item.get("summary") or "").lower()
+                    if "factory" in lower_path or "factory" in summary or "tests/" in lower_path or "/test" in lower_path or "create" in summary:
+                        score = 0
+                        if needle:
+                            lower_needle = needle.lower()
+                            if lower_needle in lower_path:
+                                score += 60
+                            if lower_needle in summary:
+                                score += 40
+                        if "factory" in lower_path or "factory" in summary:
+                            score += 20
+                        if "create" in summary:
+                            score += 10
+                        file_matches.append(
+                            {
+                                "path": path,
+                                "symbol": None,
+                                "kind": "file_match",
+                                "line_number": None,
+                                "why": ["factory_file_fallback"],
+                                "score": score,
+                            }
+                        )
+            for item in file_matches:
+                key = (str(item.get("path")), str(item.get("symbol")), int(item.get("line_number") or 0))
+                if key not in seen:
+                    seen.add(key)
+                    factory_matches.append(item)
+        factory_matches.sort(key=lambda item: (-int(item.get("score", 0)), str(item.get("path") or ""), str(item.get("symbol") or "")))
+        return {
+            "query": query,
+            "matches": factory_matches[:limit],
         }
 
     def find_partial_consumers(self, project_root: Path, partial_name: str, limit: int = 50) -> list[dict[str, object]]:
@@ -2693,11 +3118,14 @@ class CodeIndexStore:
     def find_transition_points(self, project_root: Path, concept: str | None = None, limit: int = 50) -> dict[str, object]:
         self.init_db(project_root)
         needle = (concept or "").strip()
+        dot_parts = [part.strip() for part in needle.split(".") if part.strip()] if needle else []
+        compound_terms = dot_parts if len(dot_parts) >= 2 else []
+        seed_query = dot_parts[0] if compound_terms else (needle or "legacy")
         if needle:
             self._ensure_parsed_candidates(project_root, needle, limit=limit * 4)
 
-        code_matches = self.search_code(project_root, needle or "legacy", limit=max(limit * 3, 100))
-        symbol_matches = self.search_symbols(project_root, needle or "legacy", limit=max(limit * 3, 100))
+        code_matches = self.search_code(project_root, seed_query, limit=max(limit * 3, 100))
+        symbol_matches = self.search_symbols(project_root, seed_query, limit=max(limit * 3, 100))
 
         transition_tokens = (
             "legacy",
@@ -2725,6 +3153,14 @@ class CodeIndexStore:
             if needle:
                 score += self._score_text_match(needle, symbol, exact=100, prefix=70, contains=40)
                 score += self._score_text_match(needle, path, exact=50, prefix=30, contains=20)
+            if compound_terms:
+                term_hits = 0
+                for term in compound_terms:
+                    lower_term = term.lower()
+                    if lower_term in lower_symbol or lower_term in lower_path or lower_term in str(item.get("container") or "").lower():
+                        term_hits += 1
+                if term_hits:
+                    score += term_hits * 35
             for token in transition_tokens:
                 if token in lower_symbol:
                     score += 35
@@ -2760,18 +3196,32 @@ class CodeIndexStore:
                 }
             )
 
+        broad_single = bool(needle and len([p for p in re.split(r"\s+", needle) if p.strip()]) == 1)
         for item in code_matches:
             path = str(item["path"])
             lower_path = path.lower()
+            lower_summary = str(item["summary"] or "").lower()
             score = 0
             if needle:
                 score += self._score_text_match(needle, path, exact=50, prefix=30, contains=20)
+            if compound_terms:
+                term_hits = 0
+                for term in compound_terms:
+                    lower_term = term.lower()
+                    if lower_term in lower_path or lower_term in lower_summary:
+                        term_hits += 1
+                if term_hits:
+                    score += term_hits * 25
             for token in transition_tokens:
                 if token in lower_path:
                     score += 30
-                if token in str(item["summary"]).lower():
+                if token in lower_summary:
                     score += 15
             if score <= 0:
+                continue
+            if broad_single and score < 45:
+                continue
+            if compound_terms and not any(term.lower() in lower_path or term.lower() in lower_summary for term in compound_terms):
                 continue
             key = (path, None, None)
             if key in seen:
@@ -3120,7 +3570,14 @@ class CodeIndexStore:
             "entrypoints": slim(entrypoints.get("matches", [])),
         }
 
-    def investigate(self, project_root: Path, concept: str, limit: int = 5) -> dict[str, object]:
+    def investigate(
+        self,
+        project_root: Path,
+        concept: str,
+        limit: int = 5,
+        depth: str = "standard",
+        focus: str = "general",
+    ) -> dict[str, object]:
         """High-level investigation entry point. Returns a navigation guide, not full data.
 
         Runs quick probes across symbols, code files, schema, CSS, and modules,
@@ -3131,25 +3588,76 @@ class CodeIndexStore:
         if not needle:
             return {"concept": concept, "findings": [], "next_tools": []}
 
+        depth_value = depth.strip().lower()
+        focus_value = focus.strip().lower()
+        if depth_value not in {"shallow", "standard", "deep"}:
+            depth_value = "standard"
+        if focus_value not in {"general", "workflow", "service", "schema", "ui", "backend"}:
+            focus_value = "general"
+
+        symbol_limit = limit if depth_value == "shallow" else (limit * 2 if depth_value == "deep" else limit)
+        code_limit = limit if depth_value == "shallow" else (limit * 2 if depth_value == "deep" else limit)
+
         findings: list[dict[str, object]] = []
         next_tools: list[dict[str, str]] = []
 
         # 1. Symbol search — are there named symbols?
-        symbols = self.search_symbols(project_root, needle, limit=limit)
+        symbols = self.search_symbols(project_root, needle, limit=symbol_limit)
         if symbols:
             top_kinds = list(dict.fromkeys(s["kind"] for s in symbols))[:3]
+            preview_symbols: list[dict[str, object]] = []
+            preview_symbols.extend(symbols[:3])
+            for preferred_kind in ("method", "enum", "record", "class"):
+                extra = next((item for item in symbols if item["kind"] == preferred_kind and item not in preview_symbols), None)
+                if extra is not None:
+                    preview_symbols.append(extra)
+            top = []
+            for s in preview_symbols[:6]:
+                item = {"symbol": s["symbol"], "kind": s["kind"], "path": s["path"]}
+                if s.get("namespace"):
+                    item["namespace"] = s["namespace"]
+                if s["kind"] == "method":
+                    signature = self._extract_method_signature(project_root, str(s["path"]), int(s["line_number"]))
+                    if signature.get("signature"):
+                        item["signature"] = signature["signature"]
+                elif s["kind"] == "enum":
+                    item["enum_values"] = self._enum_members_for_container(project_root, str(s["path"]), str(s["symbol"]))[:8]
+                top.append(item)
             findings.append({
                 "area": "symbols",
                 "count": len(symbols),
-                "top": [{"symbol": s["symbol"], "kind": s["kind"], "path": s["path"]} for s in symbols[:3]],
+                "top": top,
                 "kinds_found": top_kinds,
             })
             next_tools.append({"tool": "code_search_symbols", "why": f"Found {len(symbols)} symbols — search for specific names/kinds"})
             if any(s["kind"] in ("class", "interface", "struct", "record") for s in symbols):
                 next_tools.append({"tool": "code_find_references", "why": "Trace where these types are used"})
+            if any(s["kind"] == "method" for s in symbols):
+                next_tools.append({"tool": "code_get_method_signature", "why": "Read exact method params/returns before calling methods"})
+            if any(str(s["symbol"]).endswith("Service") and s["kind"] == "class" for s in symbols):
+                next_tools.append({"tool": "code_get_service_api", "why": "Read all public method signatures for a service before writing workflow-heavy code or tests"})
+            if any(s["kind"] == "enum" for s in symbols):
+                next_tools.append({"tool": "code_get_enum_values", "why": "Read exact enum members before using enum values"})
+
+            service_candidates = [s for s in symbols if s["kind"] == "class" and str(s["symbol"]).endswith("Service")]
+            if service_candidates:
+                findings.append(
+                    {
+                        "area": "service_api_candidates",
+                        "count": len(service_candidates),
+                        "top": [
+                            {
+                                "service": item["symbol"],
+                                "path": item["path"],
+                                **({"namespace": item["namespace"]} if item.get("namespace") else {}),
+                            }
+                            for item in service_candidates[:4]
+                        ],
+                    }
+                )
 
         # 2. Code files — which files mention this concept?
-        code_files = self.search_code(project_root, needle, limit=limit)
+        code_files = self.search_code(project_root, needle, limit=code_limit)
         if code_files:
             roles = list(dict.fromkeys(f["role"] for f in code_files))[:4]
             findings.append({
@@ -3164,8 +3672,8 @@ class CodeIndexStore:
         try:
             from .schema_index_store import SchemaIndexStore
             schema = SchemaIndexStore()
-            entities = schema.find_schema_entities(project_root, query=needle, limit=limit)
-            fields = schema.find_schema_field(project_root, needle, limit=limit)
+            entities = schema.find_schema_entities(project_root, query=needle, limit=limit if depth_value != "deep" else limit * 2)
+            fields = schema.find_schema_field(project_root, needle, limit=limit if depth_value != "deep" else limit * 2)
             if entities:
                 findings.append({
                     "area": "schema_entities",
@@ -3173,6 +3681,7 @@ class CodeIndexStore:
                     "top": [{"entity": e["entity_name"], "source": e.get("source_path", "").split("/")[-1]} for e in entities[:3]],
                 })
                 next_tools.append({"tool": "schema_get_entity", "why": "Get fields and relationships for matched entities"})
+                next_tools.append({"tool": "code_get_entity_properties", "why": "Read a lightweight property list for matched entities or DTOs"})
             if fields:
                 findings.append({
                     "area": "schema_fields",
@@ -3189,7 +3698,7 @@ class CodeIndexStore:
                 "SELECT symbol, path FROM code_outlines WHERE kind = 'css_class' AND symbol LIKE ? LIMIT ?",
                 (f"%{needle}%", limit),
             ).fetchall()
-        if css_rows:
+        if css_rows and focus_value in {"general", "ui"}:
             findings.append({
                 "area": "css",
                 "count": len(css_rows),
@@ -3208,6 +3717,61 @@ class CodeIndexStore:
             })
             next_tools.append({"tool": "code_get_module_files", "why": "List files in the matching module"})
 
+        multi_word = len([part for part in re.split(r"\s+", needle) if part.strip()]) >= 2
+        if multi_word or focus_value in {"workflow", "backend"} or depth_value == "deep":
+            try:
+                touchpoints = self.find_ui_backend_touchpoints(project_root, concept=concept, limit=limit)
+                tp_matches = touchpoints.get("matches", []) if isinstance(touchpoints, dict) else []
+                if tp_matches:
+                    if focus_value == "backend":
+                        tp_matches = [item for item in tp_matches if item.get("layer") in {"api", "logic", "data"}]
+                    elif focus_value == "ui":
+                        tp_matches = [item for item in tp_matches if item.get("layer") == "ui"]
+                    findings.append(
+                        {
+                            "area": "workflow_touchpoints",
+                            "count": len(tp_matches),
+                            "top": [
+                                {
+                                    "path": item["path"],
+                                    "layer": item.get("layer"),
+                                    "symbol": item.get("symbol"),
+                                    "kind": item.get("kind"),
+                                }
+                                for item in tp_matches[:4]
+                            ],
+                        }
+                    )
+                    next_tools.append({"tool": "code_trace_api_to_ui", "why": "Trace the workflow across UI, logic, API, and backend ownership points"})
+            except Exception:
+                pass
+            try:
+                routes = self.find_routes(project_root, query=concept, limit=limit)
+                route_matches = routes.get("matches", []) if isinstance(routes, dict) else []
+                if route_matches and focus_value in {"general", "workflow", "backend"}:
+                    findings.append(
+                        {
+                            "area": "routes",
+                            "count": len(route_matches),
+                            "top": [{"path": item["path"], "layer": item.get("layer")} for item in route_matches[:3]],
+                        }
+                    )
+            except Exception:
+                pass
+            try:
+                policy = self.find_policy_surfaces(project_root, concept=concept, limit=limit)
+                policy_matches = policy.get("matches", []) if isinstance(policy, dict) else []
+                if policy_matches and focus_value in {"general", "workflow", "backend", "service"}:
+                    findings.append(
+                        {
+                            "area": "policy_surfaces",
+                            "count": len(policy_matches),
+                            "top": [{"path": item["path"], "layer": item.get("layer"), "symbol": item.get("symbol")} for item in policy_matches[:3]],
+                        }
+                    )
+            except Exception:
+                pass
+
         # Deduplicate next_tools by tool name
         seen_tools: set[str] = set()
         unique_tools: list[dict[str, str]] = []
@@ -3218,10 +3782,150 @@ class CodeIndexStore:
 
         return {
             "concept": concept,
+            "depth": depth_value,
+            "focus": focus_value,
             "findings": findings,
             "next_tools": unique_tools,
             "summary": ("Found: " + ", ".join(str(f["area"]) + "(" + str(f["count"]) + ")" for f in findings)) if findings else "No matches found.",
         }
+
+    def _namespace_for_path(self, project_root: Path, path: str, cache: dict[str, str | None] | None = None) -> str | None:
+        if cache is not None and path in cache:
+            return cache[path]
+        abs_path = project_root / path
+        namespace = None
+        try:
+            text = abs_path.read_text(encoding="utf-8", errors="ignore")
+            match = re.search(r"^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\.]*)", text, re.MULTILINE)
+            if match:
+                namespace = match.group(1)
+        except OSError:
+            namespace = None
+        if cache is not None:
+            cache[path] = namespace
+        return namespace
+
+    def _extract_method_signature(self, project_root: Path, path: str, line_number: int) -> dict[str, object]:
+        abs_path = project_root / path
+        try:
+            lines = abs_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            return {}
+        index = max(0, line_number - 1)
+        window = lines[index:index + 4]
+        header_parts = []
+        paren_balance = 0
+        seen_open = False
+        for raw_line in window:
+            line = raw_line.strip()
+            if not line:
+                continue
+            header_parts.append(line)
+            paren_balance += line.count("(") - line.count(")")
+            if "(" in line:
+                seen_open = True
+            if seen_open and paren_balance <= 0:
+                break
+        merged = " ".join(header_parts)
+        if "{" in merged:
+            merged = merged.split("{", 1)[0].rstrip()
+        match = re.search(
+            r"(?P<return>(?:public|private|internal|protected|static|virtual|override|abstract|async|sealed|extern|unsafe|new|partial|readonly|\s)+[A-Za-z_<>,\[\]\.?]+)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<params>\([^)]*\))",
+            merged,
+        )
+        if not match:
+            return {"signature": merged.strip()} if merged.strip() else {}
+        return_type = re.sub(r"\s+", " ", match.group("return")).strip()
+        params = match.group("params").strip()
+        return {
+            "return_type": return_type,
+            "params": params,
+            "signature": f"{return_type} {match.group('name')}{params}",
+        }
+
+    def _enum_members_for_container(self, project_root: Path, path: str, container: str) -> list[str]:
+        self.init_db(project_root)
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                "SELECT symbol FROM code_outlines WHERE path = ? AND kind = 'enum_member' AND container = ? ORDER BY line_number",
+                (path, container),
+            ).fetchall()
+        return [str(row["symbol"]) for row in rows]
+
+    def _extract_constructor_params(self, project_root: Path, path: str, type_name: str) -> dict[str, object]:
+        abs_path = project_root / path
+        try:
+            text = abs_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return {}
+
+        text = re.sub(r"//.*?$", "", text, flags=re.MULTILINE)
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+
+        record_match = re.search(rf"\brecord\s+{re.escape(type_name)}\s*\(([^)]*)\)", text)
+        if record_match:
+            raw = record_match.group(1).strip()
+            params = [item.strip() for item in raw.split(",") if item.strip()]
+            return {
+                "kind": "record_constructor",
+                "params": params,
+                "signature": f"{type_name}({raw})",
+            }
+
+        ctor_match = re.search(rf"\b{re.escape(type_name)}\s*\(([^)]*)\)", text)
+        if ctor_match:
+            raw = ctor_match.group(1).strip()
+            params = [item.strip() for item in raw.split(",") if item.strip()]
+            return {
+                "kind": "constructor",
+                "params": params,
+                "signature": f"{type_name}({raw})",
+            }
+        return {}
+
+    def _extract_service_methods_from_declaring_files(self, project_root: Path, service_name: str, limit: int = 100) -> list[dict[str, object]]:
+        pattern = re.compile(rf"\b(class|record|struct)\s+{re.escape(service_name)}\b")
+        method_pattern = re.compile(
+            r"^\s*(public\s+(?:static\s+)?(?:async\s+)?[A-Za-z_<>,\[\]\.?]+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\([^)]*\))",
+            re.MULTILINE,
+        )
+        namespace_cache: dict[str, str | None] = {}
+        results: list[dict[str, object]] = []
+        for path in sorted(project_root.rglob("*")):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in {".cs", ".ts", ".tsx", ".js", ".jsx"}:
+                continue
+            rel = path.relative_to(project_root).as_posix()
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if not pattern.search(text):
+                continue
+            for match in method_pattern.finditer(text):
+                return_type, method_name, params = match.groups()
+                line_number = text[: match.start()].count("\n") + 1
+                results.append(
+                    {
+                        "path": rel,
+                        "symbol": method_name,
+                        "kind": "method",
+                        "line_number": line_number,
+                        "container": service_name,
+                        **(
+                            {"namespace": namespace}
+                            if (namespace := self._namespace_for_path(project_root, rel, namespace_cache))
+                            else {}
+                        ),
+                        "return_type": return_type.strip(),
+                        "params": params.strip(),
+                        "signature": f"{return_type.strip()} {method_name}{params.strip()}",
+                    }
+                )
+                if len(results) >= limit:
+                    return results
+        return results
 
     def get_dependencies(self, project_root: Path, path: str) -> list[dict[str, str]]:
         self.init_db(project_root)

@@ -5,14 +5,14 @@
 <h1 align="center">AIDOCS</h1>
 
 <p align="center">
-  <strong>Portable AI coding-agent toolkit</strong> with routed memory, session-based runtime, and optional MCP enforcement.
+  <strong>Portable memory, routing, and runtime toolkit for AI coding agents.</strong>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.1.0-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.1.1-blue" alt="version">
   <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="license">
   <img src="https://img.shields.io/badge/python-3.11%2B-yellow" alt="python">
-  <img src="https://img.shields.io/badge/tests-194%20passing-brightgreen" alt="tests">
+  <img src="https://img.shields.io/badge/tests-255%20passing-brightgreen" alt="tests">
 </p>
 
 <p align="center">
@@ -50,24 +50,31 @@
 
 ## What It Does
 
-AIDOCS gives AI coding agents **persistent memory, session management, and indexed code retrieval** across conversations.
+AIDOCS gives AI coding agents a durable working model for real projects:
 
-**Without AIDOCS:** Each conversation starts fresh. The agent greps blindly, forgets what it learned, and has no context about your project structure.
+- persistent project memory
+- session-based task context
+- routed startup instead of blind repo scanning
+- indexed retrieval instead of ad hoc grep-first exploration
+- optional MCP/runtime integration for stronger host behavior
 
-**With AIDOCS:** The agent resumes from where it left off, uses indexed tools instead of grep, and follows session-guided workflows.
+In practice, that means agents can resume work, follow session context, and use a structured runtime/tooling path instead of rediscovering the repo every time.
+
+### Product Surfaces
+
+- **Core** — portable markdown-based memory, routing, command specs, and host bootstrap files
+- **MCP runtime** — indexing, routing, orchestration, retrieval, and host integration support
+- **CLI** — `aidocs init`, `status`, `sync`, `benchmark`, `version`
+- **Host adapters** — Claude hooks, OpenCode plugin, and generic MCP-client support
 
 ### Key Capabilities
 
-- **Routed memory** — `index.aidocs` -> `INDEX.md` -> `SESSION.md` — agents follow a routing chain, not a flat file dump
+- **Routed memory** — agents follow a startup chain instead of dumping the whole repo into context
 - **Session isolation** — parallel workstreams with their own plans, context, and artifacts
-- **6 unified MCP entry points** — `code_investigate`, `code_find` (21 modes), `code_trace` (8 modes), `code_bundle` (13 modes), `schema_query` (5 modes) + specialists
-- **`code_investigate`** — "start here" tool: probes symbols/files/schema/CSS/modules, returns what was found + what to call next
-- **Git analysis** — `git_fork_status`, `git_merge_plan`, `git_conflict_analysis`, `git_upstream_changes` for fork/merge workflows
-- **Session journal** — rolling log of significant decisions, auto-evicts to archive when full
-- **Multilingual classification** — English, Italian, Spanish, Japanese, Portuguese, German out of the box
-- **Monorepo detection** — npm/pnpm/Cargo workspaces, .NET projects, informal module boundaries
-- **16 language indexing** — Python, JS/TS, C#, Rust, Go, Java, Kotlin, Ruby, PHP, SQL, HTML, CSS/SCSS, Vue, Svelte, Prisma, and more
-- **Configurable** — `aidocs.toml` for MCP, `aidocs-plugin.json` for OpenCode, `action_tokens/*.yaml` for languages
+- **Unified retrieval** — broad “start here”, find, trace, bundle, and schema entry points
+- **Multilingual classification** — public benchmarked language support via `action_tokens`
+- **Monorepo-aware indexing** — multiple modules/projects without changing the memory model
+- **Operator tooling** — CLI, install scripts, benchmark mode, and host/runtime documentation
 
 ## Quick Start
 
@@ -89,7 +96,7 @@ bash core/scripts/install-agent-routing.sh  # Linux/macOS
 cd mcp && pip install -e .
 
 # Claude Code: /aidocs auto-creates .mcp.json in your project
-# OpenCode: installer configures opencode.jsonc automatically
+# OpenCode: installer configures opencode.json automatically
 
 # In any project:
 /aidocs    # Uses MCP-backed session/memory/retrieval
@@ -98,19 +105,19 @@ cd mcp && pip install -e .
 ## Project Layout
 
 ```
-aidocs.toml                # Configuration (journal, index, languages, agent)
-aidocs-plugin.json         # OpenCode plugin config
-action_tokens/             # Prompt classification language files
+aidocs.toml                # MCP/runtime configuration
+aidocs-plugin.json         # OpenCode plugin configuration
+action_tokens/             # Prompt-classification language files
   en.yaml, it.yaml, ...
 
-core/                      # Standalone markdown-first system (zero dependencies)
+core/                      # Portable memory/command/bootstrap layer
   .commands/                # Global commands (/aidocs, /reingest, /archive, etc.)
   plugins/                  # OpenCode global plugin
   scripts/                  # Cross-platform install scripts
 
-mcp/                        # Optional MCP runtime layer
-  server/aidocs_mcp/        # Python MCP server (21 service modules)
-  tests/                    # 194 tests (private repo only)
+mcp/                        # Optional MCP runtime + CLI layer
+  server/aidocs_mcp/        # Python MCP server and CLI implementation
+  tests/                    # 255 tests (private repo only)
 ```
 
 ## Memory Model
@@ -142,9 +149,19 @@ Inside initialized projects, memory lives in `/.MEMORY/`:
 | `/personality` | Set agent communication style |
 | `/clean` | Cleanup by scope (file, dead-code, dedupe, structural) |
 
+## CLI
+
+| Command | Description |
+|---------|-------------|
+| `aidocs init` | Initialize AIDOCS structure in a project |
+| `aidocs status` | Show project/runtime/index status |
+| `aidocs sync` | Refresh memory/code/schema indexes |
+| `aidocs benchmark` | Run public benchmark scenarios |
+| `aidocs version` | Show package version |
+
 ## Configuration
 
-Edit these files to customize behavior (changes take effect on restart):
+Edit these files to customize behavior:
 
 | File | Format | Controls |
 |------|--------|----------|
@@ -161,15 +178,21 @@ enabled = "en"
 
 ## Documentation
 
-- [MCP Tools & Architecture](mcp/README.md) — Full tool list, install, runtime model
-- [Install Guide](README_INSTALL.md) — Detailed installation steps
-- [Roadmap](mcp/ROADMAP.md) — v1.2.0 plan (PyPI packaging, CLI tool, benchmarks)
+- [Install Guide](README_INSTALL.md) — global routing, plugin, hook, and MCP install paths
+- [MCP Runtime](mcp/README.md) — runtime model, tool model, host caveats, CLI usage
+- [Host Integration](mcp/HOST_INTEGRATION.md) — Claude/OpenCode contract and routing behavior
+- [Benchmarks](mcp/BENCHMARKS.md) — public benchmark contract and scenario-set rules
+- [Docs Site Structure](mcp/DOCS_SITE_STRUCTURE.md) — proposed IA for `docs.codenexus.cloud/aidocs`
+- [Public Roadmap](PUBLIC_ROADMAP.md) — contributor-facing priorities and help-wanted areas
+- [Secure CI Model](SECURITY_CI_MODEL.md) — public PR testing rules and private-validation boundary
+- [Roadmap](mcp/ROADMAP.md) — v1.2.0 priorities and end goals
 
 ## Releases
 
 | Version | Highlights |
 |---------|------------|
-| **1.1.0** | Tool consolidation (6 unified entry points), git analysis tools, project_init rewrite (no shell deps), MCP subprocess fix for Windows, 194 tests |
+| **1.1.1** | Add `aidocs` CLI (`init`, `status`, `config`, `sync`, `benchmark`, `version`), package/install cleanup, and 255 tests |
+| 1.1.0 | Tool consolidation (6 unified entry points), git analysis tools, project_init rewrite (no shell deps), MCP subprocess fix for Windows, 194 tests |
 | 1.0.2 | Index hardening (16 languages, monorepo modules, os.walk pruning), `code_investigate` entry tool, CSS compound+HTML tracing, CamelCase search, session journal, `aidocs.toml` config |
 | 1.0.1 | Multilingual classifier, lightweight hook path, auto MCP config |
 | 1.0.0 | Initial release |

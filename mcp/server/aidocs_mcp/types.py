@@ -31,6 +31,20 @@ class ContextData:
 
 
 @dataclass(slots=True)
+class PlanData:
+    session_id: str
+    path: Path
+    sections: dict[str, list[str]]
+
+
+@dataclass(slots=True)
+class HandoffData:
+    session_id: str
+    path: Path
+    sections: dict[str, list[str]]
+
+
+@dataclass(slots=True)
 class MemoryWriteResult:
     target_file: Path
     content: str

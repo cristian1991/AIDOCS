@@ -1,6 +1,6 @@
 # AIDOCS Install
 
-This install path targets the `1.1.0` release line. Rerun the installer after local AIDOCS updates to refresh the global command pack, OpenCode plugin, and Claude hook wiring.
+This install path targets the `1.1.1` release line. Rerun the installer after local AIDOCS updates to refresh the global command pack, OpenCode plugin, and Claude hook wiring.
 
 Current installer status: Windows and Linux/macOS installer paths are shipped.
 
@@ -9,7 +9,8 @@ Current installer status: Windows and Linux/macOS installer paths are shipped.
 From this `core/` directory, run:
 
 ```powershell
-scripts\install-agent-routing.cmd
+scripts\install-agent-routing.cmd      # Windows
+bash scripts/install-agent-routing.sh   # Linux/macOS
 ```
 
 ## What the installer does

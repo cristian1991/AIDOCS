@@ -7,15 +7,27 @@ import re
 from .constants import (
     CONTEXT_TEMPLATE_NAME,
     CONTEXT_SECTION_ORDER,
+    HANDOFF_FILE_SUFFIX,
+    HANDOFF_SECTION_ORDER,
+    PLAN_SECTION_ORDER,
+    PLAN_TEMPLATE_NAME,
     SESSION_SECTION_ORDER,
     SESSION_TEMPLATE_NAME,
     VALID_SESSION_STATUSES,
 )
-from .types import ContextData, SessionData, SessionSummary
+from .types import ContextData, HandoffData, PlanData, SessionData, SessionSummary
 
 
 class SessionStore:
     """File-backed session discovery and mutation."""
+
+    HANDOFF_STEP_MARKERS = {
+        "open": "[ ]",
+        "done": "[x]",
+        "failed": "[!]",
+        "reset": "[~]",
+        "stale": "[?]",
+    }
 
     def __init__(self, templates_root: Path) -> None:
         self.templates_root = templates_root
@@ -31,6 +43,150 @@ class SessionStore:
 
     def context_file(self, project_root: Path, session_id: str) -> Path:
         return self.session_path(project_root, session_id) / CONTEXT_TEMPLATE_NAME
+
+    def plan_file(self, project_root: Path, session_id: str) -> Path:
+        return self.session_path(project_root, session_id) / "plans" / PLAN_TEMPLATE_NAME
+
+    def handoff_file(self, project_root: Path, session_id: str) -> Path:
+        return self.session_path(project_root, session_id) / f"{session_id}{HANDOFF_FILE_SUFFIX}"
+
+    def _handoff_source_file(self, project_root: Path, session_id: str) -> Path | None:
+        base = self.session_path(project_root, session_id)
+        canonical = self.handoff_file(project_root, session_id)
+        if canonical.exists():
+            return canonical
+
+        temp_candidates = sorted(
+            (path for path in base.glob("*.TEMP") if path.is_file()),
+            key=lambda item: item.stat().st_mtime_ns,
+            reverse=True,
+        )
+        if temp_candidates:
+            return temp_candidates[0]
+        return None
+
+    def _default_handoff_sections(self, goal: str, created_at: str) -> dict[str, list[str]]:
+        return {
+            "Purpose": [f"- Handoff summary for the session goal: {goal.strip()}"],
+            "Current State": ["- Session created; no implementation handoff has been recorded yet."],
+            "What Was Done": ["- Session scaffold created."],
+            "What Failed / Dead Ends": ["-"],
+            "What Matters Now": ["- Convert this into a meaningful handoff once real work begins."],
+            "Open Questions": ["-"],
+            "Risks and Blockers": ["-"],
+            "Relevant Files": ["-"],
+            "Estimated Effort": ["-"],
+            "Suggested Next Steps": ["- Start with a complete detailed plan and update the handoff as work progresses."],
+            "Steps": ["-"],
+            "Related Sessions": ["-"],
+            "Related Project Links": ["-"],
+            "Freshness": [f"- Created {created_at}; treat as fresh until implementation diverges."],
+        }
+
+    def _ensure_handoff(self, project_root: Path, session_id: str) -> None:
+        canonical = self.handoff_file(project_root, session_id)
+        if canonical.exists():
+            return
+        source = self._handoff_source_file(project_root, session_id)
+        if source is not None and source.exists():
+            canonical.parent.mkdir(parents=True, exist_ok=True)
+            canonical.write_text(source.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
+            return
+        session = self.read_session(project_root, session_id)
+        goal = self._first_value(session, "Goal") or "Unknown session goal"
+        created_at = self._timestamp()
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        canonical.write_text(self._render_handoff_sections(self._default_handoff_sections(goal, created_at)), encoding="utf-8")
+
+    def read_handoff(self, project_root: Path, session_id: str) -> HandoffData:
+        canonical = self.handoff_file(project_root, session_id)
+        if not canonical.exists():
+            self._ensure_handoff(project_root, session_id)
+        path = canonical
+        sections = self._parse_sections(path.read_text(encoding="utf-8"))
+        for section in HANDOFF_SECTION_ORDER:
+            sections.setdefault(section, ["-"])
+        return HandoffData(session_id=session_id, path=path, sections=sections)
+
+    def update_handoff(self, project_root: Path, session_id: str, patch: dict[str, list[str]], append: bool = False) -> HandoffData:
+        data = self.read_handoff(project_root, session_id)
+        for key, value in patch.items():
+            if key not in HANDOFF_SECTION_ORDER:
+                raise ValueError(f"Unknown handoff section: {key}")
+            if append:
+                existing = [item for item in data.sections.get(key, ["-"]) if item.strip() and item.strip() != "-"]
+                incoming = [item for item in (value or ["-"]) if item.strip() and item.strip() != "-"]
+                data.sections[key] = existing + incoming or ["-"]
+            else:
+                data.sections[key] = value or ["-"]
+        if "Freshness" not in patch:
+            data.sections["Freshness"] = [f"- Updated {self._timestamp()} automatically."]
+        self.handoff_file(project_root, session_id).write_text(self._render_handoff_sections(data.sections), encoding="utf-8")
+        return self.read_handoff(project_root, session_id)
+
+    def read_handoff_steps(self, project_root: Path, session_id: str) -> list[dict[str, str]]:
+        handoff = self.read_handoff(project_root, session_id)
+        return self._parse_handoff_steps(handoff.sections.get("Steps", []))
+
+    def upsert_handoff_step(
+        self,
+        project_root: Path,
+        session_id: str,
+        step_id: str | None = None,
+        text: str | None = None,
+        status: str = "open",
+        append: bool = True,
+    ) -> HandoffData:
+        if status not in self.HANDOFF_STEP_MARKERS:
+            raise ValueError(f"Unknown handoff step status: {status}")
+        existing = self.read_handoff_steps(project_root, session_id)
+        now = self._timestamp()
+        if step_id is None:
+            max_id = 0
+            for item in existing:
+                raw = str(item.get("id") or "")
+                if raw.startswith("s") and raw[1:].isdigit():
+                    max_id = max(max_id, int(raw[1:]))
+            step_id = f"s{max_id + 1}"
+        updated = []
+        found = False
+        for item in existing:
+            if item["id"] == step_id:
+                found = True
+                updated.append(
+                    {
+                        "id": step_id,
+                        "status": status or item["status"],
+                        "text": text if text is not None else item["text"],
+                        "updated_at": now,
+                    }
+                )
+            else:
+                updated.append(item)
+        if not found:
+            if not append and existing:
+                updated = []
+            updated.append({"id": step_id, "status": status, "text": text or step_id, "updated_at": now})
+        step_lines = self._render_handoff_steps(updated)
+        return self.update_handoff(project_root, session_id, {"Steps": step_lines}, append=False)
+
+    def read_plan(self, project_root: Path, session_id: str) -> PlanData:
+        path = self.plan_file(project_root, session_id)
+        if not path.exists():
+            raise FileNotFoundError(path)
+        sections = self._parse_sections(path.read_text(encoding="utf-8"))
+        for section in PLAN_SECTION_ORDER:
+            sections.setdefault(section, ["-"])
+        return PlanData(session_id=session_id, path=path, sections=sections)
+
+    def update_plan(self, project_root: Path, session_id: str, patch: dict[str, list[str]]) -> PlanData:
+        data = self.read_plan(project_root, session_id)
+        for key, value in patch.items():
+            if key not in PLAN_SECTION_ORDER:
+                raise ValueError(f"Unknown plan section: {key}")
+            data.sections[key] = value or ["-"]
+        self.plan_file(project_root, session_id).write_text(self._render_plan_sections(data.sections), encoding="utf-8")
+        return self.read_plan(project_root, session_id)
 
     def session_code_targets(self, project_root: Path, session_id: str) -> list[str]:
         session = self.read_session(project_root, session_id)
@@ -214,6 +370,7 @@ class SessionStore:
         goal: str,
         scope: str = "-",
         status: str = "active",
+        predecessor_session_id: str | None = None,
     ) -> SessionData:
         self._validate_status(status)
         base = self.session_path(project_root, session_id)
@@ -231,7 +388,7 @@ class SessionStore:
                 "Owner": [f"- {owner.strip()}"],
                 "Goal": [f"- {goal.strip()}"],
                 "Scope": [f"- {scope.strip()}"],
-                "Key Memory Links": ["-"],
+                "Key Memory Links": [f"- `../{predecessor_session_id}/HANDOFF.md`" ] if predecessor_session_id else ["-"],
                 "Local Session Links": ["- `context.md`", "- `plans/`", "- `agents/`", "- `artifacts/`"],
                 "Active Claims": ["-"],
                 "State": ["-"],
@@ -243,6 +400,32 @@ class SessionStore:
 
         self.session_file(project_root, session_id).write_text(session_text, encoding="utf-8")
         self.context_file(project_root, session_id).write_text(context_template, encoding="utf-8")
+        plan_text = self._render_plan_sections(
+            {
+                "Purpose": [f"- Implement the session goal: {goal.strip()}"],
+                "Scope": [f"- {scope.strip()}"],
+                "Current State": ["- Session created; detailed execution planning should begin before non-trivial work."],
+                "Partial Goals": ["- Break the work into clear intermediate goals before implementation."],
+                "End Goal": [f"- {goal.strip()}"],
+                "Constraints": ["- Follow project memory, workflow rules, and host/runtime constraints."],
+                "Validation": ["- Define concrete verification steps before considering the work complete."],
+                "Next Steps": ["- Turn this default plan into a complete detailed plan with partial and end goals."],
+            }
+        )
+        self.plan_file(project_root, session_id).write_text(plan_text, encoding="utf-8")
+        handoff_text = self._render_handoff_sections(self._default_handoff_sections(goal.strip(), self._timestamp()))
+        self.handoff_file(project_root, session_id).write_text(handoff_text, encoding="utf-8")
+        if predecessor_session_id:
+            predecessor_link = f"- `{predecessor_session_id}`"
+            self.update_handoff(
+                project_root,
+                session_id,
+                {
+                    "Related Sessions": [predecessor_link],
+                    "Suggested Next Steps": [f"- Review predecessor session `{predecessor_session_id}` and continue from its handoff if that context is still relevant."],
+                },
+                append=True,
+            )
         return self.read_session(project_root, session_id)
 
     def update_session(self, project_root: Path, session_id: str, patch: dict[str, list[str]]) -> SessionData:
@@ -300,6 +483,66 @@ class SessionStore:
                 lines.extend(values)
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
+
+    def _render_plan_sections(self, sections: dict[str, list[str]]) -> str:
+        lines = ["# Plan", ""]
+        for name in PLAN_SECTION_ORDER:
+            lines.append(f"## {name}")
+            values = sections.get(name, ["-"])
+            if not values:
+                values = ["-"]
+            lines.extend(values)
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _render_handoff_sections(self, sections: dict[str, list[str]]) -> str:
+        lines = ["# Handoff", ""]
+        for name in HANDOFF_SECTION_ORDER:
+            lines.append(f"## {name}")
+            values = sections.get(name, ["-"])
+            if not values:
+                values = ["-"]
+            lines.extend(values)
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _parse_handoff_steps(self, lines: list[str]) -> list[dict[str, str]]:
+        result: list[dict[str, str]] = []
+        markers = {marker: status for status, marker in self.HANDOFF_STEP_MARKERS.items()}
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped == "-":
+                continue
+            match = re.match(r"^-\s+(\[[^\]]+\])\s+([A-Za-z0-9_-]+)\s+@\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}):\s+(.+)$", stripped)
+            if not match:
+                legacy_match = re.match(r"^-\s+(\[[^\]]+\])\s+([A-Za-z0-9_-]+):\s+(.+)$", stripped)
+                if legacy_match:
+                    marker, step_id, text = legacy_match.groups()
+                    result.append({
+                        "id": step_id,
+                        "status": markers.get(marker, "open"),
+                        "text": text.strip(),
+                        "updated_at": "",
+                    })
+                continue
+            marker, step_id, updated_at, text = match.groups()
+            result.append({
+                "id": step_id,
+                "status": markers.get(marker, "open"),
+                "text": text.strip(),
+                "updated_at": updated_at,
+            })
+        return result
+
+    def _render_handoff_steps(self, steps: list[dict[str, str]]) -> list[str]:
+        if not steps:
+            return ["-"]
+        lines = []
+        for step in steps:
+            marker = self.HANDOFF_STEP_MARKERS.get(step.get("status", "open"), "[ ]")
+            updated_at = step.get("updated_at") or self._timestamp()
+            lines.append(f"- {marker} {step['id']} @ {updated_at}: {step['text']}")
+        return lines
 
     def _extract_bullet_path(self, line: str) -> str | None:
         stripped = line.strip()

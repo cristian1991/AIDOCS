@@ -67,6 +67,183 @@ def test_select_session_returns_summary_fields(tmp_path: Path) -> None:
     assert summary.path is not None
 
 
+def test_create_session_creates_default_plan_with_partial_and_end_goals(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    store = SessionStore(templates_root=templates)
+    project_root = tmp_path / "project"
+
+    store.create_session(project_root, "2026-03-25-plan", "Plan Session", "user", "Ship plan support", "Plan-system scope")
+    plan = store.read_plan(project_root, "2026-03-25-plan")
+
+    assert plan.path.name == "PLAN.md"
+    assert plan.sections["Purpose"][0] == "- Implement the session goal: Ship plan support"
+    assert plan.sections["Partial Goals"][0].startswith("- Break the work")
+    assert plan.sections["End Goal"][0] == "- Ship plan support"
+
+
+def test_create_session_creates_default_handoff_and_update_roundtrip(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    store = SessionStore(templates_root=templates)
+    project_root = tmp_path / "project"
+
+    store.create_session(project_root, "2026-03-25-handoff", "Handoff Session", "user", "Ship handoff support", "Collaboration scope")
+    handoff = store.read_handoff(project_root, "2026-03-25-handoff")
+
+    assert handoff.path.name == "2026-03-25-handoff.handoff.md"
+    assert handoff.sections["Purpose"][0] == "- Handoff summary for the session goal: Ship handoff support"
+
+    updated = store.update_handoff(
+        project_root,
+        "2026-03-25-handoff",
+        {
+            "What Was Done": ["- Added the first collaboration handoff implementation."],
+            "What Matters Now": ["- Verify whether successor sessions can resume safely from this state."],
+        },
+    )
+    assert updated.sections["What Was Done"][0] == "- Added the first collaboration handoff implementation."
+    assert updated.sections["What Matters Now"][0] == "- Verify whether successor sessions can resume safely from this state."
+
+
+def test_read_handoff_auto_creates_missing_file(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    store = SessionStore(templates_root=templates)
+    project_root = tmp_path / "project"
+
+    store.create_session(project_root, "2026-03-25-auto", "Auto Session", "user", "Auto-create handoff")
+    store.handoff_file(project_root, "2026-03-25-auto").unlink()
+
+    handoff = store.read_handoff(project_root, "2026-03-25-auto")
+    assert handoff.path.is_file()
+    assert handoff.path.name == "2026-03-25-auto.handoff.md"
+    assert handoff.sections["Purpose"][0] == "- Handoff summary for the session goal: Auto-create handoff"
+
+
+def test_update_handoff_append_mode_preserves_existing_items(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    store = SessionStore(templates_root=templates)
+    project_root = tmp_path / "project"
+
+    store.create_session(project_root, "2026-03-25-append", "Append Session", "user", "Append handoff")
+    store.update_handoff(project_root, "2026-03-25-append", {"What Was Done": ["- First item"]})
+    updated = store.update_handoff(
+        project_root,
+        "2026-03-25-append",
+        {"What Was Done": ["- Second item"], "What Failed / Dead Ends": ["- Tried wrong path"]},
+        append=True,
+    )
+
+    assert updated.sections["What Was Done"][:2] == ["- First item", "- Second item"]
+    assert updated.sections["What Failed / Dead Ends"][0] == "- Tried wrong path"
+    assert updated.sections["Freshness"][0].startswith("- Updated ")
+
+
+def test_create_session_auto_links_predecessor_handoff(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    store = SessionStore(templates_root=templates)
+    project_root = tmp_path / "project"
+
+    store.create_session(project_root, "2026-03-25-parent", "Parent Session", "user", "Parent goal")
+    store.create_session(
+        project_root,
+        "2026-03-25-child",
+        "Child Session",
+        "user",
+        "Child goal",
+        predecessor_session_id="2026-03-25-parent",
+    )
+
+    parent_handoff = store.read_handoff(project_root, "2026-03-25-parent")
+    child_session = store.read_session(project_root, "2026-03-25-child")
+    child_handoff = store.read_handoff(project_root, "2026-03-25-child")
+
+    assert parent_handoff.sections["Related Sessions"][0] == "-"
+    assert child_session.sections["Key Memory Links"][0] == "- `../2026-03-25-parent/HANDOFF.md`"
+    assert child_handoff.sections["Related Sessions"][0] == "- `2026-03-25-parent`"
+
+
+def test_handoff_supports_estimated_effort_and_structured_project_links(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    store = SessionStore(templates_root=templates)
+    project_root = tmp_path / "project"
+
+    store.create_session(project_root, "2026-03-25-meta", "Meta Session", "user", "Improve handoff metadata")
+    updated = store.update_handoff(
+        project_root,
+        "2026-03-25-meta",
+        {
+            "Estimated Effort": ["- code_get_test_bundle: 2-3 hours"],
+            "Related Project Links": ["- D:/Projects/Active/DentalClinic-WebApp | 2026-03-24-field-tests | real-world validation"],
+        },
+    )
+
+    assert updated.sections["Estimated Effort"][0] == "- code_get_test_bundle: 2-3 hours"
+    assert "DentalClinic-WebApp" in updated.sections["Related Project Links"][0]
+
+
+def test_handoff_steps_roundtrip_with_statuses(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    store = SessionStore(templates_root=templates)
+    project_root = tmp_path / "project"
+
+    store.create_session(project_root, "2026-03-25-steps", "Steps Session", "user", "Track collaborative steps")
+    store.upsert_handoff_step(project_root, "2026-03-25-steps", text="Investigate root cause", status="open")
+    store.upsert_handoff_step(project_root, "2026-03-25-steps", text="Verify fix", status="reset")
+    steps = store.read_handoff_steps(project_root, "2026-03-25-steps")
+
+    assert steps[0]["status"] == "open"
+    assert steps[0]["text"] == "Investigate root cause"
+    assert steps[0]["updated_at"]
+    assert steps[1]["status"] == "reset"
+    assert steps[1]["text"] == "Verify fix"
+
+
+def test_handoff_adopts_temp_file_and_preserves_existing_sections(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    store = SessionStore(templates_root=templates)
+    project_root = tmp_path / "project"
+
+    store.create_session(project_root, "2026-03-25-temp", "Temp Session", "user", "Preserve temp handoff")
+    canonical = store.handoff_file(project_root, "2026-03-25-temp")
+    temp = canonical.parent / "test2.TEMP"
+    canonical.rename(temp)
+    temp.write_text(
+        "# Handoff\n\n"
+        "## Purpose\n- Existing purpose\n\n"
+        "## Current State\n- Existing state\n\n"
+        "## What Was Done\n- Existing done item\n\n"
+        "## What Failed / Dead Ends\n- Existing failed item\n\n"
+        "## What Matters Now\n- Existing now item\n\n"
+        "## Open Questions\n- Existing question\n\n"
+        "## Risks and Blockers\n- Existing risk\n\n"
+        "## Relevant Files\n- `src/app.py`\n\n"
+        "## Estimated Effort\n- Existing estimate\n\n"
+        "## Suggested Next Steps\n- Existing next step\n\n"
+        "## Related Sessions\n- `2026-03-25-old`\n\n"
+        "## Related Project Links\n- OtherProject | abc | desc\n\n"
+        "## Freshness\n- Existing freshness\n",
+        encoding="utf-8",
+    )
+
+    updated = store.update_handoff(
+        project_root,
+        "2026-03-25-temp",
+        {"Purpose": ["- New purpose override"]},
+    )
+
+    assert updated.path.name == "2026-03-25-temp.handoff.md"
+    assert updated.sections["Purpose"][0] == "- New purpose override"
+    assert updated.sections["What Was Done"][0] == "- Existing done item"
+    assert updated.sections["What Matters Now"][0] == "- Existing now item"
+
+
 # ── Session claim lifecycle tests ────────────────────────────────────
 
 

@@ -2,6 +2,9 @@ MANAGED_MARKER = "<!-- AIDOCS-MANAGED-ABOVE: write project-specific instructions
 
 SESSION_TEMPLATE_NAME = "SESSION.md"
 CONTEXT_TEMPLATE_NAME = "context.md"
+PLAN_TEMPLATE_NAME = "PLAN.md"
+HANDOFF_TEMPLATE_NAME = "HANDOFF.md"
+HANDOFF_FILE_SUFFIX = ".handoff.md"
 
 SESSION_SECTION_ORDER = [
     "Title",
@@ -26,4 +29,32 @@ CONTEXT_SECTION_ORDER = [
     "Relevant Snippets",
     "Session Facts",
     "Constraints",
+]
+
+PLAN_SECTION_ORDER = [
+    "Purpose",
+    "Scope",
+    "Current State",
+    "Partial Goals",
+    "End Goal",
+    "Constraints",
+    "Validation",
+    "Next Steps",
+]
+
+HANDOFF_SECTION_ORDER = [
+    "Purpose",
+    "Current State",
+    "What Was Done",
+    "What Failed / Dead Ends",
+    "What Matters Now",
+    "Open Questions",
+    "Risks and Blockers",
+    "Relevant Files",
+    "Estimated Effort",
+    "Suggested Next Steps",
+    "Steps",
+    "Related Sessions",
+    "Related Project Links",
+    "Freshness",
 ]

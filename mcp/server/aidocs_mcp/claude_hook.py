@@ -208,9 +208,9 @@ class ClaudeHookHandler:
                 parts.append("`code_get_outline` to understand structure, `code_get_file_bundle` for full context.")
             elif path and offset:
                 # Reading a specific section — suggest snippet
-                parts.append("`code_get_symbol_snippet` to read a specific symbol by name.")
+                parts.append("Use `code_find(mode=\"symbols\")` first if the exact symbol is not known, then `code_get_symbol_snippet` for the exact symbol.")
             else:
-                parts.append(", ".join(f"`{name}` ({desc})" for name, desc in alternatives[:2]))
+                parts.append("`code_find(mode=\"symbols\")` to locate the exact symbol first, then `code_get_symbol_snippet` to read only that symbol.")
 
         elif lower == "glob":
             parts.append("`code_search` for indexed file search by keywords.")
@@ -383,7 +383,8 @@ class ClaudeHookHandler:
         "understand": (
             "`code_get_outline` (structure) → `code_find(query, mode=\"symbols\")` (find symbol) → "
             "`code_get_symbol_snippet` (read it). "
-            'Broad: `code_bundle(concept, mode="subsystem")`. DB: `schema_query(name, mode="entity")`.'
+            "Precision: `code_get_method_signature`, `code_get_constructor_params`, `code_get_enum_values`, `code_get_service_api`. "
+            'Broad: `code_bundle(concept, mode="subsystem")`. DB: `schema_query(name, mode="entity|properties|batch_entity")`.'
         ),
         "code_bundle": (
             '`code_bundle(path, mode="context", session_id=...)` (session-guided) or '
@@ -392,7 +393,13 @@ class ClaudeHookHandler:
         "edit": (
             '`task_begin` → `code_get_outline` → `code_find(query, mode="symbols")` → Edit → `task_complete`. '
             'CSS: add `code_trace(class, mode="css_class")`. API: add `code_trace(concept, mode="api_to_ui")`. '
-            'DB: add `schema_query(entity, mode="entity")`.'
+            'Precision: add `code_get_method_signature` / `code_get_service_api` / `code_get_constructor_params` / `code_get_enum_values`. '
+            'DB: add `schema_query(entity, mode="entity|properties|batch_entity")`.'
+        ),
+        "test_heavy": (
+            'If test/support code matters, re-run retrieval with test-inclusive indexing where the tool supports it. '
+            'Then prefer: `code_get_service_api` → `code_get_method_signatures` → `code_get_constructor_params_batch` → `code_get_enum_values` → `code_get_entity_properties`. '
+            'Do not guess property names, constructor params, enum members, or service surfaces when the precision chain can confirm them first.'
         ),
         "inspect": (
             "`code_get_outline` → `code_get_dependencies` / `code_find_dependents` → "
@@ -403,7 +410,7 @@ class ClaudeHookHandler:
             '`code_get_symbol_snippet` (read method). DB: add `schema_query(entity, mode="entity")`.'
         ),
         "investigate": (
-            "`code_investigate(concept)` for a guided navigation plan. "
+            "`code_investigate(concept, depth=..., focus=...)` for a guided navigation plan. "
             'Or: `code_bundle(concept, mode="subsystem")` → narrow with '
             '`code_find(concept, mode="mutations|validation|policy")`.'
         ),

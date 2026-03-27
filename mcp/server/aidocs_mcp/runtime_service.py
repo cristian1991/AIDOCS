@@ -5,12 +5,56 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from .service_hub import AidocsServiceHub
 
 logger = logging.getLogger("aidocs.runtime")
+
+
+def _run_git_sync(cwd: str, *args: str, timeout: int = 10) -> str:
+    import tempfile
+    out_path = err_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".out", delete=False) as f:
+            out_path = f.name
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".err", delete=False) as f:
+            err_path = f.name
+        with open(out_path, "w") as out_fh, open(err_path, "w") as err_fh:
+            result = subprocess.run(
+                ["git", "-c", "safe.directory=*", *args],
+                cwd=cwd, stdin=subprocess.DEVNULL,
+                stdout=out_fh, stderr=err_fh,
+                text=True, timeout=timeout, check=False,
+            )
+        stdout = Path(out_path).read_text(encoding="utf-8", errors="ignore").strip()
+        stderr = Path(err_path).read_text(encoding="utf-8", errors="ignore").strip()
+    finally:
+        for p in (out_path, err_path):
+            if p:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+    if result.returncode != 0:
+        message = (stderr or stdout or f"git exited with code {result.returncode}").strip()
+        raise RuntimeError(message)
+    return stdout
+
+
+def _origin_role(name: str, url: str) -> str:
+    lower_name = name.lower()
+    lower_url = url.lower()
+    if lower_name == "public":
+        return "public"
+    if lower_name == "origin" and ("private" in lower_url or "_private" in lower_url):
+        return "private"
+    if lower_name == "origin":
+        return "primary"
+    return "other"
 
 def _resolve_action_tokens_dir() -> Path:
     """Find action_tokens directory: project root first, then legacy MCP location."""
@@ -160,6 +204,285 @@ class RuntimeService:
             "entry": new_entry,
         }
 
+    def project_origins(self, project_root: Path) -> dict[str, object]:
+        result: dict[str, object] = {
+            "git_repo": (project_root / ".git").exists(),
+            "remotes": [],
+            "roles": {},
+            "notes": [],
+        }
+        try:
+            remote_output = _run_git_sync(str(project_root), "remote", "-v")
+        except FileNotFoundError:
+            result["notes"] = ["git not installed"]
+            return result
+        except Exception as exc:
+            result["notes"] = [str(exc)]
+            return result
+
+        remotes: dict[tuple[str, str], dict[str, object]] = {}
+        for line in remote_output.splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            name, url, kind = parts[0], parts[1], parts[2].strip("()")
+            key = (name, url)
+            entry = remotes.setdefault(
+                key,
+                {"name": name, "url": url, "fetch": False, "push": False, "role": _origin_role(name, url)},
+            )
+            if kind == "fetch":
+                entry["fetch"] = True
+            if kind == "push":
+                entry["push"] = True
+
+        entries = list(remotes.values())
+        result["remotes"] = entries
+        roles: dict[str, list[str]] = {}
+        for entry in entries:
+            role = str(entry.get("role") or "other")
+            roles.setdefault(role, []).append(str(entry.get("name")))
+        result["roles"] = roles
+
+        notes: list[str] = []
+        if roles.get("private") and roles.get("public"):
+            notes.append("private/public split detected")
+        elif roles.get("private"):
+            notes.append("private remote detected")
+        elif roles.get("public"):
+            notes.append("public remote detected")
+        result["notes"] = notes
+        return result
+
+    def repo_summary(self, project_root: Path) -> dict[str, object]:
+        code_files = 0
+        modules = 0
+        parsed = 0
+        schema_entities = 0
+        schema_fields = 0
+        session_count = 0
+
+        try:
+            with self.hub.code.connect(project_root) as conn:
+                row = conn.execute("SELECT COUNT(*), COALESCE(SUM(parsed), 0) FROM code_files").fetchone()
+                if row:
+                    code_files = int(row[0] or 0)
+                    parsed = int(row[1] or 0)
+                row = conn.execute("SELECT COUNT(*) FROM code_modules").fetchone()
+                if row:
+                    modules = int(row[0] or 0)
+        except Exception:
+            pass
+
+        try:
+            with self.hub.schema.connect(project_root) as conn:
+                row = conn.execute("SELECT COUNT(*) FROM schema_entities").fetchone()
+                if row:
+                    schema_entities = int(row[0] or 0)
+                row = conn.execute("SELECT COUNT(*) FROM schema_fields").fetchone()
+                if row:
+                    schema_fields = int(row[0] or 0)
+        except Exception:
+            pass
+
+        try:
+            session_count = len(self.hub.sessions.list_sessions(project_root))
+        except Exception:
+            session_count = 0
+
+        origins = self.project_origins(project_root)
+        bullets = [
+            f"{code_files} indexed code files ({parsed} parsed)",
+            f"{modules} detected modules",
+            f"{schema_entities} schema entities / {schema_fields} fields",
+            f"{session_count} sessions",
+        ]
+        notes = origins.get("notes") if isinstance(origins.get("notes"), list) else []
+        bullets.extend(str(note) for note in notes[:2])
+        return {
+            "project_root": str(project_root),
+            "project_name": project_root.name,
+            "code_files": code_files,
+            "parsed_code_files": parsed,
+            "modules": modules,
+            "schema_entities": schema_entities,
+            "schema_fields": schema_fields,
+            "sessions": session_count,
+            "origins": origins,
+            "headline": f"{project_root.name}: indexed project summary",
+            "bullets": bullets,
+        }
+
+    def project_structure_gaps(self, project_root: Path) -> list[str]:
+        memory_root = project_root / ".MEMORY"
+        required = [
+            memory_root / "INDEX.md",
+            memory_root / ".aidocs" / "index.aidocs",
+            memory_root / "rules" / "workflow-rules.md",
+            memory_root / "rules" / "workflow-actions.md",
+        ]
+        missing = [str(path.relative_to(project_root)).replace("\\", "/") for path in required if not path.exists()]
+        if not ((project_root / "AGENTS.md").is_file() or (project_root / "CLAUDE.md").is_file()):
+            missing.append("AGENTS.md or CLAUDE.md")
+        return missing
+
+    def project_init(self, project_root: Path, init_git: bool = True, create_remote: bool = False) -> dict[str, object]:
+        root = project_root
+        if not root.is_dir():
+            root.mkdir(parents=True, exist_ok=True)
+
+        created: list[str] = []
+        skipped: list[str] = []
+
+        templates_root = self.hub.sessions.templates_root
+        memory_template = templates_root.parent / "templates" / "memory"
+        memory_dest = root / ".MEMORY"
+
+        if memory_template.is_dir():
+            for src_file in memory_template.rglob("*"):
+                if src_file.is_file():
+                    rel = src_file.relative_to(memory_template)
+                    dest = memory_dest / rel
+                    if not dest.exists():
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(str(src_file), str(dest))
+                        created.append(f".MEMORY/{rel}")
+                    else:
+                        skipped.append(f".MEMORY/{rel}")
+        else:
+            for d in [
+                ".MEMORY/.aidocs",
+                ".MEMORY/sessions",
+                ".MEMORY/rules",
+                ".MEMORY/domains",
+                ".MEMORY/system",
+                ".MEMORY/config",
+                ".MEMORY/archive/sessions",
+            ]:
+                (root / d).mkdir(parents=True, exist_ok=True)
+            idx = memory_dest / "INDEX.md"
+            if not idx.exists():
+                idx.write_text(
+                    "# Memory Index\n\n"
+                    "## Sessions\n- `sessions/`\n\n"
+                    "## Rules\n"
+                    "- `rules/workflow-rules.md`\n"
+                    "- `rules/workflow-actions.md`\n",
+                    encoding="utf-8",
+                )
+                created.append(".MEMORY/INDEX.md")
+
+        workflow_rules = memory_dest / "rules" / "workflow-rules.md"
+        if not workflow_rules.exists():
+            workflow_rules.parent.mkdir(parents=True, exist_ok=True)
+            workflow_rules.write_text("# Workflow Rules\n\n## Workflow Rules\n", encoding="utf-8")
+            created.append(".MEMORY/rules/workflow-rules.md")
+        else:
+            skipped.append(".MEMORY/rules/workflow-rules.md")
+
+        workflow_actions = memory_dest / "rules" / "workflow-actions.md"
+        if not workflow_actions.exists():
+            workflow_actions.parent.mkdir(parents=True, exist_ok=True)
+            workflow_actions.write_text("# Workflow Actions\n\n## Workflow Actions\n", encoding="utf-8")
+            created.append(".MEMORY/rules/workflow-actions.md")
+        else:
+            skipped.append(".MEMORY/rules/workflow-actions.md")
+
+        router = memory_dest / ".aidocs" / "index.aidocs"
+        if not router.exists():
+            router.parent.mkdir(parents=True, exist_ok=True)
+            src_router = templates_root.parent / "index.aidocs"
+            if src_router.is_file():
+                shutil.copy2(str(src_router), str(router))
+            else:
+                router.write_text("# AIDOCS Session Entry\n\nRead /.MEMORY/INDEX.md next.\n", encoding="utf-8")
+            created.append(".MEMORY/.aidocs/index.aidocs")
+
+        for tmpl_name in ["AGENTS.md", "CLAUDE.md"]:
+            dest = root / tmpl_name
+            if not dest.exists():
+                src = templates_root.parents[1] / tmpl_name
+                if src.is_file():
+                    shutil.copy2(str(src), str(dest))
+                else:
+                    dest.write_text(f"# {tmpl_name.replace('.md','')}\n\nAIDOCS-managed project.\n", encoding="utf-8")
+                created.append(tmpl_name)
+            else:
+                skipped.append(tmpl_name)
+
+        git_result: dict[str, object] = {"action": "none"}
+        if init_git and not (root / ".git").exists():
+            try:
+                toplevel = _run_git_sync(str(root), "rev-parse", "--show-toplevel")
+                git_result = {"action": "already_in_repo", "root": toplevel}
+            except FileNotFoundError:
+                git_result = {"action": "skipped", "reason": "git not installed"}
+            except RuntimeError:
+                try:
+                    _run_git_sync(str(root), "init")
+                    gitignore = root / ".gitignore"
+                    if not gitignore.exists():
+                        gitignore.write_text(
+                            "# AIDOCS defaults\n/.MEMORY/.index/\nnode_modules/\ndist/\n__pycache__/\n.venv/\n*.pyc\n.env\n",
+                            encoding="utf-8",
+                        )
+                        created.append(".gitignore")
+                    _run_git_sync(str(root), "add", "-A")
+                    _run_git_sync(str(root), "commit", "-m", "chore: initialize project with AIDOCS")
+                    git_result = {"action": "initialized", "initial_commit": True}
+                except Exception as exc:
+                    git_result = {"action": "failed", "reason": str(exc)}
+            except Exception as exc:
+                git_result = {"action": "failed", "reason": str(exc)}
+
+        if create_remote and git_result.get("action") == "initialized":
+            try:
+                output = _run_git_sync(str(root), "remote", "get-url", "origin")
+                git_result["remote"] = {"created": False, "reason": f"Remote already exists: {output}"}
+            except RuntimeError:
+                try:
+                    import tempfile as _tf
+                    _gh_out = None
+                    try:
+                        with _tf.NamedTemporaryFile(mode="w", suffix=".gh.out", delete=False) as _f:
+                            _gh_out = _f.name
+                        with open(_gh_out, "w") as _fh:
+                            result = subprocess.run(
+                                ["gh", "repo", "create", root.name, "--private", "--source", str(root), "--push"],
+                                cwd=str(root), stdin=subprocess.DEVNULL,
+                                stdout=_fh, stderr=subprocess.DEVNULL,
+                                text=True, timeout=30, check=False,
+                            )
+                        result.stdout = Path(_gh_out).read_text(encoding="utf-8", errors="ignore").strip()
+                    finally:
+                        if _gh_out:
+                            try:
+                                os.unlink(_gh_out)
+                            except OSError:
+                                pass
+                    git_result["remote"] = {
+                        "created": result.returncode == 0,
+                        "name": root.name,
+                        "url": (result.stdout or "").strip(),
+                        "reason": (result.stderr or "").strip() if result.returncode != 0 else "",
+                    }
+                except FileNotFoundError:
+                    git_result["remote"] = {"created": False, "reason": "gh CLI not installed"}
+                except Exception as exc:
+                    git_result["remote"] = {"created": False, "reason": str(exc)}
+
+        mcp_config_result = self.ensure_claude_mcp_config(root)
+        return {
+            "initialized": True,
+            "created": created,
+            "skipped": skipped,
+            "git": git_result,
+            "origins": self.project_origins(root),
+            "repo_summary": self.repo_summary(root),
+            "mcp_config": mcp_config_result,
+            "next_step": "Call project_bootstrap_or_resume to activate managed mode and select a session.",
+        }
+
     def session_start(
         self,
         project_root: Path,
@@ -200,6 +523,8 @@ class RuntimeService:
             else:
                 response = {
                     "startup_files": startup_files,
+                    "origins": self.project_origins(project_root),
+                    "repo_summary": self.repo_summary(project_root),
                     "requires_session_selection": True,
                     "reason": "no_unique_active_session",
                     "sessions": session_summaries,
@@ -209,12 +534,16 @@ class RuntimeService:
 
         session = self.hub.sessions.read_session(project_root, session_id)
         context = self.hub.sessions.read_context(project_root, session_id)
+        handoff = self.hub.sessions.read_handoff(project_root, session_id)
+        handoff_steps = self.hub.sessions.read_handoff_steps(project_root, session_id)
 
         if sync_indexes:
             self.hub.code.sync_session_code(project_root, session_id=session_id, include_tests=include_tests)
 
         response: dict[str, object] = {
             "startup_files": startup_files,
+            "origins": self.project_origins(project_root),
+            "repo_summary": self.repo_summary(project_root),
             "requires_session_selection": False,
             "selected_session": {
                 "session_id": session.session_id,
@@ -225,6 +554,11 @@ class RuntimeService:
                 "path": str(context.path),
                 "sections": context.sections,
             },
+            "handoff": {
+                "path": str(handoff.path),
+                "sections": handoff.sections,
+            },
+            "handoff_steps": handoff_steps,
             "sessions": session_summaries,
         }
 
@@ -234,6 +568,45 @@ class RuntimeService:
         response["report"] = self._build_session_start_report(response)
 
         return response
+
+    def session_resume_bundle(
+        self,
+        project_root: Path,
+        session_id: str,
+        include_code_bundle: bool = False,
+        include_tests: bool = False,
+        journal_last_n: int = 10,
+    ) -> dict[str, object]:
+        session = self.hub.sessions.read_session(project_root, session_id)
+        context = self.hub.sessions.read_context(project_root, session_id)
+        plan = self.hub.sessions.read_plan(project_root, session_id)
+        handoff = self.hub.sessions.read_handoff(project_root, session_id)
+        journal = self.hub.sessions.read_journal(project_root, session_id, last_n=journal_last_n)
+        freshness = self._handoff_freshness(handoff.sections)
+        handoff_steps = self.hub.sessions.read_handoff_steps(project_root, session_id)
+        actionable_steps = [step for step in handoff_steps if step.get("status") in {"open", "reset", "failed", "stale"}]
+        recently_changed_steps = [step for step in handoff_steps if self._step_changed_recently(step)]
+
+        result: dict[str, object] = {
+            "session": {"session_id": session.session_id, "path": str(session.path), "sections": session.sections},
+            "context": {"path": str(context.path), "sections": context.sections},
+            "plan": {"path": str(plan.path), "sections": plan.sections},
+            "handoff": {"path": str(handoff.path), "sections": handoff.sections},
+            "handoff_steps": handoff_steps,
+            "actionable_handoff_steps": actionable_steps,
+            "recently_changed_handoff_steps": recently_changed_steps,
+            "handoff_freshness": freshness,
+            "journal": journal,
+            "repo_summary": self.repo_summary(project_root),
+        }
+        if include_code_bundle:
+            result["code_bundle"] = self._refresh_session_code_bundle(
+                project_root,
+                session_id=session_id,
+                include_tests=include_tests,
+                sync_indexes=True,
+            )
+        return result
 
     def _registered_tools_snapshot(self) -> list[object]:
         from .mcp_server import create_server
@@ -265,9 +638,11 @@ class RuntimeService:
     def _build_session_start_report(self, response: dict[str, object]) -> dict[str, object]:
         if response.get("requires_session_selection"):
             sessions = response.get("sessions") if isinstance(response.get("sessions"), list) else []
+            repo_summary = response.get("repo_summary") if isinstance(response.get("repo_summary"), dict) else {}
+            extra = repo_summary.get("bullets") if isinstance(repo_summary.get("bullets"), list) else []
             return {
                 "headline": "Session selection is required before continuing.",
-                "bullets": [f"Active/available sessions: {len(sessions)}."],
+                "bullets": [f"Active/available sessions: {len(sessions)}."] + [str(item) for item in extra[:3]],
                 "next_step": "select_session",
             }
 
@@ -278,6 +653,22 @@ class RuntimeService:
             bullets.append("Context code bundle is included.")
         else:
             bullets.append("Context code bundle is deferred by default.")
+        repo_summary = response.get("repo_summary") if isinstance(response.get("repo_summary"), dict) else {}
+        extra = repo_summary.get("bullets") if isinstance(repo_summary.get("bullets"), list) else []
+        bullets.extend(str(item) for item in extra[:3])
+        handoff = response.get("handoff") if isinstance(response.get("handoff"), dict) else {}
+        handoff_sections = handoff.get("sections") if isinstance(handoff.get("sections"), dict) else {}
+        handoff_now = handoff_sections.get("What Matters Now") if isinstance(handoff_sections.get("What Matters Now"), list) else []
+        bullets.extend(str(item) for item in handoff_now[:2] if str(item).strip() != "-")
+        handoff_steps = response.get("handoff_steps") if isinstance(response.get("handoff_steps"), list) else []
+        actionable_count = sum(1 for step in handoff_steps if str(step.get("status")) in {"open", "reset", "failed", "stale"})
+        if actionable_count:
+            bullets.append(f"Actionable handoff steps: {actionable_count}.")
+        freshness = self._handoff_freshness(handoff_sections)
+        if freshness.get("status") == "stale":
+            bullets.append(f"Handoff freshness is stale ({freshness.get('age_hours')}h old).")
+        elif freshness.get("status") == "unknown":
+            bullets.append("Handoff freshness is unknown.")
         return {
             "headline": "Session context is ready.",
             "bullets": bullets,
@@ -286,6 +677,8 @@ class RuntimeService:
 
     def _build_bootstrap_report(self, result: dict[str, object]) -> dict[str, object]:
         stage = str(result.get("stage") or "unknown")
+        repo_summary = result.get("repo_summary") if isinstance(result.get("repo_summary"), dict) else {}
+        repo_bullets = repo_summary.get("bullets") if isinstance(repo_summary.get("bullets"), list) else []
         if stage == "setup_required":
             return {
                 "headline": "AIDOCS project setup is required.",
@@ -306,11 +699,16 @@ class RuntimeService:
         procedures = sync.get("procedures") if isinstance(sync.get("procedures"), dict) else {}
         links = sync.get("procedure_capability_links") if isinstance(sync.get("procedure_capability_links"), dict) else {}
         bullets = []
+        repaired = result.get("repaired") if isinstance(result.get("repaired"), dict) else None
+        if repaired:
+            created = repaired.get("created") if isinstance(repaired.get("created"), list) else []
+            bullets.append(f"Repaired canonical AIDOCS structure ({len(created)} files created).")
         if selected.get("session_id"):
             bullets.append(f"Selected session: {selected.get('session_id')}.")
         bullets.append(
             f"Action surfaces synced: capabilities={capabilities.get('capability_definitions')}, procedures={procedures.get('procedure_definitions')}, links={links.get('links')}."
         )
+        bullets.extend(str(item) for item in repo_bullets[:4])
         return {
             "headline": "Project bootstrap is ready.",
             "bullets": bullets,
@@ -482,6 +880,11 @@ class RuntimeService:
             result["report"] = self._build_bootstrap_report(result)
             return result
 
+        repaired = None
+        structure_gaps = self.project_structure_gaps(project_root)
+        if structure_gaps:
+            repaired = self.project_init(project_root, init_git=False, create_remote=False)
+
         # Ensure .mcp.json is present for Claude Code (idempotent)
         try:
             self.ensure_claude_mcp_config(project_root)
@@ -499,6 +902,7 @@ class RuntimeService:
                 "ready": False,
                 "initialized": True,
                 "indexes_synced": True,
+                "repaired": repaired,
                 "sync": sync_result,
                 "legacy": legacy_state,
                 "proposal": proposal,
@@ -531,6 +935,8 @@ class RuntimeService:
             "ready": not session_result.get("requires_session_selection"),
             "initialized": True,
             "indexes_synced": True,
+            "repaired": repaired,
+            "repo_summary": self.repo_summary(project_root),
             "sync": sync_result,
             "session": session_result,
         }
@@ -839,6 +1245,8 @@ class RuntimeService:
         goal: str | None = None,
         state: list[str] | None = None,
         upcoming: list[str] | None = None,
+        partial_goals: list[str] | None = None,
+        end_goal: str | None = None,
         blockers: list[str] | None = None,
         relevant_files: list[str] | None = None,
         relevant_commands: list[str] | None = None,
@@ -859,6 +1267,41 @@ class RuntimeService:
             session_patch["Blockers"] = self._as_bullets(blockers)
         session = self.hub.sessions.update_session(project_root, session_id, session_patch)
 
+        plan_patch: dict[str, list[str]] = {}
+        if goal is not None:
+            plan_patch["Purpose"] = [f"- {goal}"]
+        session_scope = self.hub.sessions.read_session(project_root, session_id).sections.get("Scope", ["-"])
+        if session_scope:
+            plan_patch.setdefault("Scope", session_scope)
+        if state is not None:
+            plan_patch["Current State"] = self._as_bullets(state)
+        if partial_goals is not None:
+            plan_patch["Partial Goals"] = self._as_bullets(partial_goals)
+        elif upcoming is not None:
+            plan_patch["Partial Goals"] = self._as_bullets(upcoming)
+        if end_goal is not None:
+            plan_patch["End Goal"] = [f"- {end_goal}"]
+        elif goal is not None:
+            plan_patch["End Goal"] = [f"- {goal}"]
+        if constraints is not None:
+            plan_patch["Constraints"] = self._as_bullets(constraints)
+        if blockers is not None:
+            existing_constraints = []
+            try:
+                existing_plan = self.hub.sessions.read_plan(project_root, session_id)
+                existing_constraints = self._clean_bullets(existing_plan.sections.get("Constraints", []))
+            except Exception:
+                existing_constraints = []
+            merged_constraints = [item for item in existing_constraints if item and not item.startswith("Blockers: ")]
+            merged_constraints.extend(f"Blockers: {item}" for item in blockers)
+            plan_patch["Constraints"] = self._as_bullets(merged_constraints)
+        if upcoming is not None:
+            plan_patch["Next Steps"] = self._as_bullets(upcoming)
+        if not plan_patch:
+            plan = self.hub.sessions.read_plan(project_root, session_id)
+        else:
+            plan = self.hub.sessions.update_plan(project_root, session_id, plan_patch)
+
         context_patch: dict[str, list[str]] = {}
         if relevant_files is not None:
             context_patch["Relevant Files"] = self._as_file_bullets(relevant_files)
@@ -874,6 +1317,7 @@ class RuntimeService:
 
         result: dict[str, object] = {
             "session": {"session_id": session.session_id, "path": str(session.path), "sections": session.sections},
+            "plan": {"path": str(plan.path), "sections": plan.sections},
             "context": {"path": str(context.path), "sections": context.sections},
         }
         if include_code_bundle:
@@ -891,6 +1335,8 @@ class RuntimeService:
         session_id: str,
         state: list[str] | None = None,
         upcoming: list[str] | None = None,
+        partial_goals: list[str] | None = None,
+        end_goal: str | None = None,
         blockers: list[str] | None = None,
         relevant_files: list[str] | None = None,
         relevant_commands: list[str] | None = None,
@@ -906,6 +1352,8 @@ class RuntimeService:
             goal=None,
             state=state,
             upcoming=upcoming,
+            partial_goals=partial_goals,
+            end_goal=end_goal,
             blockers=blockers,
             relevant_files=relevant_files,
             relevant_commands=relevant_commands,
@@ -933,6 +1381,35 @@ class RuntimeService:
             "State": self._as_bullets(existing_state),
         }
         updated = self.hub.sessions.update_session(project_root, session_id, session_patch)
+        try:
+            existing_plan = self.hub.sessions.read_plan(project_root, session_id)
+            existing_validation = self._clean_bullets(existing_plan.sections.get("Validation", []))
+            existing_validation.append(f"Completion result: {result_summary}")
+            plan = self.hub.sessions.update_plan(
+                project_root,
+                session_id,
+                {
+                    "Current State": self._as_bullets(existing_state),
+                    "Validation": self._as_bullets(existing_validation),
+                    "Next Steps": ["- Work completed; choose the next roadmap/plan slice or close the session."],
+                },
+            )
+        except Exception:
+            plan = None
+        try:
+            handoff = self.hub.sessions.update_handoff(
+                project_root,
+                session_id,
+                {
+                    "Current State": self._as_bullets(existing_state),
+                    "What Was Done": self._as_bullets([result_summary]),
+                    "What Matters Now": ["- This session has completed its current work; review whether follow-up should stay here or move to a successor session."],
+                    "Suggested Next Steps": ["- Review remaining roadmap or plan work and decide whether to pause, close, or hand off this session."],
+                    "Freshness": [f"- Updated {self._timestamp()} after task completion."],
+                },
+            )
+        except Exception:
+            handoff = None
 
         # Auto-journal the task completion
         try:
@@ -948,6 +1425,10 @@ class RuntimeService:
         result: dict[str, object] = {
             "session": {"session_id": updated.session_id, "path": str(updated.path), "sections": updated.sections}
         }
+        if plan is not None:
+            result["plan"] = {"path": str(plan.path), "sections": plan.sections}
+        if handoff is not None:
+            result["handoff"] = {"path": str(handoff.path), "sections": handoff.sections}
         if include_code_bundle:
             result["code_bundle"] = self._refresh_session_code_bundle(
                 project_root,
@@ -983,6 +1464,50 @@ class RuntimeService:
         if not cleaned:
             return []
         return ["```text", *cleaned, "```"]
+
+    def _timestamp(self) -> str:
+        return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    def _handoff_freshness(self, sections: dict[str, list[str]], stale_after_hours: int = 24) -> dict[str, object]:
+        freshness_lines = sections.get("Freshness", []) if isinstance(sections, dict) else []
+        for line in freshness_lines:
+            match = re.search(r"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})", line)
+            if not match:
+                match = re.search(r"(\d{4}-\d{2}-\d{2})", line)
+            if not match:
+                continue
+            raw = match.group(1)
+            try:
+                if len(raw) == 10:
+                    dt = datetime.strptime(raw, "%Y-%m-%d")
+                else:
+                    dt = datetime.strptime(raw, "%Y-%m-%d %H:%M")
+                age_hours = max(0.0, (datetime.now() - dt).total_seconds() / 3600.0)
+                return {
+                    "status": "stale" if age_hours > stale_after_hours else "fresh",
+                    "timestamp": raw,
+                    "age_hours": round(age_hours, 2),
+                    "stale_after_hours": stale_after_hours,
+                }
+            except ValueError:
+                continue
+        return {
+            "status": "unknown",
+            "timestamp": None,
+            "age_hours": None,
+            "stale_after_hours": stale_after_hours,
+        }
+
+    def _step_changed_recently(self, step: dict[str, object], recent_hours: int = 24) -> bool:
+        raw = str(step.get("updated_at") or "").strip()
+        if not raw:
+            return False
+        try:
+            dt = datetime.strptime(raw, "%Y-%m-%d %H:%M")
+        except ValueError:
+            return False
+        age_hours = (datetime.now() - dt).total_seconds() / 3600.0
+        return age_hours <= recent_hours
 
     def _clean_bullets(self, values: list[str]) -> list[str]:
         result: list[str] = []

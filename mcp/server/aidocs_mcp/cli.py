@@ -7,20 +7,226 @@ Usage:
     aidocs config --opencode   Open aidocs-plugin.json
     aidocs config --languages  Open action_tokens/ directory
     aidocs sync [path]         Run code/schema/memory index sync
+    aidocs benchmark [path]    Run repeatable benchmark scenarios
     aidocs version             Show version
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
+import time
 from pathlib import Path
+
+from . import __version__
 
 
 def _resolve_root(args: list[str]) -> Path:
     """Get project root from args or cwd."""
-    if args:
-        return Path(args[0]).resolve()
+    positional = [arg for arg in args if not arg.startswith("--")]
+    if positional:
+        return Path(positional[0]).resolve()
     return Path.cwd()
+
+
+def _wants_json(args: list[str]) -> bool:
+    return "--json" in args
+
+
+def _option_value(args: list[str], name: str, default: str) -> str:
+    if name in args:
+        idx = args.index(name)
+        if idx + 1 < len(args):
+            return args[idx + 1]
+    return default
+
+
+def _write_json_output(path_value: str, payload: dict[str, object]) -> None:
+    target = Path(path_value).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _result_size(value: object) -> int:
+    if isinstance(value, dict):
+        if isinstance(value.get("matches"), list):
+            return len(value["matches"])
+        if isinstance(value.get("items"), list):
+            return len(value["items"])
+        if isinstance(value.get("files"), list):
+            return len(value["files"])
+        if isinstance(value.get("symbols"), list):
+            return len(value["symbols"])
+        if isinstance(value.get("result"), list):
+            return len(value["result"])
+        if isinstance(value.get("result"), dict):
+            return len(value["result"])
+        return len(value)
+    if isinstance(value, list):
+        return len(value)
+    return 0
+
+
+def _raw_scan_matches(project_root: Path, query: str, limit: int = 20) -> dict[str, object]:
+    matches: list[dict[str, object]] = []
+    scanned_files = 0
+    if not query.strip():
+        return {"query": query, "scanned_files": 0, "matches": matches}
+
+    words = [w.lower() for w in re.findall(r"[A-Za-z0-9_]+", query) if len(w) >= 3]
+    if not words:
+        words = [query.strip().lower()]
+
+    skip_dirs = {".git", ".MEMORY", ".venv", "node_modules", "dist", "build", "__pycache__"}
+    text_exts = {
+        ".py", ".js", ".ts", ".tsx", ".jsx", ".cs", ".rs", ".go", ".java", ".kt",
+        ".json", ".toml", ".yml", ".yaml", ".md", ".sql", ".html", ".css", ".scss",
+    }
+
+    for path in project_root.rglob("*"):
+        if len(matches) >= limit:
+            break
+        if any(part in skip_dirs for part in path.parts):
+            continue
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in text_exts:
+            continue
+        scanned_files += 1
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        lower = text.lower()
+        score = sum(1 for word in words if word in lower or word in path.name.lower())
+        if score:
+            matches.append(
+                {
+                    "path": path.relative_to(project_root).as_posix(),
+                    "score": score,
+                }
+            )
+
+    matches.sort(key=lambda item: (-int(item["score"]), str(item["path"])))
+    return {"query": query, "scanned_files": scanned_files, "matches": matches[:limit]}
+
+
+def _classification_prompt_batches_for_set(name: str) -> dict[str, list[str]]:
+    scenario_set = (name or "public").strip().lower()
+    if scenario_set == "public":
+        return {
+            "en": [
+                "something is off with the /aidocs startup path in OpenCode and I need to understand where the decision is really happening before I touch anything",
+                "can you trace the thing that decides whether this becomes an edit task or just a read, because it feels inconsistent and I keep getting different behavior",
+                "I need the likely runtime path for session/bootstrap handling, especially the parts that kick in after managed mode is already active",
+            ],
+            "es": [
+                "algo raro esta pasando con el arranque de /aidocs en OpenCode y necesito entender donde se toma realmente la decision antes de tocar nada",
+                "puedes rastrear la parte que decide si esto termina siendo una edicion o solo lectura porque el comportamiento se siente inconsistente",
+            ],
+            "de": [
+                "ich brauche den eigentlichen runtime pfad fuer bootstrap und session handling, aber bitte nicht nur eine rohe textsuche durch das ganze repo",
+                "irgendetwas entscheidet zu frueh ob das eine aenderung oder nur analyse ist; finde den relevanten codepfad",
+            ],
+            "ja": [
+                "/aidocs の開始フローでどこが本当に判断しているのか知りたいです。関係ないファイルはできるだけ避けてください",
+                "これが編集タスクになるのか調査だけなのかを決めている流れを追いたいです。最近かなり不安定です",
+            ],
+            "pt": [
+                "tem alguma coisa estranha no fluxo de inicio do /aidocs e eu preciso entender onde a decisao acontece de verdade antes de mexer em qualquer coisa",
+            ],
+            "it": [
+                "mi serve il percorso reale di bootstrap e sessione, non una ricerca generica nel repository e non un elenco di simboli poco utili",
+            ],
+        }
+    raise ValueError(f"Unknown benchmark scenario set: {name}")
+
+
+def _retrieval_scenarios_for_set(name: str, root: Path, hub: object) -> list[dict[str, object]]:
+    scenario_set = (name or "public").strip().lower()
+    if scenario_set != "public":
+        raise ValueError(f"Unknown benchmark scenario set: {name}")
+
+    bundle_target = ""
+    with hub.code.connect(root) as conn:
+        row = conn.execute("SELECT path FROM code_files ORDER BY path LIMIT 1").fetchone()
+        if row and row[0]:
+            bundle_target = str(row[0])
+
+    scenarios = [
+        {
+            "name": "investigate-aidocs-entry-flow",
+            "prompt": "the /aidocs startup path still feels slippery; show me the main code path that actually matters for bootstrap, command handling, and routing without drowning me in unrelated files",
+            "runner": lambda: hub.code.investigate(root, "aidocs", limit=5),
+        },
+        {
+            "name": "find-symbols-for-init-path",
+            "prompt": "I need the symbols that are most likely to matter for init/bootstrap/setup, not a giant repo-wide text search and not every random helper with init in the name",
+            "runner": lambda: hub.code.search_symbols(root, "init", limit=20),
+        },
+        {
+            "name": "trace-runtime-service-usage",
+            "prompt": "something around runtime service orchestration is deciding more than I expect; trace where RuntimeService actually gets used in the important paths",
+            "runner": lambda: hub.code.trace_service_usage(root, "RuntimeService", limit=20),
+        },
+        {
+            "name": "bundle-session-subsystem",
+            "prompt": "give me the subsystem-level picture for session handling because I care about the important boundaries and supporting structures, not just a single symbol",
+            "runner": lambda: hub.code.get_subsystem_bundle(root, "session", limit=12),
+        },
+    ]
+    if bundle_target:
+        scenarios.append(
+            {
+                "name": "bundle-real-project-file",
+                "prompt": "give me the real file-level context for something the project actually contains, not a theoretical example or a guessed path",
+                "runner": lambda target=bundle_target: hub.code.get_file_bundle(root, target),
+            }
+        )
+    return scenarios
+
+
+def _schema_scenarios_for_set(name: str, root: Path, hub: object) -> list[dict[str, object]]:
+    scenario_set = (name or "public").strip().lower()
+    if scenario_set != "public":
+        raise ValueError(f"Unknown benchmark scenario set: {name}")
+
+    entities: list[str] = []
+    fields: list[str] = []
+    with hub.schema.connect(root) as conn:
+        entity_rows = conn.execute("SELECT entity_name FROM schema_entities ORDER BY entity_name LIMIT 2").fetchall()
+        field_rows = conn.execute("SELECT field_name FROM schema_fields ORDER BY field_name LIMIT 2").fetchall()
+        entities = [str(row[0]) for row in entity_rows if row and row[0]]
+        fields = [str(row[0]) for row in field_rows if row and row[0]]
+
+    scenarios: list[dict[str, object]] = []
+    if entities:
+        entity = entities[0]
+        scenarios.append(
+            {
+                "name": "schema-entity-lookup",
+                "prompt": "I need the schema entity that probably matters here, but I do not remember the exact shape and I only care about the real indexed definition",
+                "runner": lambda entity_name=entity: hub.schema.get_entity(root, entity_name),
+            }
+        )
+        scenarios.append(
+            {
+                "name": "schema-entity-search",
+                "prompt": "find the likely schema entities for this concept without dumping the whole database model",
+                "runner": lambda entity_name=entity: hub.schema.find_schema_entities(root, query=entity_name, limit=10),
+            }
+        )
+    if fields:
+        field = fields[0]
+        scenarios.append(
+            {
+                "name": "schema-field-search",
+                "prompt": "trace the field that sounds relevant here because I need to know which entity owns it and where it shows up",
+                "runner": lambda field_name=field: hub.schema.find_schema_field(root, field_name, limit=10),
+            }
+        )
+    return scenarios
 
 
 def _find_aidocs_root() -> Path | None:
@@ -38,7 +244,9 @@ def _find_aidocs_root() -> Path | None:
 def cmd_init(args: list[str]) -> int:
     """Initialize AIDOCS on a project."""
     root = _resolve_root(args)
-    print(f"Initializing AIDOCS on: {root}")
+    as_json = _wants_json(args)
+    if not as_json:
+        print(f"Initializing AIDOCS on: {root}")
 
     from .mcp_server import _resolve_templates_root
     from .service_hub import AidocsServiceHub
@@ -47,55 +255,39 @@ def cmd_init(args: list[str]) -> int:
     hub = AidocsServiceHub(templates_root=_resolve_templates_root())
     runtime = RuntimeService(hub=hub)
 
-    # Create structure
-    from .mcp_server import create_server  # need the project_init logic
-    # Use the hub directly instead
-    import shutil
+    result = runtime.project_init(root, init_git=False, create_remote=False)
+    created = result.get("created", []) if isinstance(result.get("created"), list) else []
+    mcp_result = result.get("mcp_config", {}) if isinstance(result.get("mcp_config"), dict) else {}
 
-    memory_template = hub.sessions.templates_root.parent / "templates" / "memory"
-    memory_dest = root / ".MEMORY"
-    created = []
+    payload = {
+        "ok": True,
+        "project_root": str(root),
+        "project_name": root.name,
+        "initialized": bool(result.get("initialized", False)),
+        "created_count": len(created),
+        "created": created,
+        "skipped": result.get("skipped", []),
+        "git": result.get("git", {}),
+        "origins": result.get("origins", {}),
+        "repo_summary": result.get("repo_summary", {}),
+        "mcp_config": mcp_result,
+        "next_step": result.get("next_step"),
+        "message": "Run '/aidocs' in your agent to activate managed mode.",
+    }
 
-    if memory_template.is_dir():
-        for src_file in memory_template.rglob("*"):
-            if src_file.is_file():
-                rel = src_file.relative_to(memory_template)
-                dest = memory_dest / rel
-                if not dest.exists():
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(str(src_file), str(dest))
-                    created.append(str(rel))
-
-    # Router
-    router = memory_dest / ".aidocs" / "index.aidocs"
-    if not router.exists():
-        router.parent.mkdir(parents=True, exist_ok=True)
-        src_router = hub.sessions.templates_root.parent / "index.aidocs"
-        if src_router.is_file():
-            shutil.copy2(str(src_router), str(router))
-        else:
-            router.write_text("# AIDOCS Session Entry\n\nRead /.MEMORY/INDEX.md next.\n", encoding="utf-8")
-        created.append(".aidocs/index.aidocs")
-
-    # AGENTS.md / CLAUDE.md
-    for name in ["AGENTS.md", "CLAUDE.md"]:
-        dest = root / name
-        if not dest.exists():
-            src = hub.sessions.templates_root.parents[1] / name
-            if src.is_file():
-                shutil.copy2(str(src), str(dest))
-            else:
-                dest.write_text(f"# {name.replace('.md','')}\n\nAIDOCS-managed project.\n", encoding="utf-8")
-            created.append(name)
-
-    # .mcp.json
-    mcp_result = runtime.ensure_claude_mcp_config(root)
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
 
     print(f"Created {len(created)} files")
     for f in created[:10]:
         print(f"  + {f}")
     if len(created) > 10:
         print(f"  ... and {len(created) - 10} more")
+    repo_summary = result.get("repo_summary") if isinstance(result.get("repo_summary"), dict) else {}
+    bullets = repo_summary.get("bullets") if isinstance(repo_summary.get("bullets"), list) else []
+    for bullet in bullets[:4]:
+        print(f"  - {bullet}")
     print(f"MCP config: {mcp_result.get('action', 'unknown')}")
     print(f"\nRun '/aidocs' in your agent to activate managed mode.")
     return 0
@@ -104,6 +296,7 @@ def cmd_init(args: list[str]) -> int:
 def cmd_status(args: list[str]) -> int:
     """Show project status."""
     root = _resolve_root(args)
+    as_json = _wants_json(args)
 
     from .code_index_store import CodeIndexStore
     from .schema_index_store import SchemaIndexStore
@@ -114,8 +307,17 @@ def cmd_status(args: list[str]) -> int:
 
     # Check if initialized
     if not (root / ".MEMORY").is_dir():
-        print(f"Not an AIDOCS project: {root}")
-        print("Run 'aidocs init' first.")
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "initialized": False,
+                "project_root": str(root),
+                "reason": "not_initialized",
+                "message": f"Not an AIDOCS project: {root}",
+            }, indent=2))
+        else:
+            print(f"Not an AIDOCS project: {root}")
+            print("Run 'aidocs init' first.")
         return 1
 
     # Code index
@@ -139,7 +341,45 @@ def cmd_status(args: list[str]) -> int:
     if sessions_dir.is_dir():
         session_count = sum(1 for d in sessions_dir.iterdir() if d.is_dir() and (d / "SESSION.md").is_file())
 
-    # Print
+    managed_mode: dict[str, object] = {"state": "not_configured", "active": False, "session_id": None}
+    config_path = root / ".MEMORY" / "config" / "aidocs-managed.json"
+    if config_path.is_file():
+        try:
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            if cfg.get("active"):
+                managed_mode = {"state": "active", "active": True, "session_id": cfg.get("session_id", "none")}
+            else:
+                managed_mode = {"state": "inactive", "active": False, "session_id": cfg.get("session_id")}
+        except Exception:
+            managed_mode = {"state": "unknown", "active": False, "session_id": None}
+
+    payload = {
+        "ok": True,
+        "initialized": True,
+        "project_root": str(root),
+        "project_name": root.name,
+        "code": {
+            "files_indexed": total_files,
+            "files_parsed": parsed,
+            "symbols": outlines,
+            "modules": modules,
+            "unknown_roles": unknown,
+            "unknown_roles_percent": (unknown * 100 // total_files if total_files else 0),
+        },
+        "schema": {
+            "entities": entities,
+            "fields": fields,
+        },
+        "sessions": {
+            "count": session_count,
+        },
+        "managed_mode": managed_mode,
+    }
+
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
     print(f"AIDOCS Status: {root.name}")
     print(f"{'-' * 40}")
     print(f"  Files indexed:    {total_files} ({parsed} parsed)")
@@ -149,44 +389,71 @@ def cmd_status(args: list[str]) -> int:
     print(f"  Schema entities:  {entities}")
     print(f"  Schema fields:    {fields}")
     print(f"  Sessions:         {session_count}")
-
-    # Managed mode
-    config_path = root / ".MEMORY" / "config" / "aidocs-managed.json"
-    if config_path.is_file():
-        import json
-        try:
-            cfg = json.loads(config_path.read_text(encoding="utf-8"))
-            if cfg.get("active"):
-                print(f"  Managed mode:     active (session: {cfg.get('session_id', 'none')})")
-            else:
-                print(f"  Managed mode:     inactive")
-        except Exception:
-            print(f"  Managed mode:     unknown")
+    if managed_mode["state"] == "active":
+        print(f"  Managed mode:     active (session: {managed_mode['session_id']})")
+    elif managed_mode["state"] == "inactive":
+        print("  Managed mode:     inactive")
+    elif managed_mode["state"] == "unknown":
+        print("  Managed mode:     unknown")
     else:
-        print(f"  Managed mode:     not configured")
+        print("  Managed mode:     not configured")
 
     return 0
 
 
 def cmd_config(args: list[str]) -> int:
     """Open config file in editor."""
+    as_json = _wants_json(args)
     aidocs_root = _find_aidocs_root()
     if not aidocs_root:
-        print("Cannot find AIDOCS installation. Set AIDOCS_PATH env var.")
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "reason": "aidocs_root_not_found",
+                "message": "Cannot find AIDOCS installation. Set AIDOCS_PATH env var.",
+            }, indent=2))
+        else:
+            print("Cannot find AIDOCS installation. Set AIDOCS_PATH env var.")
         return 1
 
     editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or ("code" if sys.platform == "win32" else "nano")
 
     if "--opencode" in args:
         target = aidocs_root / "aidocs-plugin.json"
+        target_kind = "opencode"
     elif "--languages" in args:
         target = aidocs_root / "action_tokens"
+        target_kind = "languages"
     else:
         target = aidocs_root / "aidocs.toml"
+        target_kind = "config"
 
     if not target.exists():
-        print(f"Config not found: {target}")
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "aidocs_root": str(aidocs_root),
+                "target_kind": target_kind,
+                "target": str(target),
+                "exists": False,
+                "message": f"Config not found: {target}",
+            }, indent=2))
+        else:
+            print(f"Config not found: {target}")
         return 1
+
+    payload = {
+        "ok": True,
+        "aidocs_root": str(aidocs_root),
+        "target_kind": target_kind,
+        "target": str(target),
+        "exists": True,
+        "editor": editor,
+    }
+
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
 
     print(f"Opening: {target}")
     os.system(f'{editor} "{target}"')
@@ -196,45 +463,323 @@ def cmd_config(args: list[str]) -> int:
 def cmd_sync(args: list[str]) -> int:
     """Run index sync."""
     root = _resolve_root(args)
+    as_json = _wants_json(args)
 
     if not (root / ".MEMORY").is_dir():
-        print(f"Not an AIDOCS project: {root}")
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "initialized": False,
+                "project_root": str(root),
+                "reason": "not_initialized",
+                "message": f"Not an AIDOCS project: {root}",
+            }, indent=2))
+        else:
+            print(f"Not an AIDOCS project: {root}")
         return 1
 
-    import time
     from .code_index_store import CodeIndexStore
     from .schema_index_store import SchemaIndexStore
     from .index_store import IndexStore
     from .session_store import SessionStore
     from .mcp_server import _resolve_templates_root
 
-    print(f"Syncing: {root.name}")
-
     t0 = time.time()
     sessions = SessionStore(templates_root=_resolve_templates_root())
     memory = IndexStore(session_store=sessions)
     mem_result = memory.sync_all(root)
-    print(f"  Memory:  {mem_result.get('memory_files', 0)} files, {mem_result.get('sessions', 0)} sessions ({time.time() - t0:.1f}s)")
+    memory_seconds = round(time.time() - t0, 3)
 
     t1 = time.time()
     code = CodeIndexStore()
     code_count = code.sync_code_files(root)
     mod_count = code.sync_modules(root)
-    print(f"  Code:    {code_count} files, {mod_count} modules ({time.time() - t1:.1f}s)")
+    code_seconds = round(time.time() - t1, 3)
 
     t2 = time.time()
     schema = SchemaIndexStore()
     schema_result = schema.sync_schema(root)
     entities = schema_result.get("entities", 0) if isinstance(schema_result, dict) else 0
-    print(f"  Schema:  {entities} entities ({time.time() - t2:.1f}s)")
+    schema_seconds = round(time.time() - t2, 3)
 
-    print(f"  Total:   {time.time() - t0:.1f}s")
+    total_seconds = round(time.time() - t0, 3)
+    payload = {
+        "ok": True,
+        "initialized": True,
+        "project_root": str(root),
+        "project_name": root.name,
+        "memory": {
+            "memory_files": mem_result.get("memory_files", 0),
+            "sessions": mem_result.get("sessions", 0),
+            "seconds": memory_seconds,
+        },
+        "code": {
+            "files": code_count,
+            "modules": mod_count,
+            "seconds": code_seconds,
+        },
+        "schema": {
+            "entities": entities,
+            "seconds": schema_seconds,
+        },
+        "total_seconds": total_seconds,
+    }
+
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print(f"Syncing: {root.name}")
+    print(f"  Memory:  {mem_result.get('memory_files', 0)} files, {mem_result.get('sessions', 0)} sessions ({memory_seconds:.1f}s)")
+    print(f"  Code:    {code_count} files, {mod_count} modules ({code_seconds:.1f}s)")
+    print(f"  Schema:  {entities} entities ({schema_seconds:.1f}s)")
+    print(f"  Total:   {total_seconds:.1f}s")
+    return 0
+
+
+def cmd_benchmark(args: list[str]) -> int:
+    """Run repeatable benchmark scenarios."""
+    root = _resolve_root(args)
+    as_json = _wants_json(args)
+    scenario_set = _option_value(args, "--scenario-set", "public")
+    output_path = _option_value(args, "--out", "")
+    try:
+        iterations = max(1, int(_option_value(args, "--iterations", "100")))
+    except ValueError:
+        iterations = 100
+
+    if not (root / ".MEMORY").is_dir():
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "initialized": False,
+                "project_root": str(root),
+                "reason": "not_initialized",
+                "message": f"Not an AIDOCS project: {root}",
+            }, indent=2))
+        else:
+            print(f"Not an AIDOCS project: {root}")
+        return 1
+
+    from .mcp_server import _resolve_templates_root, _resolve_script_root
+    from .runtime_service import RuntimeService
+    from .service_hub import AidocsServiceHub
+
+    hub = AidocsServiceHub(templates_root=_resolve_templates_root(), script_root=_resolve_script_root())
+    runtime = RuntimeService(hub=hub)
+    try:
+        prompt_batches = _classification_prompt_batches_for_set(scenario_set)
+    except ValueError as exc:
+        if as_json:
+            print(json.dumps({"ok": False, "reason": "invalid_scenario_set", "message": str(exc)}, indent=2))
+        else:
+            print(str(exc))
+        return 1
+
+    t0 = time.perf_counter()
+    sync_result = hub.index.sync_all(root)
+    code_files = hub.code.sync_code_files(root)
+    modules = hub.code.sync_modules(root)
+    schema_result = hub.schema.sync_schema(root)
+    sync_seconds = round(time.perf_counter() - t0, 3)
+
+    try:
+        retrieval_scenarios = _retrieval_scenarios_for_set(scenario_set, root, hub)
+    except ValueError as exc:
+        if as_json:
+            print(json.dumps({"ok": False, "reason": "invalid_scenario_set", "message": str(exc)}, indent=2))
+        else:
+            print(str(exc))
+        return 1
+    try:
+        schema_scenarios = _schema_scenarios_for_set(scenario_set, root, hub)
+    except ValueError as exc:
+        if as_json:
+            print(json.dumps({"ok": False, "reason": "invalid_scenario_set", "message": str(exc)}, indent=2))
+        else:
+            print(str(exc))
+        return 1
+
+    t1 = time.perf_counter()
+    counts: dict[str, int] = {}
+    per_language: dict[str, dict[str, object]] = {}
+    prompt_count = sum(len(items) for items in prompt_batches.values())
+    total_classifications = iterations * prompt_count
+    for language, prompts in prompt_batches.items():
+        language_counts: dict[str, int] = {}
+        for _ in range(iterations):
+            for prompt in prompts:
+                action_kind = str(runtime.classify_prompt_action(prompt).get("action_kind") or "understand")
+                counts[action_kind] = counts.get(action_kind, 0) + 1
+                language_counts[action_kind] = language_counts.get(action_kind, 0) + 1
+        per_language[language] = {
+            "prompt_count": len(prompts),
+            "total_classifications": len(prompts) * iterations,
+            "action_kind_counts": language_counts,
+        }
+    classify_seconds = round(time.perf_counter() - t1, 3)
+
+    retrieval_results = []
+    retrieval_total_start = time.perf_counter()
+    for scenario in retrieval_scenarios:
+        start = time.perf_counter()
+        result = scenario["runner"]()
+        elapsed = round(time.perf_counter() - start, 3)
+        retrieval_results.append(
+            {
+                "name": scenario["name"],
+                "prompt": scenario["prompt"],
+                "seconds": elapsed,
+                "result_size": _result_size(result),
+            }
+        )
+    retrieval_seconds = round(time.perf_counter() - retrieval_total_start, 3)
+
+    comparative_scenarios = [
+        {
+            "name": "aidocs-entry-flow",
+            "query": "aidocs bootstrap routing command",
+            "indexed_runner": lambda: hub.code.investigate(root, "aidocs", limit=5),
+        },
+        {
+            "name": "runtime-service-trace",
+            "query": "RuntimeService orchestration session bootstrap",
+            "indexed_runner": lambda: hub.code.trace_service_usage(root, "RuntimeService", limit=20),
+        },
+    ]
+    comparative_results = []
+    comparative_total_start = time.perf_counter()
+    for scenario in comparative_scenarios:
+        indexed_start = time.perf_counter()
+        indexed_result = scenario["indexed_runner"]()
+        indexed_seconds = round(time.perf_counter() - indexed_start, 3)
+
+        raw_start = time.perf_counter()
+        raw_result = _raw_scan_matches(root, str(scenario["query"]), limit=20)
+        raw_seconds = round(time.perf_counter() - raw_start, 3)
+
+        comparative_results.append(
+            {
+                "name": scenario["name"],
+                "query": scenario["query"],
+                "indexed": {
+                    "seconds": indexed_seconds,
+                    "result_size": _result_size(indexed_result),
+                },
+                "raw": {
+                    "seconds": raw_seconds,
+                    "result_size": _result_size(raw_result.get("matches", [])),
+                    "scanned_files": raw_result.get("scanned_files", 0),
+                },
+            }
+        )
+    comparative_seconds = round(time.perf_counter() - comparative_total_start, 3)
+
+    schema_results = []
+    schema_total_start = time.perf_counter()
+    for scenario in schema_scenarios:
+        start = time.perf_counter()
+        result = scenario["runner"]()
+        elapsed = round(time.perf_counter() - start, 3)
+        schema_results.append(
+            {
+                "name": scenario["name"],
+                "prompt": scenario["prompt"],
+                "seconds": elapsed,
+                "result_size": _result_size(result),
+            }
+        )
+    schema_benchmark_seconds = round(time.perf_counter() - schema_total_start, 3)
+
+    payload = {
+        "ok": True,
+        "project_root": str(root),
+        "project_name": root.name,
+        "scenario_set": scenario_set,
+        "iterations": iterations,
+        "sync": {
+            "memory_files": sync_result.get("memory_files", 0) if isinstance(sync_result, dict) else 0,
+            "sessions": sync_result.get("sessions", 0) if isinstance(sync_result, dict) else 0,
+            "code_files": code_files,
+            "modules": modules,
+            "schema_entities": schema_result.get("entities", 0) if isinstance(schema_result, dict) else 0,
+            "seconds": sync_seconds,
+        },
+        "classification": {
+            "prompt_count": prompt_count,
+            "total_classifications": total_classifications,
+            "seconds": classify_seconds,
+            "classifications_per_second": round(total_classifications / classify_seconds, 2) if classify_seconds > 0 else None,
+            "action_kind_counts": counts,
+            "per_language": per_language,
+        },
+        "retrieval": {
+            "scenario_count": len(retrieval_scenarios),
+            "seconds": retrieval_seconds,
+            "scenarios": retrieval_results,
+        },
+        "schema_benchmark": {
+            "scenario_count": len(schema_scenarios),
+            "seconds": schema_benchmark_seconds,
+            "scenarios": schema_results,
+        },
+        "comparative": {
+            "scenario_count": len(comparative_scenarios),
+            "seconds": comparative_seconds,
+            "scenarios": comparative_results,
+        },
+    }
+
+    if output_path:
+        _write_json_output(output_path, payload)
+
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print(f"Benchmark: {root.name}")
+    print(f"{'-' * 40}")
+    print(f"  Scenario set:    {scenario_set}")
+    print(f"  Sync:            {sync_seconds:.3f}s")
+    print(f"    Memory files:  {payload['sync']['memory_files']}")
+    print(f"    Sessions:      {payload['sync']['sessions']}")
+    print(f"    Code files:    {payload['sync']['code_files']}")
+    print(f"    Modules:       {payload['sync']['modules']}")
+    print(f"    Schema:        {payload['sync']['schema_entities']} entities")
+    print(f"  Classification:  {classify_seconds:.3f}s")
+    print(f"    Prompts:       {prompt_count} x {iterations} iterations")
+    print(f"    Throughput:    {payload['classification']['classifications_per_second']} classifications/s")
+    for action_kind, count in sorted(counts.items()):
+        print(f"    {action_kind}: {count}")
+    for language, info in sorted(per_language.items()):
+        print(f"    [{language}] prompts={info['prompt_count']} total={info['total_classifications']}")
+    print(f"  Retrieval:       {retrieval_seconds:.3f}s")
+    for scenario in retrieval_results:
+        print(f"    {scenario['name']}: {scenario['seconds']:.3f}s ({scenario['result_size']} results)")
+    print(f"  Schema bench:    {schema_benchmark_seconds:.3f}s")
+    if schema_results:
+        for scenario in schema_results:
+            print(f"    {scenario['name']}: {scenario['seconds']:.3f}s ({scenario['result_size']} results)")
+    else:
+        print("    no schema scenarios available for this project")
+    print(f"  Comparative:     {comparative_seconds:.3f}s")
+    for scenario in comparative_results:
+        print(
+            "    "
+            f"{scenario['name']}: indexed={scenario['indexed']['seconds']:.3f}s/{scenario['indexed']['result_size']} "
+            f"raw={scenario['raw']['seconds']:.3f}s/{scenario['raw']['result_size']} scanned={scenario['raw']['scanned_files']}"
+        )
+    if output_path:
+        print(f"  Output:          {Path(output_path).resolve()}")
     return 0
 
 
 def cmd_version(args: list[str]) -> int:
     """Show version."""
-    print("aidocs-mcp 1.1.0")
+    if _wants_json(args):
+        print(json.dumps({"ok": True, "package": "aidocs-mcp", "version": __version__}, indent=2))
+        return 0
+    print(f"aidocs-mcp {__version__}")
     return 0
 
 
@@ -243,6 +788,7 @@ COMMANDS = {
     "status": cmd_status,
     "config": cmd_config,
     "sync": cmd_sync,
+    "benchmark": cmd_benchmark,
     "version": cmd_version,
     "--version": cmd_version,
     "-v": cmd_version,

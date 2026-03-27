@@ -41,7 +41,68 @@ def test_sync_schema_extracts_csharp_models_and_sql_tables(tmp_path: Path) -> No
     assert any(item["entity_name"] == "QuoteDto" for item in entities)
     assert any(item["entity_name"] == "Quotes" for item in entities)
     assert any(field["field_name"] == "PreferredDoctorId" for field in quote["fields"])
+    preferred = next(field for field in quote["fields"] if field["field_name"] == "PreferredDoctorId")
+    assert "required" in preferred
+    assert "defaulted" in preferred
     assert any(field["entity_name"] in {"QuoteDto", "Quotes"} for field in fields)
+
+
+def test_schema_query_constructor_returns_record_params(tmp_path: Path) -> None:
+    store = SchemaIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Models").mkdir(parents=True, exist_ok=True)
+    (project_root / "Models" / "AppointmentRequest.cs").write_text(
+        "namespace DentalApp.Models;\n\n"
+        "public record CreateAppointmentRequest(string PatientId, DateTime StartsAt, string Notes);\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    from aidocs_mcp.code_index_store import CodeIndexStore
+    CodeIndexStore().sync_code_files(project_root)
+    result = store.get_constructor_params(project_root, "CreateAppointmentRequest")
+
+    assert result["matches"]
+    assert result["matches"][0]["params"] == ["string PatientId", "DateTime StartsAt", "string Notes"]
+
+
+def test_get_entity_properties_returns_lightweight_property_view(tmp_path: Path) -> None:
+    store = SchemaIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Models").mkdir(parents=True, exist_ok=True)
+    (project_root / "Models" / "QuoteDto.cs").write_text(
+        "public class QuoteDto\n"
+        "{\n"
+        "    public string PreferredDoctorId { get; set; } = string.Empty;\n"
+        "    public decimal LineTotal { get; set; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_schema(project_root)
+    result = store.get_entity_properties(project_root, "QuoteDto")
+
+    assert result["entity_name"] == "QuoteDto"
+    assert any(prop["field_name"] == "PreferredDoctorId" for prop in result["properties"])
+
+
+def test_get_schema_entities_batch_returns_multiple_exact_entities(tmp_path: Path) -> None:
+    store = SchemaIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Models").mkdir(parents=True, exist_ok=True)
+    (project_root / "Models" / "Document.cs").write_text(
+        "public class Document { public string Number { get; set; } = string.Empty; }\n"
+        "public class DocumentItem { public string Description { get; set; } = string.Empty; }\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_schema(project_root)
+    result = store.get_schema_entities_batch(project_root, ["Document", "DocumentItem"])
+
+    names = [item["entity_name"] for item in result["entities"]]
+    assert names == ["Document", "DocumentItem"]
 
 
 def test_trace_entity_flow_combines_schema_and_code_matches(tmp_path: Path) -> None:

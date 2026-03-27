@@ -234,10 +234,11 @@ class SchemaIndexStore:
                 "SELECT entity_name, field_name, field_type, field_kind, source_type, path, line_number FROM schema_fields WHERE entity_name = ? ORDER BY path, line_number, field_name",
                 (entity_name,),
             ).fetchall()
+        enriched_fields = [self._enrich_field_metadata(dict(row)) for row in fields]
         return {
             "entity_name": entity_name,
             "entities": [dict(row) for row in entities],
-            "fields": [dict(row) for row in fields],
+            "fields": enriched_fields,
         }
 
     def find_schema_field(self, project_root: Path, field_name: str, limit: int = 50) -> list[dict[str, object]]:
@@ -247,7 +248,45 @@ class SchemaIndexStore:
                 "SELECT entity_name, field_name, field_type, field_kind, source_type, path, line_number FROM schema_fields WHERE field_name LIKE ? ORDER BY entity_name, path LIMIT ?",
                 (f"%{field_name.strip()}%", limit),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [self._enrich_field_metadata(dict(row)) for row in rows]
+
+    def get_constructor_params(self, project_root: Path, entity_name: str, include_related: bool = False) -> dict[str, object]:
+        try:
+            from .code_index_store import CodeIndexStore
+
+            code = CodeIndexStore()
+            return code.get_constructor_params(project_root, entity_name, include_related=include_related)
+        except Exception:
+            return {"type": entity_name, "matches": []}
+
+    def get_entity_properties(self, project_root: Path, entity_name: str) -> dict[str, object]:
+        result = self.get_schema_entity(project_root, entity_name)
+        properties = [
+            {
+                "field_name": field.get("field_name"),
+                "field_type": field.get("field_type"),
+                "required": field.get("required"),
+                "optional": field.get("optional"),
+                "defaulted": field.get("defaulted"),
+                "computed": field.get("computed"),
+            }
+            for field in result.get("fields", [])
+        ]
+        return {
+            "entity_name": entity_name,
+            "properties": properties,
+        }
+
+    def get_schema_entities_batch(self, project_root: Path, entity_names: list[str]) -> dict[str, object]:
+        items = []
+        for name in entity_names:
+            entity_name = name.strip()
+            if not entity_name:
+                continue
+            items.append(self.get_schema_entity(project_root, entity_name))
+        return {
+            "entities": items,
+        }
 
     def trace_entity_flow(self, project_root: Path, entity_name: str, limit: int = 50) -> dict[str, object]:
         self.init_db(project_root)
@@ -294,6 +333,17 @@ class SchemaIndexStore:
             "fields": fields,
             "code_matches": code_matches,
         }
+
+    def _enrich_field_metadata(self, field: dict[str, object]) -> dict[str, object]:
+        field_name = str(field.get("field_name") or "")
+        field_kind = str(field.get("field_kind") or "")
+        field_type = str(field.get("field_type") or "")
+
+        field["required"] = field_name.lower() == "id" or field_kind in {"relation", "enum_field"}
+        field["optional"] = "?" in field_type or field_type.endswith("[]")
+        field["defaulted"] = field_name.lower() in {"id", "createdat", "updatedat", "status"}
+        field["computed"] = field_name.lower() in {"linetotal", "total", "subtotal", "amountdue"}
+        return field
 
     def trace_relationship_path(self, project_root: Path, source_entity: str, target_entity: str, limit: int = 20) -> dict[str, object]:
         self.init_db(project_root)

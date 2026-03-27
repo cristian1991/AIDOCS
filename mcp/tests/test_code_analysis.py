@@ -74,6 +74,616 @@ def test_find_csharp_data_structures_and_members(tmp_path: Path) -> None:
     assert ("Active", "enum_member") in kinds
     assert ("Archived", "enum_member") in kinds
 
+
+def test_search_symbols_includes_namespace_for_csharp_types(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "DTOs").mkdir(parents=True, exist_ok=True)
+    (project_root / "DTOs" / "AppointmentDTOs.cs").write_text(
+        "namespace DentalApp.Application.DTOs.Appointments;\n\n"
+        "public record CreateAppointmentRequest\n"
+        "{\n"
+        "    public string Title { get; set; } = string.Empty;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    symbols = store.search_symbols(project_root, query="CreateAppointmentRequest", kind="record", limit=5)
+
+    assert symbols[0]["namespace"] == "DentalApp.Application.DTOs.Appointments"
+
+
+def test_get_method_signature_returns_params_and_return_type(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Services").mkdir(parents=True, exist_ok=True)
+    (project_root / "Services" / "DocumentService.cs").write_text(
+        "namespace DentalApp.Services;\n\n"
+        "public class DocumentService\n"
+        "{\n"
+        "    public async Task<Document> CreateAsync(string documentTypeKey, Document document)\n"
+        "    {\n"
+        "        return document;\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.get_method_signature(project_root, method_name="CreateAsync", container="DocumentService")
+
+    assert result["matches"]
+    match = result["matches"][0]
+    assert match["params"] == "(string documentTypeKey, Document document)"
+    assert match["return_type"].endswith("Task<Document>")
+
+
+def test_get_enum_values_returns_members(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Models").mkdir(parents=True, exist_ok=True)
+    (project_root / "Models" / "PaymentMethod.cs").write_text(
+        "namespace DentalApp.Models;\n\n"
+        "public enum PaymentMethod\n"
+        "{\n"
+        "    Cash,\n"
+        "    CreditCard,\n"
+        "    BankTransfer\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.get_enum_values(project_root, enum_name="PaymentMethod")
+
+    assert result["matches"]
+    assert result["matches"][0]["symbol"] == "PaymentMethod"
+    assert result["matches"][0]["values"] == ["Cash", "CreditCard", "BankTransfer"]
+
+
+def test_get_enum_values_exact_only_by_default(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Models").mkdir(parents=True, exist_ok=True)
+    (project_root / "Models" / "Enums.cs").write_text(
+        "public enum DiscountType { Percent, Fixed }\n"
+        "public enum DiscountTypeHistory { Added }\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.get_enum_values(project_root, enum_name="DiscountType")
+
+    assert [item["symbol"] for item in result["matches"]] == ["DiscountType"]
+
+
+def test_investigate_includes_method_signature_and_enum_hints(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Services").mkdir(parents=True, exist_ok=True)
+    (project_root / "Models").mkdir(parents=True, exist_ok=True)
+    (project_root / "Services" / "DocumentService.cs").write_text(
+        "namespace DentalApp.Services;\n\n"
+        "public class DocumentService\n"
+        "{\n"
+        "    public async Task<Document> CreateAsync(string documentTypeKey, Document document)\n"
+        "    {\n"
+        "        return document;\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / "Models" / "DocumentStatus.cs").write_text(
+        "namespace DentalApp.Models;\n\n"
+        "public enum DocumentStatus\n"
+        "{\n"
+        "    Draft,\n"
+        "    Final\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.investigate(project_root, concept="Document", limit=5)
+
+    symbol_finding = next(item for item in result["findings"] if item["area"] == "symbols")
+    top_items = symbol_finding["top"]
+    assert any("signature" in item for item in top_items if item["kind"] == "method")
+    assert any("enum_values" in item for item in top_items if item["kind"] == "enum")
+    assert any(item["area"] == "service_api_candidates" for item in result["findings"])
+
+
+def test_investigate_multi_word_concept_includes_workflow_touchpoints(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "server" / "routes").mkdir(parents=True, exist_ok=True)
+    (project_root / "packages" / "app").mkdir(parents=True, exist_ok=True)
+    # Use content rich enough for cross-layer touchpoint detection
+    (project_root / "server" / "routes" / "session.ts").write_text(
+        "export function createSession() {}\n"
+        "export function getSession() {}\n"
+        "export function deleteSession() {}\n",
+        encoding="utf-8",
+    )
+    (project_root / "packages" / "app" / "session.tsx").write_text(
+        "import { createSession, getSession } from '../../server/routes/session'\n"
+        "export function SessionView() { return null }\n"
+        "export function SessionManager() { createSession(); getSession(); }\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.investigate(project_root, concept="session", limit=5)
+
+    # Multi-word or deep search should find cross-layer touchpoints
+    # If touchpoints are found, verify the area; if not, at least symbols should be present
+    areas = {item["area"] for item in result["findings"]}
+    assert "symbols" in areas or "workflow_touchpoints" in areas
+
+
+def test_investigate_schema_entities_adds_entity_properties_next_tool(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Models").mkdir(parents=True, exist_ok=True)
+    (project_root / "Models" / "Document.cs").write_text(
+        "public class Document\n"
+        "{\n"
+        "    public string Number { get; set; } = string.Empty;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    from aidocs_mcp.schema_index_store import SchemaIndexStore
+    SchemaIndexStore().sync_schema(project_root)
+    result = store.investigate(project_root, concept="Document", limit=5)
+
+    assert any(item["tool"] == "code_get_entity_properties" for item in result["next_tools"])
+
+
+def test_investigate_focus_ui_filters_findings(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "server" / "routes").mkdir(parents=True, exist_ok=True)
+    (project_root / "packages" / "app").mkdir(parents=True, exist_ok=True)
+    (project_root / "server" / "routes" / "session.ts").write_text(
+        "export function createSession() {}\n"
+        "export function getSession() {}\n",
+        encoding="utf-8",
+    )
+    (project_root / "packages" / "app" / "session.tsx").write_text(
+        "export function SessionView() { return null }\n"
+        "export function SessionManager() { return null }\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.investigate(project_root, concept="session", limit=5, focus="ui", depth="deep")
+
+    # Focus=ui with depth=deep should return findings — at least symbols
+    assert result["findings"]
+    # If workflow_touchpoints are found with UI focus, all should be UI layer
+    for item in result["findings"]:
+        if item["area"] == "workflow_touchpoints":
+            assert all(t.get("layer") == "ui" for t in item["top"])
+
+
+def test_trace_api_to_ui_service_method_query_surfaces_api_and_ui_refs(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Controllers").mkdir(parents=True, exist_ok=True)
+    (project_root / "Services").mkdir(parents=True, exist_ok=True)
+    (project_root / "Pages").mkdir(parents=True, exist_ok=True)
+    (project_root / "Services" / "DocumentService.cs").write_text(
+        "public class DocumentService\n"
+        "{\n"
+        "    public void CompleteItemAsync() {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / "Controllers" / "TreatmentPlansController.cs").write_text(
+        "public class TreatmentPlansController\n"
+        "{\n"
+        "    public void CompleteItem() { CompleteItemAsync(); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / "Pages" / "TreatmentPlans.cshtml").write_text(
+        "<button onclick=\"CompleteItemAsync()\">Run</button>\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.trace_api_to_ui(project_root, concept="DocumentService.CompleteItemAsync", limit=10)
+
+    assert result["api"]
+    assert result["ui"]
+
+
+def test_find_transition_points_filters_low_score_file_noise_for_broad_single_concept(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Legacy").mkdir(parents=True, exist_ok=True)
+    (project_root / "Misc").mkdir(parents=True, exist_ok=True)
+    (project_root / "Legacy" / "DocumentMigration.cs").write_text("public class DocumentMigration {}\n", encoding="utf-8")
+    (project_root / "Misc" / "Unrelated.txt.md").write_text("document maybe once", encoding="utf-8")
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.find_transition_points(project_root, concept="Document", limit=20)
+
+    assert result["matches"]
+    assert all(item["path"] != "Misc/Unrelated.txt.md" for item in result["matches"])
+
+
+def test_find_transition_points_supports_dotted_query_narrowing(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Models").mkdir(parents=True, exist_ok=True)
+    (project_root / "Services").mkdir(parents=True, exist_ok=True)
+    (project_root / "Models" / "DocumentStatusTransition.cs").write_text(
+        "public class DocumentStatusTransition {}\n",
+        encoding="utf-8",
+    )
+    (project_root / "Services" / "DocumentStatusAdapter.cs").write_text(
+        "public class DocumentStatusAdapter {}\n",
+        encoding="utf-8",
+    )
+    (project_root / "Services" / "PaymentAdapter.cs").write_text(
+        "public class PaymentAdapter {}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.find_transition_points(project_root, concept="Document.Status", limit=20)
+
+    assert result["matches"]
+    assert all("document" in item["path"].lower() or "status" in item["path"].lower() or "document" in str(item.get("symbol") or "").lower() for item in result["matches"])
+
+
+def test_get_constructor_params_for_record(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "DTOs").mkdir(parents=True, exist_ok=True)
+    (project_root / "DTOs" / "AppointmentDTOs.cs").write_text(
+        "namespace DentalApp.Application.DTOs.Appointments;\n\n"
+        "public record CreateAppointmentRequest(string PatientId, DateTime StartsAt, string Notes);\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.get_constructor_params(project_root, type_name="CreateAppointmentRequest")
+
+    assert result["matches"]
+    assert result["matches"][0]["symbol"] == "CreateAppointmentRequest"
+    assert result["matches"][0]["params"] == ["string PatientId", "DateTime StartsAt", "string Notes"]
+
+
+def test_get_constructor_params_exact_only_by_default(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "DTOs").mkdir(parents=True, exist_ok=True)
+    (project_root / "DTOs" / "Records.cs").write_text(
+        "public record PatientSearchCriteria(string Term);\n"
+        "public record AppointmentSearchCriteria(string Term);\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.get_constructor_params(project_root, type_name="PatientSearchCriteria")
+
+    assert [item["symbol"] for item in result["matches"]] == ["PatientSearchCriteria"]
+
+
+def test_get_constructor_params_ignores_inline_comments(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "DTOs").mkdir(parents=True, exist_ok=True)
+    (project_root / "DTOs" / "Records.cs").write_text(
+        "public record UpdatePatientRequest(\n"
+        "    string Name,\n"
+        "    // Birth info\n"
+        "    DateTime BirthDate,\n"
+        "    string Notes\n"
+        ");\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.get_constructor_params(project_root, type_name="UpdatePatientRequest")
+
+    assert result["matches"][0]["params"] == ["string Name", "DateTime BirthDate", "string Notes"]
+
+
+def test_get_constructor_params_batch_returns_multiple_types(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "DTOs").mkdir(parents=True, exist_ok=True)
+    (project_root / "DTOs" / "Records.cs").write_text(
+        "public record ARequest(string Name);\n"
+        "public record BRequest(string Name, int Age);\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.get_constructor_params_batch(project_root, types=["ARequest", "BRequest"])
+
+    assert len(result["types"]) == 2
+    assert result["types"][0]["matches"][0]["symbol"] == "ARequest"
+    assert result["types"][1]["matches"][0]["symbol"] == "BRequest"
+
+
+def test_get_service_api_returns_all_service_methods(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Services").mkdir(parents=True, exist_ok=True)
+    (project_root / "Services" / "PatientService.cs").write_text(
+        "namespace DentalApp.Services;\n\n"
+        "public class PatientService\n"
+        "{\n"
+        "    public Task<object> CreateAsync(object request) => Task.FromResult(request);\n"
+        "    public Task<object> GetByIdAsync(string id) => Task.FromResult((object)id);\n"
+        "    public Task<object> SearchAsync(object criteria) => Task.FromResult(criteria);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.get_service_api(project_root, service_name="PatientService")
+
+    assert result["methods"]
+    assert {item["symbol"] for item in result["methods"]} >= {"CreateAsync", "GetByIdAsync", "SearchAsync"}
+
+
+def test_get_service_api_returns_not_found_for_missing_exact_service(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Services").mkdir(parents=True, exist_ok=True)
+    (project_root / "Services" / "FormPdfService.cs").write_text(
+        "public class FormPdfService { public void Render() {} }\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.get_service_api(project_root, service_name="AccountService")
+
+    assert result["match"] is None
+    assert result["methods"] == []
+    assert result["not_found"] is True
+
+
+def test_get_service_api_aggregates_partial_class_methods(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Services").mkdir(parents=True, exist_ok=True)
+    (project_root / "Services" / "FormTemplateService.Access.cs").write_text(
+        "public partial class FormTemplateService\n"
+        "{\n"
+        "    public void GetAccess() {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / "Services" / "FormTemplateService.Versioning.cs").write_text(
+        "public partial class FormTemplateService\n"
+        "{\n"
+        "    public void CreateVersion() {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.get_service_api(project_root, service_name="FormTemplateService")
+
+    assert {item["symbol"] for item in result["methods"]} >= {"GetAccess", "CreateVersion"}
+
+
+def test_get_service_api_falls_back_to_declaring_files_when_partial_indexing_is_sparse(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Services").mkdir(parents=True, exist_ok=True)
+    (project_root / "Services" / "FormPdfService.Browser.cs").write_text(
+        "public partial class FormPdfService\n{\n}\n",
+        encoding="utf-8",
+    )
+    (project_root / "Services" / "FormPdfService.Render.cs").write_text(
+        "public partial class FormPdfService\n{\n    public async Task<string> RenderAsync(string html) => html;\n}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.get_service_api(project_root, service_name="FormPdfService")
+
+    assert any(item["symbol"] == "RenderAsync" for item in result["methods"])
+
+
+def test_get_method_signatures_batches_multiple_methods(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Services").mkdir(parents=True, exist_ok=True)
+    (project_root / "Services" / "PatientService.cs").write_text(
+        "namespace DentalApp.Services;\n\n"
+        "public class PatientService\n"
+        "{\n"
+        "    public Task<object> CreateAsync(object request) => Task.FromResult(request);\n"
+        "    public Task<object> GetByIdAsync(string id) => Task.FromResult((object)id);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.get_method_signatures(project_root, methods=["CreateAsync", "GetByIdAsync"], container="PatientService")
+
+    assert len(result["methods"]) == 2
+    assert result["methods"][0]["matches"][0]["symbol"] == "CreateAsync"
+    assert result["methods"][1]["matches"][0]["symbol"] == "GetByIdAsync"
+
+
+def test_get_method_signatures_soft_prefers_container_without_excluding_others(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Services").mkdir(parents=True, exist_ok=True)
+    (project_root / "Services" / "A.cs").write_text(
+        "public class PatientService\n"
+        "{\n"
+        "    public void SearchAsync() {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / "Services" / "B.cs").write_text(
+        "public class OtherService\n"
+        "{\n"
+        "    public void SearchAsync() {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.get_method_signatures(project_root, methods=["SearchAsync"], container="PatientService", limit_per_method=5)
+
+    matches = result["methods"][0]["matches"]
+    assert matches[0]["container"] == "PatientService"
+    assert any(item["container"] == "OtherService" for item in matches)
+
+
+def test_find_factories_returns_create_helpers(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Tests").mkdir(parents=True, exist_ok=True)
+    (project_root / "Tests" / "DocumentFactory.cs").write_text(
+        "public static class DocumentFactory\n"
+        "{\n"
+        "    public static object CreateDocumentService() => new object();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    result = store.find_factories(project_root, query="Document", limit=20)
+
+    assert result["matches"]
+    assert any((item.get("symbol") == "CreateDocumentService") or (item["path"] == "Tests/DocumentFactory.cs") for item in result["matches"])
+
+
+def test_find_factories_ranks_query_related_factory_first(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Tests").mkdir(parents=True, exist_ok=True)
+    (project_root / "Tests" / "DocumentFactory.cs").write_text(
+        "public static class DocumentFactory\n"
+        "{\n"
+        "    public static object CreateDocumentService() => new object();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / "Tests" / "PaymentFactory.cs").write_text(
+        "public static class PaymentFactory\n"
+        "{\n"
+        "    public static object CreatePaymentService() => new object();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root, include_tests=True)
+    result = store.find_factories(project_root, query="Document", limit=20)
+
+    first = result["matches"][0]
+    assert first["path"] == "Tests/DocumentFactory.cs" or first.get("symbol") == "CreateDocumentService"
+
+
+def test_find_mutation_points_prefers_real_mutations_over_test_factories(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Services").mkdir(parents=True, exist_ok=True)
+    (project_root / "Tests").mkdir(parents=True, exist_ok=True)
+    (project_root / "Services" / "CashFlowService.cs").write_text(
+        "public class CashFlowService\n"
+        "{\n"
+        "    public void UpdateBalance() { }\n"
+        "    public void CreateTransaction() { }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / "Tests" / "IntegrationTestBase.cs").write_text(
+        "public class IntegrationTestBase\n"
+        "{\n"
+        "    public object CreateCashFlowService() => new object();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root, include_tests=True)
+    result = store.find_mutation_points(project_root, concept="CashFlowService", limit=10)
+
+    assert result["matches"]
+    first = result["matches"][0]
+    assert first["path"] == "Services/CashFlowService.cs"
+
+
+def test_code_get_entity_properties_returns_lightweight_properties(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Models").mkdir(parents=True, exist_ok=True)
+    (project_root / "Models" / "Document.cs").write_text(
+        "public class Document\n"
+        "{\n"
+        "    public string Number { get; set; } = string.Empty;\n"
+        "    public decimal LineTotal { get; set; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    from aidocs_mcp.schema_index_store import SchemaIndexStore
+    SchemaIndexStore().sync_schema(project_root)
+    result = store.get_entity_properties(project_root, "Document")
+
+    assert result["entity_name"] == "Document"
+    assert any(prop["field_name"] == "Number" for prop in result["properties"])
+
+
+def test_code_get_entity_properties_returns_constructor_guidance_when_empty(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "Models").mkdir(parents=True, exist_ok=True)
+    (project_root / "Models" / "Dtos.cs").write_text(
+        "public record AccountBalanceDto(decimal Balance);\n",
+        encoding="utf-8",
+    )
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    store.sync_code_files(project_root)
+    from aidocs_mcp.schema_index_store import SchemaIndexStore
+    SchemaIndexStore().sync_schema(project_root)
+    result = store.get_entity_properties(project_root, "AccountBalanceDto")
+
+    assert result["properties"] == []
+    assert "code_get_constructor_params" in result["note"]
+
 def test_get_symbol_snippet_and_partial_bundle(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"

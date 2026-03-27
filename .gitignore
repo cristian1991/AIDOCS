@@ -20,4 +20,8 @@ __pycache__/
 
 # Derived indexes (rebuildable)
 core/.MEMORY/.index/
+
+# Build artifacts
+mcp/build/
+mcp/dist/
 .mcp.json

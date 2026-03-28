@@ -1199,11 +1199,30 @@ class CodeIndexStore:
                 if key not in seen:
                     seen.add(key)
                     methods.append(item)
-        return {
-            "service": service_name,
-            "match": target,
-            "methods": methods,
-        }
+        # Deduplicate: hoist common container/namespace to top level
+        containers = {m.get("container") for m in methods if m.get("container")}
+        namespaces = {m.get("namespace") for m in methods if m.get("namespace")}
+        if len(containers) == 1:
+            common_container = containers.pop()
+            for m in methods:
+                m.pop("container", None)
+        else:
+            common_container = None
+        if len(namespaces) == 1:
+            common_namespace = namespaces.pop()
+            for m in methods:
+                m.pop("namespace", None)
+        else:
+            common_namespace = None
+
+        result: dict[str, object] = {"service": service_name, "match": target}
+        if common_container:
+            result["container"] = common_container
+        if common_namespace:
+            result["namespace"] = common_namespace
+        result["method_count"] = len(methods)
+        result["methods"] = methods
+        return result
 
     def get_entity_properties(self, project_root: Path, entity_name: str) -> dict[str, object]:
         try:
@@ -4108,12 +4127,19 @@ class CodeIndexStore:
             for item in outline:
                 if item.get("is_partial") and item["symbol"] not in seen:
                     seen.add(item["symbol"])
-                    partial_groups.append(
+                    # Include partial file paths and outlines but NOT full snippets —
+                    # those are 20-35KB each and destroy token budgets.
+                    # Agent can use code_get_lines if it needs the actual code.
+                    raw_bundle = self.get_partial_bundle(project_root, symbol=str(item["symbol"]))
+                    slim_bundle = [
                         {
-                            "symbol": item["symbol"],
-                            "bundle": self.get_partial_bundle(project_root, symbol=str(item["symbol"])),
+                            "path": b["path"],
+                            "line_count": b.get("line_count", 0),
+                            **({"outline": b["outline"]} if b.get("outline") else {}),
                         }
-                    )
+                        for b in raw_bundle if isinstance(b, dict)
+                    ]
+                    partial_groups.append({"symbol": item["symbol"], "files": slim_bundle})
         if row["language"] in {"javascript", "typescript", "jsx", "tsx"}:
             initializers = self.find_initializers(project_root, path=path)
 

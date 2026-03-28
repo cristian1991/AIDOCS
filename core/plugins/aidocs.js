@@ -519,6 +519,37 @@ async function AIDOCSPlugin(input) {
         type: "text",
         text: `\n<tool-directive action="${actionKind}">\n${directive}\n</tool-directive>`,
       })
+
+      // Auto-continuation: when user sends short/confirmatory prompt and a plan has incomplete steps,
+      // inject the next step as context so the agent continues working instead of stopping.
+      const promptText = extractPromptText(last.parts)
+      const trimmed = promptText.replace(/<tool-directive[^>]*>[\s\S]*?<\/tool-directive>/g, "").trim()
+      const isContinuation = trimmed.length < 40 && /^(ok|continue|next|go|yes|yep|yeah|sure|do it|keep going|proceed|all of them|perfect|great|nice|good|👍|✅|🚀)/i.test(trimmed)
+
+      if (isContinuation && state.managed && state.sessionID) {
+        try {
+          const planPath = path.join(projectRoot, ".MEMORY", "sessions", state.sessionID, "PLAN.md")
+          if (fsSync.existsSync(planPath)) {
+            const planText = fsSync.readFileSync(planPath, "utf8")
+            // Find incomplete steps (lines starting with - [ ] )
+            const incompleteSteps = planText.split(/\r?\n/)
+              .filter((line) => /^\s*-\s*\[\s*\]/.test(line))
+              .map((line) => line.replace(/^\s*-\s*\[\s*\]\s*/, "").trim())
+              .filter(Boolean)
+
+            if (incompleteSteps.length > 0) {
+              const nextStep = incompleteSteps[0]
+              const remaining = incompleteSteps.length
+              last.parts.push({
+                type: "text",
+                text: `\n<plan-continuation>\nSession plan has ${remaining} incomplete step(s). Next: ${nextStep}\nContinue implementing. Do not stop to ask — the user confirmed.\n</plan-continuation>`,
+              })
+            }
+          }
+        } catch {
+          // Plan read failed — skip continuation
+        }
+      }
     },
 
     "command.execute.before": async ({ command, sessionID }, output) => {

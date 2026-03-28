@@ -146,27 +146,9 @@ class ClaudeHookHandler:
         tool_name = str(payload.get("tool_name") or "").strip()
         tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
 
-        # ── Intent guard: verify tool call traces to user prompt ──
-        user_prompt = _last_user_prompt.get(str(project_root.resolve()), "")
-        guard_result = check_intent(tool_name, user_prompt, tool_input)
-
-        if not guard_result.allowed:
-            logger.info(
-                "Intent guard blocked %s: %s (prompt: %.100s)",
-                tool_name, guard_result.reason, user_prompt
-            )
-            if guard_result.category == "confirmation":
-                return {
-                    "decision": "block",
-                    "reason": guard_result.reason,
-                }
-            # intent_required: don't hard-block, but warn strongly
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "additionalContext": f"INTENT WARNING: {guard_result.reason}",
-                }
-            }
+        # ── Intent guard: disabled for now (too aggressive, blocks legitimate work) ──
+        # TODO: re-enable once prompt persistence across hook subprocesses is fixed
+        # See handoff: hook subprocess prompt persistence issue
 
         # ── MCP alternative nudge (only for raw tools) ──
         mcp_nudge = self._suggest_mcp_alternative(tool_name, tool_input)

@@ -89,6 +89,10 @@ AGENT_DIRECTIVE_STYLE: str = str(_agent.get("directive_style", "short"))
 AGENT_INJECT_MESSAGE_DIRECTIVES: bool = bool(_agent.get("inject_message_directives", True))
 AGENT_INJECT_RULES_ON_BOOTSTRAP: bool = _agent.get("inject_rules_on_bootstrap", True) is not False
 
+# Dev mode
+_dev = _raw.get("dev", {})
+DEV_MODE: bool = _dev.get("dev_mode", False) is True
+
 # Code quality settings
 _code_quality = _raw.get("code_quality", {})
 CODE_QUALITY_COMMENT_ENFORCEMENT: str = str(_code_quality.get("comment_enforcement", "advisory"))

@@ -47,6 +47,12 @@ inject_message_directives = true
 # but the agent does not follow project workflow, standards, or security directives.
 inject_rules_on_bootstrap = true
 
+[dev]
+# Dev mode: allows agents to edit AIDOCS MCP server source via code_edit_lines.
+# When false (default), code_edit_lines refuses to modify files inside aidocs_mcp/.
+# Config files (aidocs.toml, aidocs-plugin.json) are NEVER editable by agents regardless of this setting.
+dev_mode = false
+
 [code_quality]
 # Enforce comment standards from coding-standards.aidocs during agent edits.
 # "strict": agent must follow all comment rules (WHY not WHAT, no vague qualifiers)

@@ -103,12 +103,14 @@ def _validate_project_root(project_root: Path, *, write: bool = False) -> None:
                 f"File operations are restricted to project directories."
             )
 
-    # Block WRITING to the MCP server itself (reads are allowed)
+    # Block WRITING to the MCP server itself unless dev_mode is enabled (reads always allowed)
     if write and (lower_str == _SELF_DIR or _SELF_DIR.startswith(lower_str + "/")):
-        raise ValueError(
-            f"Refusing to edit the AIDOCS MCP server directory. "
-            f"Self-editing is not allowed in production mode."
-        )
+        from .config import DEV_MODE
+        if not DEV_MODE:
+            raise ValueError(
+                f"Refusing to edit the AIDOCS MCP server directory. "
+                f"Self-editing requires dev_mode=true in aidocs.toml [dev] section."
+            )
 
     # Must be an existing directory
     if not resolved.is_dir():
@@ -161,14 +163,23 @@ def _resolve_path(project_root: Path, relative_path: str, *, write: bool = False
     except ValueError:
         raise ValueError(f"Path escapes project root: {relative_path}")
 
-    # Security: prevent WRITING to the MCP server's own source files (reads allowed)
+    # Security: prevent WRITING to MCP server source unless dev_mode is on (reads always allowed)
     if write:
         abs_lower = str(abs_path).replace("\\", "/").lower()
-        if abs_lower.startswith(_SELF_DIR):
+        # Config files are NEVER editable by agents — absolute boundary
+        config_names = {"aidocs.toml", "aidocs-plugin.json"}
+        if abs_path.name.lower() in config_names:
             raise ValueError(
-                f"Refusing to edit AIDOCS MCP server source: {relative_path}. "
-                f"Self-editing is not allowed."
+                f"Config files are never editable by agents: {relative_path}. "
+                f"Edit manually or via the installer."
             )
+        if abs_lower.startswith(_SELF_DIR):
+            from .config import DEV_MODE
+            if not DEV_MODE:
+                raise ValueError(
+                    f"Refusing to edit AIDOCS MCP server source: {relative_path}. "
+                    f"Set dev_mode=true in aidocs.toml [dev] to enable."
+                )
 
     return abs_path
 

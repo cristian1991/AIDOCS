@@ -139,6 +139,9 @@ class ClaudeHookHandler:
             }
         }
 
+    # Tools that are system/infrastructure operations — skip nudges for these
+    _SYSTEM_TOOLS: set[str] = {"compact", "todowrite", "todoread", "agent", "skill", "toolsearch"}
+
     def _handle_pre_tool_use(self, project_root: Path, payload: dict[str, object]) -> dict[str, object] | None:
         managed = self.runtime.hub.managed_mode.get_mode(project_root)
         if not managed.get("active"):
@@ -146,6 +149,16 @@ class ClaudeHookHandler:
 
         tool_name = str(payload.get("tool_name") or "").strip()
         tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+
+        # Skip nudges for system tools (compact, todowrite, etc.)
+        if tool_name.lower() in self._SYSTEM_TOOLS:
+            return None
+
+        # Skip nudges when editing AIDOCS source itself (dev mode) —
+        # the agent needs raw tools to modify the tool infrastructure
+        file_path = str(tool_input.get("file_path") or tool_input.get("path") or "")
+        if "aidocs_mcp" in file_path or "core/plugins" in file_path:
+            return None
 
         # Intent guard disabled: each hook event spawns a separate process, so
         # _last_user_prompt is empty in PreToolUse calls. Re-enable when prompt

@@ -1,6 +1,6 @@
 [project]
 name = "aidocs-mcp"
-version = "1.2.1"
+version = "1.3.0"
 description = "Portable AI coding-agent toolkit — MCP server with indexed code retrieval, session management, and persistent memory"
 readme = "README.md"
 license = {text = "Apache-2.0"}

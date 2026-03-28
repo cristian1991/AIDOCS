@@ -1335,6 +1335,102 @@ class RuntimeService:
             ),
         }
 
+    def plan_preflight(
+        self,
+        project_root: Path,
+        session_id: str,
+    ) -> dict[str, object]:
+        """Analyze a session plan and surface all decision points BEFORE implementation.
+
+        Reads PLAN.md, extracts incomplete steps, runs code_investigate on each,
+        and returns: what exists, what's missing, what decisions the agent must make
+        before starting. The agent resolves decisions once upfront, then implements
+        without mid-plan stops.
+        """
+        plan = self.hub.sessions.read_plan(project_root, session_id)
+        if not plan or not plan.sections:
+            return {"session_id": session_id, "error": "No plan found for this session."}
+
+        # Extract incomplete steps from all plan sections
+        steps: list[str] = []
+        for section_name, lines in plan.sections.items():
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("- [ ]"):
+                    step_text = stripped[5:].strip()
+                    if step_text:
+                        steps.append(step_text)
+
+        if not steps:
+            return {"session_id": session_id, "steps": [], "message": "All plan steps are complete."}
+
+        # Investigate each step — find what exists, what's missing
+        step_analysis: list[dict[str, object]] = []
+        for step_text in steps:
+            # Extract key concepts from the step text (first 3 significant words)
+            words = [w for w in step_text.split() if len(w) > 3 and w[0].isalpha()]
+            concept = " ".join(words[:3]) if words else step_text[:40]
+
+            investigation = self.hub.code.investigate(project_root, concept, limit=3)
+            findings = investigation.get("findings", [])
+            next_tools = investigation.get("next_tools", [])
+
+            # Classify: does infrastructure exist or is this greenfield?
+            has_symbols = any(f.get("area") == "symbols" for f in findings)
+            has_schema = any(f.get("area") in ("schema_entities", "schema_fields") for f in findings)
+            has_files = any(f.get("area") == "files" for f in findings)
+
+            if has_symbols or has_schema:
+                status = "extend"  # modify existing code
+            elif has_files:
+                status = "integrate"  # wire into existing structure
+            else:
+                status = "create"  # greenfield, needs decisions
+
+            decisions: list[str] = []
+            if status == "create":
+                decisions.append(f"No existing code found for '{concept}' — decide: where to create, which patterns to follow")
+            if has_schema and not has_symbols:
+                decisions.append(f"Schema exists for '{concept}' but no service/controller code — decide: service layer architecture")
+            if not has_schema and has_symbols:
+                decisions.append(f"Code exists for '{concept}' but no schema — decide: is DB/model layer needed?")
+
+            step_analysis.append({
+                "step": step_text,
+                "status": status,
+                "concept": concept,
+                "existing": investigation.get("summary", ""),
+                **({"decisions": decisions} if decisions else {}),
+                **({"next_tools": next_tools[:2]} if next_tools else {}),
+            })
+
+        # Summarize decision points across all steps
+        all_decisions = []
+        for sa in step_analysis:
+            for d in sa.get("decisions", []):
+                all_decisions.append(d)
+
+        create_steps = [sa for sa in step_analysis if sa["status"] == "create"]
+        extend_steps = [sa for sa in step_analysis if sa["status"] == "extend"]
+        integrate_steps = [sa for sa in step_analysis if sa["status"] == "integrate"]
+
+        return {
+            "session_id": session_id,
+            "total_steps": len(steps),
+            "steps": step_analysis,
+            "summary": {
+                "create": len(create_steps),
+                "extend": len(extend_steps),
+                "integrate": len(integrate_steps),
+                "decisions_needed": len(all_decisions),
+            },
+            **({"decisions": all_decisions} if all_decisions else {}),
+            "recommended_order": (
+                "Resolve all decisions first, then implement 'extend' steps (safest), "
+                "then 'integrate' steps, then 'create' steps (most risk)."
+            ),
+        }
+
     def task_begin(
         self,
         project_root: Path,

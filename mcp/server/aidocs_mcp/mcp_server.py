@@ -685,6 +685,24 @@ def create_server() -> Any:
         )
 
     @server.tool()
+    @timed_sync
+    def plan_preflight(
+        project_root: str,
+        session_id: str,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Analyze a session plan BEFORE implementation. Surfaces what exists, what's missing,
+        and what decisions must be made upfront — so the agent can resolve everything once
+        and then implement without mid-plan stops.
+
+        Call this after creating a plan and before starting task_begin.
+
+        Returns per-step analysis: 'extend' (modify existing), 'integrate' (wire into existing),
+        or 'create' (greenfield, needs decisions). Also returns a consolidated decision list.
+        """
+        return runtime.plan_preflight(Path(project_root), session_id=session_id)
+
+    @server.tool()
     def task_begin(
         project_root: str,
         session_id: str,

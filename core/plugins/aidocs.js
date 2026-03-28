@@ -405,90 +405,6 @@ function normalizeCommandName(command) {
   return String(command || "").trim().replace(/^\//, "").toLowerCase()
 }
 
-// ── Auto-continuation timer state ──────────────────────────────────
-const _continuationTimers = new Map()  // sessionID -> timer handle
-const _CONTINUATION_DEFAULTS = {
-  enabled: true,
-  idle_seconds: 15,     // seconds of agent idle before auto-continuing
-  max_auto_continues: 5, // max auto-continuations per plan (prevent infinite loops)
-}
-const _autoContinueCounts = new Map()  // sessionID -> count
-
-function _getIncompleteSteps(projectRoot, sessionID) {
-  try {
-    const planPath = path.join(projectRoot, ".MEMORY", "sessions", sessionID, "PLAN.md")
-    if (!fsSync.existsSync(planPath)) return []
-    return fsSync.readFileSync(planPath, "utf8")
-      .split(/\r?\n/)
-      .filter((line) => /^\s*-\s*\[\s*\]/.test(line))
-      .map((line) => line.replace(/^\s*-\s*\[\s*\]\s*/, "").trim())
-      .filter(Boolean)
-  } catch {
-    return []
-  }
-}
-
-function _scheduleContinuation(projectRoot, sessionID, client) {
-  // Clear any existing timer for this session
-  const existing = _continuationTimers.get(sessionID)
-  if (existing) clearTimeout(existing)
-
-  const config = loadPluginConfig()
-  const idleSeconds = config.continuation_idle_seconds || _CONTINUATION_DEFAULTS.idle_seconds
-  const maxContinues = config.continuation_max_auto || _CONTINUATION_DEFAULTS.max_auto_continues
-  const enabled = config.continuation_enabled !== false
-
-  if (!enabled) return
-
-  const count = _autoContinueCounts.get(sessionID) || 0
-  if (count >= maxContinues) return
-
-  const state = { projectRoot, sessionID }
-
-  const timer = setTimeout(async () => {
-    _continuationTimers.delete(sessionID)
-    try {
-      const aidocsState = await resolveAidocsState(state.projectRoot)
-      if (!aidocsState.managed || !aidocsState.sessionID) return
-
-      const steps = _getIncompleteSteps(state.projectRoot, aidocsState.sessionID)
-      if (steps.length === 0) {
-        _autoContinueCounts.delete(sessionID)
-        return
-      }
-
-      const nextStep = steps[0]
-      const remaining = steps.length
-      _autoContinueCounts.set(sessionID, count + 1)
-
-      // Send continuation prompt via OC HTTP API
-      await fetch(`http://localhost:4096/session/${sessionID}/prompt_async`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          parts: [{ type: "text", text: `Continue with the plan. ${remaining} step(s) remaining. Next: ${nextStep}` }],
-        }),
-      })
-    } catch (err) {
-      // Non-critical: if plan read or HTTP fails, skip this cycle
-    }
-  }, idleSeconds * 1000)
-
-  _continuationTimers.set(sessionID, timer)
-}
-
-function _cancelContinuation(sessionID) {
-  const existing = _continuationTimers.get(sessionID)
-  if (existing) {
-    clearTimeout(existing)
-    _continuationTimers.delete(sessionID)
-  }
-}
-
-function _resetContinuationCount(sessionID) {
-  _autoContinueCounts.delete(sessionID)
-}
-
 
 async function AIDOCSPlugin(input) {
   const projectRoot = input.worktree || input.directory
@@ -506,9 +422,6 @@ async function AIDOCSPlugin(input) {
     },
 
     "chat.message": async ({ sessionID }, output) => {
-      // User sent a message — cancel pending auto-continuation timer
-      _cancelContinuation(sessionID)
-
       const state = await resolveAidocsState(projectRoot)
       const promptText = extractPromptText(output.parts)
       const activeCommand = activeCommandBySession.get(sessionID) || ""
@@ -541,11 +454,6 @@ async function AIDOCSPlugin(input) {
       } else {
         sessionPromptContext.delete(sessionID)
         sessionClassification.delete(sessionID)
-      }
-
-      // Schedule auto-continuation if plan has incomplete steps
-      if (state.managed && state.sessionID) {
-        _scheduleContinuation(projectRoot, sessionID)
       }
     },
 

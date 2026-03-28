@@ -2,5 +2,8 @@
   "inject_message_directives": true,
   "directive_style": "short",
   "languages_enabled": "all",
-  "disregard_compaction": false
+  "disregard_compaction": false,
+  "continuation_enabled": true,
+  "continuation_idle_seconds": 15,
+  "continuation_max_auto": 5
 }

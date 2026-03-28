@@ -203,11 +203,27 @@ class ClaudeHookHandler:
         ],
     }
 
+    # Source code extensions where MCP tools add value — based on code indexer language mapping
+    _CODE_EXTENSIONS: set[str] = {
+        ".py", ".js", ".ts", ".tsx", ".jsx", ".cs", ".cshtml",
+        ".rs", ".go", ".java", ".kt", ".kts", ".rb", ".php",
+        ".ex", ".exs", ".swift", ".dart", ".lua",
+        ".sh", ".bash", ".ps1",
+        ".css", ".scss", ".sass", ".less",
+        ".html", ".htm", ".vue", ".svelte",
+        ".sql", ".prisma", ".resx",
+    }
+
     def _suggest_mcp_alternative(self, tool_name: str, tool_input: dict[str, object]) -> str:
-        """Suggest an MCP tool when a raw tool is used for code exploration."""
+        """Suggest an MCP tool when a raw tool is used on indexed source code files."""
         lower = tool_name.lower()
         alternatives = self._MCP_ALTERNATIVES.get(lower)
         if not alternatives:
+            return ""
+
+        # Only nudge for source code files that the indexer handles
+        file_path = str(tool_input.get("file_path") or tool_input.get("path") or "").lower()
+        if file_path and not any(file_path.endswith(ext) for ext in self._CODE_EXTENSIONS):
             return ""
 
         # Build a contextual suggestion based on what the tool appears to be doing

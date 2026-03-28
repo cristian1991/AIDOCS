@@ -322,7 +322,7 @@ function buildPromptContext(state, promptText, activeCommand, activeCommandMeta)
 }
 
 const ACTION_TOOL_DIRECTIVES = {
-  edit: '`task_begin` → `code_get_outline` → `code_find(query, mode="symbols")` → Edit → `task_complete`. CSS: `code_trace(class, mode="css_class")`. DB: `schema_query(entity, mode="entity")`.',
+  edit: '`task_begin` → `code_get_lines` (read) → `code_edit_lines` or `code_batch_edit` (write) → `task_complete`. Do NOT mix edit methods. Before editing: `code_get_method_signature` / `code_get_constructor_params` to confirm signatures. CSS: `code_trace(class, mode="css_class")`. DB: `schema_query(entity, mode="entity")`.',
   trace: '`code_find(query, mode="references")` → `code_trace(query, mode="field_flow"|"css_class"|"api_to_ui")`. DB: `schema_query("Source→Target", mode="trace_path")`.',
   understand: '`code_get_outline` → `code_find(query, mode="symbols")` → `code_get_symbol_snippet`. Broad: `code_bundle(concept, mode="subsystem")`. DB: `schema_query(name, mode="entity")`.',
   read_error: '`code_find(symbol, mode="symbols")` → `code_find(symbol, mode="references")` → `code_get_symbol_snippet`. DB: `schema_query(entity, mode="entity")`.',

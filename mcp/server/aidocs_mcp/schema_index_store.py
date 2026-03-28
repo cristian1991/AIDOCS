@@ -376,6 +376,19 @@ class SchemaIndexStore:
         field["optional"] = "?" in field_type or field_type.endswith("[]")
         field["defaulted"] = field_name.lower() in {"id", "createdat", "updatedat", "status"}
         field["computed"] = field_name.lower() in {"linetotal", "total", "subtotal", "amountdue"}
+
+        # value_type: helps agents distinguish stored data from derived/inferred values
+        if field["computed"]:
+            field["value_type"] = "computed"
+        elif field["defaulted"]:
+            field["value_type"] = "defaulted"
+        elif field_kind in {"relation", "nav_property", "nav_collection"}:
+            field["value_type"] = "navigation"
+        elif field_kind in {"enum_field"}:
+            field["value_type"] = "enum"
+        else:
+            field["value_type"] = "stored"
+
         return field
 
     def trace_relationship_path(self, project_root: Path, source_entity: str, target_entity: str, limit: int = 20) -> dict[str, object]:

@@ -411,10 +411,10 @@ class ClaudeHookHandler:
             '`code_bundle(path, mode="file")` (single file).'
         ),
         "edit": (
-            '`task_begin` → `code_get_outline` → `code_find(query, mode="symbols")` → Edit → `task_complete`. '
-            'CSS: add `code_trace(class, mode="css_class")`. API: add `code_trace(concept, mode="api_to_ui")`. '
-            'Precision: add `code_get_method_signature` / `code_get_service_api` / `code_get_constructor_params` / `code_get_enum_values`. '
-            'DB: add `schema_query(entity, mode="entity|properties|batch_entity")`.'
+            '`task_begin` → `code_get_lines` (read target) → `code_edit_lines` (single edit) or `code_batch_edit` (multiple edits in one call) → `task_complete`. '
+            'Do NOT mix edit methods — use `code_edit_lines`/`code_batch_edit` for all edits, not raw Edit or apply_patch. '
+            'Before editing: `code_get_method_signature` / `code_get_constructor_params` / `code_get_enum_values` to confirm exact signatures. '
+            'CSS: `code_trace(class, mode="css_class")`. DB: `schema_query(entity, mode="entity|properties|batch_entity")`.'
         ),
         "test_heavy": (
             'If test/support code matters, re-run retrieval with test-inclusive indexing where the tool supports it. '

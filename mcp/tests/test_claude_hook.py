@@ -85,7 +85,7 @@ def test_user_prompt_submit_adds_context_when_project_is_managed(tmp_path: Path)
         {
             "hook_event_name": "UserPromptSubmit",
             "cwd": str(project_root),
-            "prompt": "understand the app",
+            "prompt": "investigate the authentication middleware and find where permissions are checked across the codebase",
         }
     )
 

@@ -35,14 +35,14 @@ class TestGetLines:
         assert result["total_lines"] == 5
         assert result["start_line"] == 1
         assert result["end_line"] == 5
-        assert len(result["lines"]) == 5
-        assert result["has_more"] is False
+        assert result["content"].count("\n") == 4  # 5 lines = 4 newlines
+        assert not result.get("has_more", False)
 
     def test_reads_specific_range(self, project: Path) -> None:
         result = get_lines(project, "hello.txt", start_line=2, count=2)
         assert result["start_line"] == 2
         assert result["end_line"] == 3
-        assert result["lines"] == ["line2", "line3"]
+        assert "line2" in result["content"] and "line3" in result["content"]
         assert result["has_more"] is True
 
     def test_line_numbers_in_content(self, project: Path) -> None:
@@ -57,7 +57,7 @@ class TestGetLines:
     def test_clamps_start_to_valid_range(self, project: Path) -> None:
         result = get_lines(project, "hello.txt", start_line=100)
         assert result["start_line"] == 5  # Clamped to last line
-        assert len(result["lines"]) == 1
+        assert result["content"].strip().count("\n") == 0  # single line
 
     def test_clamps_count_to_max(self, project: Path) -> None:
         result = get_lines(project, "hello.txt", count=9999)
@@ -66,7 +66,7 @@ class TestGetLines:
     def test_subdirectory_file(self, project: Path) -> None:
         result = get_lines(project, "src/app.js")
         assert result["total_lines"] == 3
-        assert "const x = 1;" in result["lines"]
+        assert "const x = 1;" in result["content"]
 
     def test_backslash_path(self, project: Path) -> None:
         result = get_lines(project, "src\\app.js")

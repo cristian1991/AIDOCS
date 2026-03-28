@@ -85,12 +85,17 @@ PROJECT_MARKERS = (
 )
 
 
-def _validate_project_root(project_root: Path) -> None:
-    """Ensure project_root is a legitimate project directory, not a system path."""
+def _validate_project_root(project_root: Path, *, write: bool = False) -> None:
+    """Ensure project_root is a legitimate project directory, not a system path.
+
+    Args:
+        write: If True, also block self-editing of the MCP server directory.
+               Reads are always allowed on the MCP server (agents need to inspect code).
+    """
     resolved = project_root.resolve()
     lower_str = str(resolved).replace("\\", "/").lower()
 
-    # Block system directories
+    # Block system directories (always, read or write)
     for blocked in BLOCKED_ROOTS:
         if lower_str == blocked or lower_str.startswith(blocked + "/"):
             raise ValueError(
@@ -98,10 +103,10 @@ def _validate_project_root(project_root: Path) -> None:
                 f"File operations are restricted to project directories."
             )
 
-    # Block editing the MCP server itself (self-edit prevention)
-    if lower_str == _SELF_DIR or _SELF_DIR.startswith(lower_str + "/"):
+    # Block WRITING to the MCP server itself (reads are allowed)
+    if write and (lower_str == _SELF_DIR or _SELF_DIR.startswith(lower_str + "/")):
         raise ValueError(
-            f"Refusing to operate on the AIDOCS MCP server directory. "
+            f"Refusing to edit the AIDOCS MCP server directory. "
             f"Self-editing is not allowed in production mode."
         )
 
@@ -128,8 +133,12 @@ def _validate_project_root(project_root: Path) -> None:
         )
 
 
-def _resolve_path(project_root: Path, relative_path: str) -> Path:
-    """Resolve and validate a file path within the project root."""
+def _resolve_path(project_root: Path, relative_path: str, *, write: bool = False) -> Path:
+    """Resolve and validate a file path within the project root.
+
+    Args:
+        write: If True, also block paths inside the MCP server directory.
+    """
     # Reject absolute paths — only relative paths allowed
     if os.path.isabs(relative_path):
         raise ValueError(
@@ -152,13 +161,14 @@ def _resolve_path(project_root: Path, relative_path: str) -> Path:
     except ValueError:
         raise ValueError(f"Path escapes project root: {relative_path}")
 
-    # Security: prevent editing the MCP server's own source files
-    abs_lower = str(abs_path).replace("\\", "/").lower()
-    if abs_lower.startswith(_SELF_DIR):
-        raise ValueError(
-            f"Refusing to edit AIDOCS MCP server source: {relative_path}. "
-            f"Self-editing is not allowed."
-        )
+    # Security: prevent WRITING to the MCP server's own source files (reads allowed)
+    if write:
+        abs_lower = str(abs_path).replace("\\", "/").lower()
+        if abs_lower.startswith(_SELF_DIR):
+            raise ValueError(
+                f"Refusing to edit AIDOCS MCP server source: {relative_path}. "
+                f"Self-editing is not allowed."
+            )
 
     return abs_path
 
@@ -242,16 +252,18 @@ def get_lines(
     else:
         content = "\n".join(selected)
 
-    return {
+    result: dict[str, object] = {
         "path": path,
         "start_line": start,
         "end_line": end,
         "total_lines": total,
         "content": content,
-        "lines": selected,
-        "has_more": end < total,
-        "truncated": truncated,
     }
+    if end < total:
+        result["has_more"] = True
+    if truncated:
+        result["truncated"] = True
+    return result
 
 
 def edit_lines(
@@ -298,10 +310,10 @@ def edit_lines(
         }
     """
     try:
-        _validate_project_root(project_root)
+        _validate_project_root(project_root, write=True)
     except ValueError as exc:
         return _edit_error(path, start_line, end_line, str(exc))
-    abs_path = _resolve_path(project_root, path)
+    abs_path = _resolve_path(project_root, path, write=True)
     try:
         _check_sensitive(path)
     except ValueError as exc:
@@ -416,7 +428,7 @@ def batch_edit(
         }
     """
     try:
-        _validate_project_root(project_root)
+        _validate_project_root(project_root, write=True)
     except ValueError as exc:
         return {
             "success": False,
@@ -460,7 +472,7 @@ def batch_edit(
         expect_str = str(expect) if expect is not None else None
 
         try:
-            abs_path = _resolve_path(project_root, path)
+            abs_path = _resolve_path(project_root, path, write=True)
             _check_sensitive(path)
 
             if path not in file_cache:

@@ -42,8 +42,9 @@ def test_sync_schema_extracts_csharp_models_and_sql_tables(tmp_path: Path) -> No
     assert any(item["entity_name"] == "Quotes" for item in entities)
     assert any(field["field_name"] == "PreferredDoctorId" for field in quote["fields"])
     preferred = next(field for field in quote["fields"] if field["field_name"] == "PreferredDoctorId")
-    assert "required" in preferred
-    assert "defaulted" in preferred
+    # Falsy flags are now omitted from compact responses — absence means False
+    assert preferred.get("required", False) is False
+    assert preferred.get("defaulted", False) is False
     assert any(field["entity_name"] in {"QuoteDto", "Quotes"} for field in fields)
 
 

@@ -234,12 +234,46 @@ class SchemaIndexStore:
                 "SELECT entity_name, field_name, field_type, field_kind, source_type, path, line_number FROM schema_fields WHERE entity_name = ? ORDER BY path, line_number, field_name",
                 (entity_name,),
             ).fetchall()
-        enriched_fields = [self._enrich_field_metadata(dict(row)) for row in fields]
+        enriched_fields = [self._compact_field(self._enrich_field_metadata(dict(row))) for row in fields]
+        # Deduplicate: if all fields share the same path/source_type, hoist to top level
+        field_paths = {f.get("path") for f in enriched_fields if f.get("path")}
+        if len(field_paths) == 1:
+            common_path = field_paths.pop()
+            for f in enriched_fields:
+                f.pop("path", None)
+                f.pop("source_type", None)
+            return {
+                "entity_name": entity_name,
+                "path": common_path,
+                "entities": [self._compact_entity(dict(row)) for row in entities],
+                "field_count": len(enriched_fields),
+                "fields": enriched_fields,
+            }
         return {
             "entity_name": entity_name,
-            "entities": [dict(row) for row in entities],
+            "entities": [self._compact_entity(dict(row)) for row in entities],
+            "field_count": len(enriched_fields),
             "fields": enriched_fields,
         }
+
+    @staticmethod
+    def _compact_field(field: dict[str, object], strip_entity_name: bool = True) -> dict[str, object]:
+        """Remove redundant/falsy keys from field dict to reduce response size."""
+        result: dict[str, object] = {}
+        for k, v in field.items():
+            if k == "entity_name" and strip_entity_name:
+                continue  # redundant — already in parent
+            if k in ("required", "optional", "defaulted", "computed") and not v:
+                continue  # only include truthy flags
+            if v is None or v == "":
+                continue
+            result[k] = v
+        return result
+
+    @staticmethod
+    def _compact_entity(entity: dict[str, object]) -> dict[str, object]:
+        """Remove redundant/empty keys from entity dict."""
+        return {k: v for k, v in entity.items() if v is not None and v != ""}
 
     def find_schema_field(self, project_root: Path, field_name: str, limit: int = 50) -> list[dict[str, object]]:
         self.init_db(project_root)
@@ -248,7 +282,7 @@ class SchemaIndexStore:
                 "SELECT entity_name, field_name, field_type, field_kind, source_type, path, line_number FROM schema_fields WHERE field_name LIKE ? ORDER BY entity_name, path LIMIT ?",
                 (f"%{field_name.strip()}%", limit),
             ).fetchall()
-        return [self._enrich_field_metadata(dict(row)) for row in rows]
+        return [self._compact_field(self._enrich_field_metadata(dict(row)), strip_entity_name=False) for row in rows]
 
     def get_constructor_params(self, project_root: Path, entity_name: str, include_related: bool = False) -> dict[str, object]:
         try:
@@ -262,14 +296,14 @@ class SchemaIndexStore:
     def get_entity_properties(self, project_root: Path, entity_name: str) -> dict[str, object]:
         result = self.get_schema_entity(project_root, entity_name)
         properties = [
-            {
+            {k: v for k, v in {
                 "field_name": field.get("field_name"),
                 "field_type": field.get("field_type"),
-                "required": field.get("required"),
-                "optional": field.get("optional"),
-                "defaulted": field.get("defaulted"),
-                "computed": field.get("computed"),
-            }
+                **({"required": True} if field.get("required") else {}),
+                **({"optional": True} if field.get("optional") else {}),
+                **({"defaulted": True} if field.get("defaulted") else {}),
+                **({"computed": True} if field.get("computed") else {}),
+            }.items() if v is not None}
             for field in result.get("fields", [])
         ]
         return {

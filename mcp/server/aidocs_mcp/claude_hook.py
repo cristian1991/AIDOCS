@@ -258,18 +258,22 @@ class ClaudeHookHandler:
 
         elif lower_tool == "bash":
             command = str(tool_input.get("command") or "")
-            cmd_lower = command.lower()
+            # Strip heredoc/multiline content — only check the actual command, not embedded text
+            cmd_check = command.split("<<")[0] if "<<" in command else command
+            # Also strip quoted strings to avoid false positives on documentation text
+            import re as _re
+            cmd_check = _re.sub(r'"[^"]*"', '', _re.sub(r"'[^']*'", '', cmd_check)).lower()
             # Detect shell writes targeting protected files/dirs
             protected_targets = list(self._PROTECTED_CONFIG) + ["aidocs_mcp/", "core/plugins/aidocs"]
             write_indicators = [">", "tee ", "cp ", "mv ", "sed -i", "rm ", "del ", "move "]
             for target in protected_targets:
-                if target in cmd_lower:
-                    if any(w in cmd_lower for w in write_indicators):
+                if target in cmd_check:
+                    if any(w in cmd_check for w in write_indicators):
                         from .config import DEV_MODE
                         if target in self._PROTECTED_CONFIG or not DEV_MODE:
                             return {
                                 "decision": "block",
-                                "reason": f"BLOCKED: Shell command targets protected AIDOCS infrastructure ({target}). This operation is not allowed.",
+                                "reason": f"BLOCKED: Shell command targets protected AIDOCS infrastructure ({target}).",
                             }
 
         return None

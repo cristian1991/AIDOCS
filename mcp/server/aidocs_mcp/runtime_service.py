@@ -1431,6 +1431,76 @@ class RuntimeService:
             ),
         }
 
+    def plan_connect(
+        self,
+        project_root: Path,
+        session_id: str,
+        run_preflight: bool = True,
+    ) -> dict[str, object]:
+        """Connect to an existing session plan — read its state, find where it left off,
+        and optionally run preflight analysis on remaining steps.
+
+        Returns the plan content, completion progress, incomplete steps, and (if run_preflight=True)
+        a decision map for the remaining work. The agent can then start executing from the first
+        incomplete step without needing user guidance.
+        """
+        plan = self.hub.sessions.read_plan(project_root, session_id)
+        if not plan or not plan.sections:
+            return {"session_id": session_id, "connected": False, "error": "No plan found. Create one first."}
+
+        # Parse steps from all sections, tracking completion
+        completed: list[str] = []
+        incomplete: list[str] = []
+        for section_name, lines in plan.sections.items():
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("- [x]") or stripped.startswith("- [X]"):
+                    completed.append(stripped[5:].strip())
+                elif stripped.startswith("- [ ]"):
+                    incomplete.append(stripped[5:].strip())
+
+        total = len(completed) + len(incomplete)
+        progress = f"{len(completed)}/{total}" if total > 0 else "0/0"
+
+        result: dict[str, object] = {
+            "session_id": session_id,
+            "connected": True,
+            "plan_path": str(plan.path),
+            "progress": progress,
+            "completed_count": len(completed),
+            "incomplete_count": len(incomplete),
+            "completed_steps": completed,
+            "next_steps": incomplete[:5],
+        }
+
+        # Include plan goal/purpose if available
+        purpose = plan.sections.get("Purpose", [])
+        if purpose:
+            result["purpose"] = purpose[0].lstrip("- ").strip()
+
+        end_goal = plan.sections.get("End Goal", [])
+        if end_goal:
+            result["end_goal"] = end_goal[0].lstrip("- ").strip()
+
+        # Run preflight on remaining steps to surface decisions upfront
+        if run_preflight and incomplete:
+            preflight = self.plan_preflight(project_root, session_id)
+            if preflight.get("decisions"):
+                result["decisions"] = preflight["decisions"]
+            result["step_analysis"] = preflight.get("steps", [])
+            result["recommended_order"] = preflight.get("recommended_order", "")
+
+        if incomplete:
+            result["instruction"] = (
+                f"Plan is {progress} complete. "
+                f"Next step: {incomplete[0]}. "
+                + (f"Resolve {len(result.get('decisions', []))} decision(s) first, then implement." if result.get("decisions") else "Begin implementation.")
+            )
+        else:
+            result["instruction"] = "Plan is fully complete. All steps are checked off."
+
+        return result
+
     def task_begin(
         self,
         project_root: Path,

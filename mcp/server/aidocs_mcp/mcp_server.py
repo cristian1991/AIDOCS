@@ -686,6 +686,23 @@ def create_server() -> Any:
 
     @server.tool()
     @timed_sync
+    def plan_connect(
+        project_root: str,
+        session_id: str,
+        run_preflight: bool = True,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Connect to an existing session plan — read its state, find where work left off,
+        and surface decisions needed for remaining steps.
+
+        Call this when the user says "read the plan", "continue the plan", or "where were we?".
+        Returns progress, next steps, and (with run_preflight=True) a decision map so the agent
+        can resolve everything upfront and implement without mid-plan stops.
+        """
+        return runtime.plan_connect(Path(project_root), session_id=session_id, run_preflight=run_preflight)
+
+    @server.tool()
+    @timed_sync
     def plan_preflight(
         project_root: str,
         session_id: str,

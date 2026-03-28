@@ -1265,6 +1265,7 @@ class CodeIndexStore:
         ranked.sort(key=lambda pair: (-pair[0], self._layer_rank(str(pair[1]["layer"])), str(pair[1]["path"]), int(pair[1]["line_number"])))
         return {
             "symbol": symbol,
+            "source": "file_content",
             "matches": [item for _, item in ranked[:limit]],
         }
 
@@ -3702,6 +3703,7 @@ class CodeIndexStore:
                 top.append(item)
             findings.append({
                 "area": "symbols",
+                "source": "outline_index",
                 "count": len(symbols),
                 "top": top,
                 "kinds_found": top_kinds,
@@ -3721,6 +3723,7 @@ class CodeIndexStore:
                 findings.append(
                     {
                         "area": "service_api_candidates",
+                        "source": "outline_index",
                         "count": len(service_candidates),
                         "top": [
                             {
@@ -3739,6 +3742,7 @@ class CodeIndexStore:
             roles = list(dict.fromkeys(f["role"] for f in code_files))[:4]
             findings.append({
                 "area": "files",
+                "source": "file_index",
                 "count": len(code_files),
                 "top": [
                     {
@@ -3763,6 +3767,7 @@ class CodeIndexStore:
             if entities:
                 findings.append({
                     "area": "schema_entities",
+                    "source": "schema_index",
                     "count": len(entities),
                     "top": [{"entity": e["entity_name"], "source": e.get("source_path", "").split("/")[-1]} for e in entities[:3]],
                 })
@@ -3771,6 +3776,7 @@ class CodeIndexStore:
             if fields:
                 findings.append({
                     "area": "schema_fields",
+                    "source": "schema_index",
                     "count": len(fields),
                     "top": [{"field": f["field_name"], "entity": f["entity_name"]} for f in fields[:3]],
                 })
@@ -3787,6 +3793,7 @@ class CodeIndexStore:
         if css_rows and focus_value in {"general", "ui"}:
             findings.append({
                 "area": "css",
+                "source": "outline_index",
                 "count": len(css_rows),
                 "top": [{"class": r["symbol"], "path": r["path"]} for r in css_rows[:3]],
             })
@@ -3798,6 +3805,7 @@ class CodeIndexStore:
         if matching_modules:
             findings.append({
                 "area": "modules",
+                "source": "module_index",
                 "count": len(matching_modules),
                 "top": [{"module": m["module_path"], "kind": m["kind"], "files": m["file_count"]} for m in matching_modules[:3]],
             })
@@ -3816,6 +3824,7 @@ class CodeIndexStore:
                     findings.append(
                         {
                             "area": "workflow_touchpoints",
+                            "source": "outline_index",
                             "count": len(tp_matches),
                             "top": [
                                 {
@@ -3838,6 +3847,7 @@ class CodeIndexStore:
                     findings.append(
                         {
                             "area": "routes",
+                            "source": "outline_index",
                             "count": len(route_matches),
                             "top": [{"path": item["path"], "layer": item.get("layer")} for item in route_matches[:3]],
                         }
@@ -3851,6 +3861,7 @@ class CodeIndexStore:
                     findings.append(
                         {
                             "area": "policy_surfaces",
+                            "source": "outline_index",
                             "count": len(policy_matches),
                             "top": [{"path": item["path"], "layer": item.get("layer"), "symbol": item.get("symbol")} for item in policy_matches[:3]],
                         }

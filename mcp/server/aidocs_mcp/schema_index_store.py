@@ -244,6 +244,7 @@ class SchemaIndexStore:
                 f.pop("source_type", None)
             return {
                 "entity_name": entity_name,
+                "source": "schema_index",
                 "path": common_path,
                 "entities": [self._compact_entity(dict(row)) for row in entities],
                 "field_count": len(enriched_fields),
@@ -251,6 +252,7 @@ class SchemaIndexStore:
             }
         return {
             "entity_name": entity_name,
+            "source": "schema_index",
             "entities": [self._compact_entity(dict(row)) for row in entities],
             "field_count": len(enriched_fields),
             "fields": enriched_fields,

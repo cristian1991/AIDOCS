@@ -470,7 +470,7 @@ function _scheduleContinuation(projectRoot, sessionID, client) {
         }),
       })
     } catch (err) {
-      // Silently fail — continuation is best-effort
+      // Non-critical: if plan read or HTTP fails, skip this cycle
     }
   }, idleSeconds * 1000)
 
@@ -506,7 +506,7 @@ async function AIDOCSPlugin(input) {
     },
 
     "chat.message": async ({ sessionID }, output) => {
-      // Cancel any pending auto-continuation — user is active
+      // User sent a message — cancel pending auto-continuation timer
       _cancelContinuation(sessionID)
 
       const state = await resolveAidocsState(projectRoot)
@@ -613,7 +613,7 @@ async function AIDOCSPlugin(input) {
         text: `\n<tool-directive action="${actionKind}">\n${directive}\n</tool-directive>`,
       })
 
-      // Auto-continuation: when user sends short/confirmatory prompt and a plan has incomplete steps,
+      // Plan-aware message rewrite: when user confirms ("ok", "continue") and PLAN.md has unchecked steps,
       // inject the next step as context so the agent continues working instead of stopping.
       const promptText = extractPromptText(last.parts)
       const trimmed = promptText.replace(/<tool-directive[^>]*>[\s\S]*?<\/tool-directive>/g, "").trim()

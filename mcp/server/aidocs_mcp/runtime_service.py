@@ -1029,7 +1029,8 @@ class RuntimeService:
             "session": session_result,
         }
 
-        # Inject project rules into context so the agent actually follows them
+        # Without rules injection, AIDOCS operates in MCP-tool-only mode —
+        # the agent can use indexed retrieval but does not follow any /.MEMORY/rules/ directives.
         from .config import AGENT_INJECT_RULES_ON_BOOTSTRAP
         if AGENT_INJECT_RULES_ON_BOOTSTRAP:
             rules = self._load_project_rules(project_root)

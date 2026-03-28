@@ -22,7 +22,8 @@ def _resolve_script_root() -> Path:
     return repo_root / "core" / "scripts"
 
 
-# Module-level prompt storage — persists across handler instances within the same process
+# Prompt storage shared across handler instances in the same process.
+# Does NOT persist across separate subprocess invocations (each hook event spawns a new process).
 _last_user_prompt: dict[str, str] = {}
 
 
@@ -146,9 +147,9 @@ class ClaudeHookHandler:
         tool_name = str(payload.get("tool_name") or "").strip()
         tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
 
-        # ── Intent guard: disabled for now (too aggressive, blocks legitimate work) ──
-        # TODO: re-enable once prompt persistence across hook subprocesses is fixed
-        # See handoff: hook subprocess prompt persistence issue
+        # Intent guard disabled: each hook event spawns a separate process, so
+        # _last_user_prompt is empty in PreToolUse calls. Re-enable when prompt
+        # state is shared via file or MCP-server-side storage.
 
         # ── MCP alternative nudge (only for raw tools) ──
         mcp_nudge = self._suggest_mcp_alternative(tool_name, tool_input)

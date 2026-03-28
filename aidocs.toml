@@ -42,6 +42,7 @@ max_timeout = 120
 directive_style = "short"
 # Whether to inject tool directives into user messages (OpenCode only)
 inject_message_directives = true
-# Load rule files (workflow.md, standards.md, security.md) into agent context on bootstrap
-# This is the core of the AIDOCS memory system — without it rules are just files on disk
+# Load /.MEMORY/rules/*.md into agent context on bootstrap.
+# Without this, AIDOCS operates in MCP-tool-only mode — indexed retrieval works
+# but the agent does not follow project workflow, standards, or security directives.
 inject_rules_on_bootstrap = true

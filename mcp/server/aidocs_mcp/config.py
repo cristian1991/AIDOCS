@@ -87,6 +87,7 @@ TOOLS_MAX_TIMEOUT: int = int(_tools.get("max_timeout", 120))
 # Agent settings
 AGENT_DIRECTIVE_STYLE: str = str(_agent.get("directive_style", "short"))
 AGENT_INJECT_MESSAGE_DIRECTIVES: bool = bool(_agent.get("inject_message_directives", True))
+AGENT_INJECT_RULES_ON_BOOTSTRAP: bool = _agent.get("inject_rules_on_bootstrap", True) is not False
 
 # Expose the config file path for debugging
 CONFIG_PATH: str = str(_find_config_file() or "(not found)")

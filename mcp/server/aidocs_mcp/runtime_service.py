@@ -254,6 +254,21 @@ class RuntimeService:
         result["notes"] = notes
         return result
 
+    def _load_project_rules(self, project_root: Path) -> dict[str, str]:
+        """Load rule files from /.MEMORY/rules/ and return as {filename: content} dict."""
+        rules_dir = project_root / ".MEMORY" / "rules"
+        if not rules_dir.is_dir():
+            return {}
+        result: dict[str, str] = {}
+        for rule_file in sorted(rules_dir.glob("*.md")):
+            try:
+                content = rule_file.read_text(encoding="utf-8", errors="ignore").strip()
+                if content and len(content) > 10:
+                    result[rule_file.stem] = content
+            except Exception:
+                continue
+        return result
+
     def repo_summary(self, project_root: Path) -> dict[str, object]:
         code_files = 0
         modules = 0
@@ -1013,6 +1028,14 @@ class RuntimeService:
             "sync": sync_result,
             "session": session_result,
         }
+
+        # Inject project rules into context so the agent actually follows them
+        from .config import AGENT_INJECT_RULES_ON_BOOTSTRAP
+        if AGENT_INJECT_RULES_ON_BOOTSTRAP:
+            rules = self._load_project_rules(project_root)
+            if rules:
+                result["rules"] = rules
+
         result["report"] = self._build_bootstrap_report(result)
         return result
 

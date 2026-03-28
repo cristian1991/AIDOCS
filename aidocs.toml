@@ -46,3 +46,10 @@ inject_message_directives = true
 # Without this, AIDOCS operates in MCP-tool-only mode — indexed retrieval works
 # but the agent does not follow project workflow, standards, or security directives.
 inject_rules_on_bootstrap = true
+
+[code_quality]
+# Enforce comment standards from coding-standards.aidocs during agent edits.
+# "strict": agent must follow all comment rules (WHY not WHAT, no vague qualifiers)
+# "advisory": agent gets a reminder but is not blocked
+# "off": no comment enforcement
+comment_enforcement = "advisory"

@@ -595,7 +595,7 @@ async function AIDOCSPlugin(input) {
       }
 
       // Inject action-specific tool directive into the last user message.
-      // This is more effective than system prompt alone — closer to model attention.
+      // Inject into user message (not system prompt) — models weight recent user-turn content higher.
       const config = loadPluginConfig()
       if (!config.inject_message_directives) {
         return

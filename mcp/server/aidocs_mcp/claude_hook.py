@@ -153,13 +153,22 @@ class ClaudeHookHandler:
 
         # ── MCP alternative nudge (only for raw tools) ──
         mcp_nudge = self._suggest_mcp_alternative(tool_name, tool_input)
-        if not mcp_nudge:
+
+        # ── Comment quality reminder on edit/write tools ──
+        comment_nudge = ""
+        if tool_name.lower() in ("edit", "write"):
+            from .config import CODE_QUALITY_COMMENT_ENFORCEMENT
+            if CODE_QUALITY_COMMENT_ENFORCEMENT in ("strict", "advisory"):
+                comment_nudge = "Comments must explain WHY not WHAT. No vague qualifiers (just, simply, basically). No restating code."
+
+        parts = [p for p in (mcp_nudge, comment_nudge) if p]
+        if not parts:
             return None
 
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
-                "additionalContext": mcp_nudge,
+                "additionalContext": " ".join(parts),
             }
         }
 

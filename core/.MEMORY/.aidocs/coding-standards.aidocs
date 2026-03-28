@@ -29,4 +29,12 @@ Data
 Project portability
 - Avoid absolute machine-specific paths in project files.
 
+Code comments
+- Comments must explain WHY, not WHAT. The code shows what — the comment adds context the code cannot.
+- Do not restate code: `# Get the user` above `user = get_user()` wastes tokens and attention.
+- Do not use vague qualifiers: "just", "simply", "basically", "obviously", "make sure", "remember to".
+- Acceptable: tradeoffs, constraints, non-obvious behavior, cross-file dependencies, platform workarounds, security implications.
+- TODO/FIXME must include what needs to change and why, not just the tag.
+- Config comments should explain what changes when the value is toggled.
+
 <!-- AIDOCS-MANAGED-ABOVE: write project-specific instructions below this line -->

@@ -2414,7 +2414,7 @@ def main() -> None:
     import atexit
     import os
 
-    # Ensure clean exit when parent process dies (Windows: no SIGHUP)
+    # Shut down thread pool on exit; handle SIGTERM/SIGHUP for graceful stop (Windows lacks SIGHUP)
     def _cleanup():
         _tool_executor.shutdown(wait=False, cancel_futures=True)
     atexit.register(_cleanup)

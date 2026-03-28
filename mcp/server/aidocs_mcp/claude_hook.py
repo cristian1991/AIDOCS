@@ -154,12 +154,6 @@ class ClaudeHookHandler:
         if tool_name.lower() in self._SYSTEM_TOOLS:
             return None
 
-        # Skip nudges when editing AIDOCS source itself (dev mode) —
-        # the agent needs raw tools to modify the tool infrastructure
-        file_path = str(tool_input.get("file_path") or tool_input.get("path") or "")
-        if "aidocs_mcp" in file_path or "core/plugins" in file_path:
-            return None
-
         # Intent guard disabled: each hook event spawns a separate process, so
         # _last_user_prompt is empty in PreToolUse calls. Re-enable when prompt
         # state is shared via file or MCP-server-side storage.

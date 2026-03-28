@@ -143,3 +143,98 @@ def test_non_aidocs_project_returns_no_hook_output(tmp_path: Path) -> None:
     )
 
     assert result is None
+
+
+# ── Conversational skip tests ────────────────────────────────────────
+
+
+def test_short_conversational_prompt_skips_directives(tmp_path: Path) -> None:
+    """Short prompts without action keywords return None (no directive injection)."""
+    handler, project_root = _make_handler(tmp_path)
+    handler.runtime.hub.sessions.create_session(project_root, "2026-03-28-a", "A", "Agent", "Goal")
+    handler.runtime.hub.managed_mode.set_mode(project_root, session_id="2026-03-28-a")
+
+    for prompt in ["ok", "yes", "thanks", "nice!", "all of them :D", "sure", "👍"]:
+        result = handler.handle({
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(project_root),
+            "prompt": prompt,
+        })
+        assert result is None, f"Expected None for conversational prompt '{prompt}', got {result}"
+
+
+def test_short_prompt_with_action_keyword_gets_directives(tmp_path: Path) -> None:
+    """Short prompts containing action keywords still get directives."""
+    handler, project_root = _make_handler(tmp_path)
+    handler.runtime.hub.sessions.create_session(project_root, "2026-03-28-b", "B", "Agent", "Goal")
+    handler.runtime.hub.managed_mode.set_mode(project_root, session_id="2026-03-28-b")
+
+    result = handler.handle({
+        "hook_event_name": "UserPromptSubmit",
+        "cwd": str(project_root),
+        "prompt": "fix the login bug",
+    })
+    assert result is not None
+    assert "additionalContext" in result.get("hookSpecificOutput", {})
+
+
+# ── Comment enforcement tests ────────────────────────────────────────
+
+
+def test_edit_tool_gets_comment_reminder(tmp_path: Path) -> None:
+    """PreToolUse on Edit tool includes comment quality reminder when enforcement is on."""
+    handler, project_root = _make_handler(tmp_path)
+    handler.runtime.hub.sessions.create_session(project_root, "2026-03-28-c", "C", "Agent", "Goal")
+    handler.runtime.hub.managed_mode.set_mode(project_root, session_id="2026-03-28-c")
+
+    result = handler.handle({
+        "hook_event_name": "PreToolUse",
+        "cwd": str(project_root),
+        "tool_name": "Edit",
+        "tool_input": {"file_path": "src/app.py", "old_string": "x", "new_string": "y"},
+    })
+
+    assert result is not None
+    context = result["hookSpecificOutput"]["additionalContext"]
+    assert "WHY" in context
+
+
+def test_non_edit_tool_no_comment_reminder(tmp_path: Path) -> None:
+    """PreToolUse on non-edit tools (like Bash) does not inject comment reminder."""
+    handler, project_root = _make_handler(tmp_path)
+    handler.runtime.hub.sessions.create_session(project_root, "2026-03-28-d", "D", "Agent", "Goal")
+    handler.runtime.hub.managed_mode.set_mode(project_root, session_id="2026-03-28-d")
+
+    result = handler.handle({
+        "hook_event_name": "PreToolUse",
+        "cwd": str(project_root),
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},
+    })
+
+    # Bash has no MCP alternative and no comment enforcement — should return None
+    assert result is None
+
+
+# ── Rules injection tests ────────────────────────────────────────────
+
+
+def test_bootstrap_includes_rules_when_configured(tmp_path: Path) -> None:
+    """project_bootstrap_or_resume includes rules content when inject_rules_on_bootstrap=True."""
+    handler, project_root = _make_handler(tmp_path)
+
+    # Create rules files
+    rules_dir = project_root / ".MEMORY" / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "workflow.md").write_text("# Workflow\n\n- Use task_begin before edits.\n", encoding="utf-8")
+    (rules_dir / "standards.md").write_text("# Standards\n\n- Comments must explain WHY.\n", encoding="utf-8")
+
+    handler.runtime.hub.sessions.create_session(project_root, "2026-03-28-e", "E", "Agent", "Goal")
+
+    result = handler.runtime.project_bootstrap_or_resume(project_root, session_id="2026-03-28-e")
+
+    assert "rules" in result
+    assert "workflow" in result["rules"]
+    assert "task_begin" in result["rules"]["workflow"]
+    assert "standards" in result["rules"]
+    assert "WHY" in result["rules"]["standards"]

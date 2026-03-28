@@ -154,6 +154,13 @@ class ClaudeHookHandler:
         if tool_name.lower() in self._SYSTEM_TOOLS:
             return None
 
+        # ── AIDOCS infrastructure protection ──
+        # Block raw Edit/Write/Bash from modifying AIDOCS config or MCP source.
+        # This prevents a compromised agent from removing safety guardrails.
+        protection = self._check_infrastructure_protection(tool_name, tool_input)
+        if protection:
+            return protection
+
         # Intent guard disabled: each hook event spawns a separate process, so
         # _last_user_prompt is empty in PreToolUse calls. Re-enable when prompt
         # state is shared via file or MCP-server-side storage.
@@ -207,6 +214,65 @@ class ClaudeHookHandler:
         ".html", ".htm", ".vue", ".svelte",
         ".sql", ".prisma", ".resx",
     }
+
+    # Config files that agents must NEVER modify (absolute boundary)
+    _PROTECTED_CONFIG: set[str] = {"aidocs.toml", "aidocs-plugin.json"}
+
+    # Paths that indicate AIDOCS infrastructure (protected unless dev_mode)
+    _INFRASTRUCTURE_PATHS: tuple[str, ...] = ("aidocs_mcp/", "aidocs_mcp\\", "core/plugins/aidocs.js")
+
+    def _check_infrastructure_protection(self, tool_name: str, tool_input: dict[str, object]) -> dict[str, object] | None:
+        """Block raw Edit/Write/Bash from modifying AIDOCS config or infrastructure.
+
+        Returns a block decision dict if the tool should be prevented, None otherwise.
+        Config files (aidocs.toml, aidocs-plugin.json) are always blocked.
+        MCP source is blocked unless dev_mode=true in aidocs.toml.
+        Bash commands that write to protected paths are blocked.
+        """
+        lower_tool = tool_name.lower()
+
+        # Only check write-capable tools
+        if lower_tool not in ("edit", "write", "bash"):
+            return None
+
+        if lower_tool in ("edit", "write"):
+            file_path = str(tool_input.get("file_path") or tool_input.get("path") or "")
+            file_name = Path(file_path).name.lower() if file_path else ""
+
+            # Absolute boundary: config files are never editable
+            if file_name in self._PROTECTED_CONFIG:
+                return {
+                    "decision": "block",
+                    "reason": f"BLOCKED: {file_name} is a protected AIDOCS config file. Edit it manually.",
+                }
+
+            # Infrastructure protection: MCP source blocked unless dev_mode
+            file_lower = file_path.replace("\\", "/").lower()
+            if any(marker in file_lower for marker in self._INFRASTRUCTURE_PATHS):
+                from .config import DEV_MODE
+                if not DEV_MODE:
+                    return {
+                        "decision": "block",
+                        "reason": f"BLOCKED: Cannot edit AIDOCS infrastructure ({Path(file_path).name}). Set dev_mode=true in aidocs.toml to enable.",
+                    }
+
+        elif lower_tool == "bash":
+            command = str(tool_input.get("command") or "")
+            cmd_lower = command.lower()
+            # Detect shell writes targeting protected files/dirs
+            protected_targets = list(self._PROTECTED_CONFIG) + ["aidocs_mcp/", "core/plugins/aidocs"]
+            write_indicators = [">", "tee ", "cp ", "mv ", "sed -i", "rm ", "del ", "move "]
+            for target in protected_targets:
+                if target in cmd_lower:
+                    if any(w in cmd_lower for w in write_indicators):
+                        from .config import DEV_MODE
+                        if target in self._PROTECTED_CONFIG or not DEV_MODE:
+                            return {
+                                "decision": "block",
+                                "reason": f"BLOCKED: Shell command targets protected AIDOCS infrastructure ({target}). This operation is not allowed.",
+                            }
+
+        return None
 
     def _suggest_mcp_alternative(self, tool_name: str, tool_input: dict[str, object]) -> str:
         """Suggest an MCP tool when a raw tool is used on indexed source code files."""

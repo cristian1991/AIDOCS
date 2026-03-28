@@ -207,9 +207,9 @@ def test_sync_schema_extracts_prisma_models_enums_and_relationships(tmp_path: Pa
 
     assert result["entities"] == 3
     assert result["fields"] >= 7
-    assert any(item["entity_name"] == "Purchase" and item["source_type"] == "prisma_model" for item in entities)
-    assert any(field["field_name"] == "status" and field["field_kind"] == "enum_field" for field in purchase["fields"])
-    assert any(field["field_name"] == "user" and field["field_kind"] == "relation" for field in purchase["fields"])
+    assert any(item["entity_name"] == "Purchase" and item["source"] == "prisma_model" for item in entities)
+    assert any(field["field_name"] == "status" and field["kind"] == "enum_field" for field in purchase["fields"])
+    assert any(field["field_name"] == "user" and field["kind"] == "relation" for field in purchase["fields"])
     assert relationships["paths"]
     assert relationships["paths"][0][-1]["target_entity"] == "User"
 
@@ -312,7 +312,7 @@ def test_sync_schema_extracts_ef_core_tables_and_relationships(tmp_path: Path) -
     relationship_paths = store.trace_relationship_path(project_root, "Accounts", "Users", limit=10)
 
     assert result["entities"] >= 2
-    assert any(item["entity_name"] == "Accounts" and item["source_type"] == "ef_table" for item in entities)
+    assert any(item["entity_name"] == "Accounts" and item["source"] == "ef_table" for item in entities)
     assert status["entity_breakdown"]["by_source_type"]["ef_table"] == 2
     assert status["entity_breakdown"]["categories"]["persistence"]["entities"] >= 2
     assert relationship_paths["paths"]

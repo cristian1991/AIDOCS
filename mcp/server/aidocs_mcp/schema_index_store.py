@@ -211,17 +211,7 @@ class SchemaIndexStore:
         params.append(limit)
         with self.connect(project_root) as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [
-            {
-                "entity_name": row["entity_name"],
-                "kind": row["kind"],
-                "source_type": row["source_type"],
-                "path": row["path"],
-                "container": row["container"],
-                "line_number": row["line_number"],
-            }
-            for row in rows
-        ]
+        return [self._compact_entity(dict(row)) for row in rows]
 
     def get_schema_entity(self, project_root: Path, entity_name: str) -> dict[str, object]:
         self.init_db(project_root)
@@ -258,24 +248,31 @@ class SchemaIndexStore:
             "fields": enriched_fields,
         }
 
-    @staticmethod
-    def _compact_field(field: dict[str, object], strip_entity_name: bool = True) -> dict[str, object]:
-        """Remove redundant/falsy keys from field dict to reduce response size."""
+    # Rename DB columns to match code_* tool vocabulary in output
+    _OUTPUT_KEY_RENAMES: dict[str, str] = {
+        "source_type": "source",
+        "field_kind": "kind",
+    }
+
+    @classmethod
+    def _compact_field(cls, field: dict[str, object], strip_entity_name: bool = True) -> dict[str, object]:
+        """Remove redundant/falsy keys and normalize vocabulary to match code_* tools."""
         result: dict[str, object] = {}
         for k, v in field.items():
             if k == "entity_name" and strip_entity_name:
-                continue  # redundant — already in parent
+                continue
             if k in ("required", "optional", "defaulted", "computed") and not v:
-                continue  # only include truthy flags
+                continue
             if v is None or v == "":
                 continue
-            result[k] = v
+            out_key = cls._OUTPUT_KEY_RENAMES.get(k, k)
+            result[out_key] = v
         return result
 
-    @staticmethod
-    def _compact_entity(entity: dict[str, object]) -> dict[str, object]:
-        """Remove redundant/empty keys from entity dict."""
-        return {k: v for k, v in entity.items() if v is not None and v != ""}
+    @classmethod
+    def _compact_entity(cls, entity: dict[str, object]) -> dict[str, object]:
+        """Remove redundant/empty keys and normalize vocabulary."""
+        return {cls._OUTPUT_KEY_RENAMES.get(k, k): v for k, v in entity.items() if v is not None and v != ""}
 
     def find_schema_field(self, project_root: Path, field_name: str, limit: int = 50) -> list[dict[str, object]]:
         self.init_db(project_root)

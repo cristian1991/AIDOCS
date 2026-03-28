@@ -1355,7 +1355,7 @@ class CodeIndexStore:
                     "path": path,
                     "layer": self._infer_layer_from_path(path),
                     "symbol": item["field_name"],
-                    "kind": item["field_kind"],
+                    "kind": item.get("kind") or item.get("field_kind", ""),
                     "line_number": line_number,
                     "container": item["entity_name"],
                     "snippet": item["field_type"],
@@ -3063,7 +3063,7 @@ class CodeIndexStore:
                     "path": item["path"],
                     "layer": self._infer_layer_from_path(str(item["path"])),
                     "symbol": item["field_name"],
-                    "kind": item["field_kind"],
+                    "kind": item.get("kind") or item.get("field_kind", ""),
                     "line_number": item["line_number"],
                 }
             )

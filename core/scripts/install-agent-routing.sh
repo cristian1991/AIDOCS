@@ -40,7 +40,11 @@ fi
 OPENCODE_DIR="$HOME/.config/opencode"
 OPENCODE_COMMANDS_DIR="$OPENCODE_DIR/commands"
 OPENCODE_PLUGINS_DIR="$OPENCODE_DIR/plugins"
-OPENCODE_SETTINGS_PATH="$OPENCODE_DIR/opencode.json"
+if [[ -f "$OPENCODE_DIR/opencode.jsonc" ]]; then
+  OPENCODE_SETTINGS_PATH="$OPENCODE_DIR/opencode.jsonc"
+else
+  OPENCODE_SETTINGS_PATH="$OPENCODE_DIR/opencode.json"
+fi
 CLAUDE_DIR="$HOME/.claude"
 CLAUDE_COMMANDS_DIR="$CLAUDE_DIR/commands"
 CLAUDE_SETTINGS_PATH="$CLAUDE_DIR/settings.json"
@@ -241,6 +245,17 @@ def remove_aidocs_groups(groups):
     return result
 
 hook_command = f"bash '{Path(os.environ['SOURCE_ROOT']) / 'scripts' / 'claude-hook.sh'}'"
+session_start_group = {
+    "hooks": [
+        {
+            "type": "command",
+            "shell": "bash",
+            "command": hook_command,
+            "timeout": 30,
+            "statusMessage": "AIDOCS startup routing",
+        }
+    ]
+}
 user_prompt_group = {
     "hooks": [
         {
@@ -265,6 +280,7 @@ pre_tool_group = {
     ]
 }
 
+hooks["SessionStart"] = remove_aidocs_groups(hooks.get("SessionStart")) + [session_start_group]
 hooks["UserPromptSubmit"] = remove_aidocs_groups(hooks.get("UserPromptSubmit")) + [user_prompt_group]
 hooks["PreToolUse"] = remove_aidocs_groups(hooks.get("PreToolUse")) + [pre_tool_group]
 

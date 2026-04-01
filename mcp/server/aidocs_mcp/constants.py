@@ -36,6 +36,7 @@ PLAN_SECTION_ORDER = [
     "Scope",
     "Current State",
     "Partial Goals",
+    "Steps",
     "End Goal",
     "Constraints",
     "Validation",

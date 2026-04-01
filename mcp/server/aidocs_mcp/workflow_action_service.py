@@ -46,6 +46,9 @@ class WorkflowActionService:
         self._action_token_mapping: list[tuple[str, tuple[str, ...]]] | None = None
 
     def rules_file_path(self, project_root: Path) -> Path:
+        return project_root / ".MEMORY" / "rules" / "workflow.md"
+
+    def legacy_rules_file_path(self, project_root: Path) -> Path:
         return project_root / ".MEMORY" / "rules" / "workflow-rules.md"
 
     def actions_file_path(self, project_root: Path) -> Path:
@@ -54,6 +57,7 @@ class WorkflowActionService:
     def source_paths(self, project_root: Path) -> dict[str, Path]:
         return {
             "rules": self.rules_file_path(project_root),
+            "legacy_rules": self.legacy_rules_file_path(project_root),
             "actions": self.actions_file_path(project_root),
         }
 
@@ -119,9 +123,13 @@ class WorkflowActionService:
         rules: list[str] = []
         defs: list[str] = []
         section_found = False
-        if paths["rules"].is_file() or paths["actions"].is_file():
+        if paths["rules"].is_file() or paths["legacy_rules"].is_file() or paths["actions"].is_file():
             if paths["rules"].is_file():
                 sections = self._parse_sections(paths["rules"].read_text(encoding="utf-8"))
+                rules, rules_found = self._extract_rules(sections, self.RULE_SECTION_NAMES)
+                section_found = section_found or rules_found
+            elif paths["legacy_rules"].is_file():
+                sections = self._parse_sections(paths["legacy_rules"].read_text(encoding="utf-8"))
                 rules, rules_found = self._extract_rules(sections, self.RULE_SECTION_NAMES)
                 section_found = section_found or rules_found
             if paths["actions"].is_file():
@@ -151,7 +159,7 @@ class WorkflowActionService:
         payload = {
             "version": 2,
             "path": str(target_path),
-            "source_path": str(paths["rules"]),
+            "source_path": str(paths["rules"] if paths["rules"].is_file() or not paths["legacy_rules"].is_file() else paths["legacy_rules"]),
             "source_exists": source_exists,
             "source_paths": {key: str(path) for key, path in paths.items()},
             "section_found": section_found,

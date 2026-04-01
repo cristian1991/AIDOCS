@@ -1,0 +1,15 @@
+{
+  "name": "aidocs",
+  "displayName": "AIDOCS",
+  "description": "Structured session routing, persistent memory, and MCP-first agent workflows",
+  "version": "1.3.0",
+  "author": {
+    "name": "CodeNexus",
+    "email": "hello@codenexus.cloud"
+  },
+  "homepage": "https://github.com/cristian1991/AIDOCS",
+  "repository": "https://github.com/cristian1991/AIDOCS",
+  "license": "Apache-2.0",
+  "commands": "./commands/",
+  "hooks": "./hooks/hooks-cursor.json"
+}

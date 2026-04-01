@@ -52,6 +52,8 @@ pip install -e .
 
 Then configure your agent's MCP server settings to run `aidocs-mcp` or `python -m aidocs_mcp.mcp_server`.
 
+For OpenCode, AIDOCS now prefers `opencode.jsonc` when it already exists and otherwise falls back to `opencode.json`.
+
 See `mcp/README.md` for details and `mcp/HOST_INTEGRATION.md` for agent integration contracts.
 
 ## Notes

@@ -2,5 +2,6 @@
   "inject_message_directives": true,
   "directive_style": "short",
   "languages_enabled": "all",
-  "disregard_compaction": false
+  "disregard_compaction": false,
+  "startup_context_once": true
 }

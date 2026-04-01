@@ -114,6 +114,22 @@ def test_preflight_classifies_greenfield_as_create(tmp_path: Path) -> None:
 # ── plan_connect tests ───────────────────────────────────────────────
 
 
+def test_plan_connect_uses_session_plan_when_present(tmp_path: Path) -> None:
+    """An existing session plan takes precedence over roadmap fallback."""
+    runtime, project = _make_runtime(tmp_path)
+    runtime.hub.sessions.create_session(project, "2026-03-30-plan", "Plan", "user", "Use session plan")
+    _write_plan(project, "2026-03-30-plan", [
+        (False, "Implement session step"),
+    ])
+    (project / "ROADMAP_2_0_0.md").write_text("# Roadmap\n\n- [ ] Ship roadmap fallback\n", encoding="utf-8")
+
+    result = runtime.plan_connect(project, "2026-03-30-plan", run_preflight=False)
+
+    assert result["connected"] is True
+    assert result["plan_source"] == "session_plan"
+    assert result["next_steps"] == ["Implement session step"]
+
+
 def test_connect_shows_progress_and_next_steps(tmp_path: Path) -> None:
     """connect returns progress, completed/incomplete counts, and next steps."""
     runtime, project = _make_runtime(tmp_path)
@@ -153,6 +169,42 @@ def test_connect_with_preflight_includes_decisions(tmp_path: Path) -> None:
     assert result["connected"] is True
     assert "step_analysis" in result
     assert "recommended_order" in result
+
+
+def test_connect_preserves_nonterminal_plan_states(tmp_path: Path) -> None:
+    """connect and preflight keep in-progress/feedback/blocked plan items visible."""
+    runtime, project = _make_runtime(tmp_path)
+    runtime.hub.sessions.create_session(project, "2026-03-30-rich", "Rich", "user", "Track richer states")
+    plan_path = project / ".MEMORY" / "sessions" / "2026-03-30-rich" / "plans" / "PLAN.md"
+    plan_path.write_text(
+        "# Plan\n"
+        "\n## Purpose\n- Track richer states\n"
+        "\n## Steps\n"
+        "- [x] Completed step\n"
+        "- [~] In progress step\n"
+        "- [>] Awaiting user feedback\n"
+        "- [!] Blocked step\n"
+        "\n## End Goal\n- Finish the tracked work\n",
+        encoding="utf-8",
+    )
+
+    connected = runtime.plan_connect(project, "2026-03-30-rich", run_preflight=False)
+    preflight = runtime.plan_preflight(project, "2026-03-30-rich")
+
+    assert connected["progress"] == "1/4"
+    assert connected["completed_count"] == 1
+    assert connected["incomplete_count"] == 3
+    assert connected["next_steps"] == [
+        "In progress step",
+        "Awaiting user feedback",
+        "Blocked step",
+    ]
+    assert preflight["total_steps"] == 3
+    assert [step["step"] for step in preflight["steps"]] == [
+        "In progress step",
+        "Awaiting user feedback",
+        "Blocked step",
+    ]
 
 
 def test_connect_fully_complete_plan(tmp_path: Path) -> None:
@@ -197,3 +249,132 @@ def test_connect_includes_purpose_and_end_goal(tmp_path: Path) -> None:
     assert result["connected"] is True
     assert "purpose" in result
     assert "end_goal" in result
+
+
+def test_plan_connect_with_lane_aware_steps_keeps_checkbox_progress(tmp_path: Path) -> None:
+    """connect ignores lane metadata lines and only tracks actual checkbox work."""
+    runtime, project = _make_runtime(tmp_path)
+    runtime.hub.sessions.create_session(project, "2026-03-30-lane-connect", "Lane Connect", "user", "Track lane plan")
+    plan_path = project / ".MEMORY" / "sessions" / "2026-03-30-lane-connect" / "plans" / "PLAN.md"
+    plan_path.write_text(
+        "# Plan\n"
+        "\n## Purpose\n- Track lane-aware work\n"
+        "\n## Steps\n"
+        "- Phase: Homepage foundation\n"
+        "- Lane: homepage-hero\n"
+        "- Files: src/components/home/Hero.tsx, src/cms/hero-block.ts\n"
+        "- [ ] Build hero component\n"
+        "- Lane: homepage-shell\n"
+        "- Files: src/pages/index.tsx\n"
+        "- depends_on: homepage-hero\n"
+        "- [ ] Integrate homepage shell\n"
+        "\n## End Goal\n- Ship homepage\n",
+        encoding="utf-8",
+    )
+
+    result = runtime.plan_connect(project, "2026-03-30-lane-connect", run_preflight=False)
+
+    assert result["connected"] is True
+    assert result["progress"] == "0/2"
+    assert result["next_steps"] == ["Build hero component", "Integrate homepage shell"]
+
+
+def test_plan_feedback_ignores_lane_metadata_lines(tmp_path: Path) -> None:
+    """lane metadata stays structured and does not become awaiting-feedback prose."""
+    runtime, project = _make_runtime(tmp_path)
+    runtime.hub.sessions.create_session(project, "2026-03-30-lane-feedback", "Lane Feedback", "user", "Normalize safely")
+    runtime.hub.sessions.update_plan(
+        project,
+        "2026-03-30-lane-feedback",
+        {
+            "Steps": [
+                "- Phase: Homepage foundation",
+                "- Lane: shared-shell",
+                "- Files: src/components/home/Shell.tsx",
+                "- Lane: homepage-hero",
+                "- Files: src/components/home/Hero.tsx",
+                "- depends_on: shared-shell",
+                "- The agent should confirm copy alignment.",
+            ]
+        },
+    )
+
+    result = runtime.plan_connect(project, "2026-03-30-lane-feedback", run_preflight=False)
+
+    assert result["plan_feedback"]["status"] == "awaiting_feedback"
+    assert result["plan_feedback"]["original_prose"] == ["The agent should confirm copy alignment."]
+    assert result["plan_feedback"]["changed"] == [
+        {
+            "from": "- The agent should confirm copy alignment.",
+            "to": "- [>] Confirm copy alignment",
+        }
+    ]
+
+
+
+def test_plan_connect_includes_lane_graph_summary_for_lane_aware_plan(tmp_path: Path) -> None:
+    """lane-aware plans expose a lane summary without changing checkbox progress."""
+    runtime, project = _make_runtime(tmp_path)
+    runtime.hub.sessions.create_session(project, "2026-03-30-lane-summary", "Lane Summary", "user", "Track conductor state")
+    plan_path = project / ".MEMORY" / "sessions" / "2026-03-30-lane-summary" / "plans" / "PLAN.md"
+    plan_path.write_text(
+        "# Plan\n"
+        "\n## Purpose\n- Track lane-aware work\n"
+        "\n## Steps\n"
+        "- Phase: Homepage foundation\n"
+        "- Lane: homepage-hero\n"
+        "- Files: src/components/home/Hero.tsx\n"
+        "- [ ] Build hero component\n"
+        "- Lane: homepage-shell\n"
+        "- Files: src/pages/index.tsx\n"
+        "- depends_on: homepage-hero\n"
+        "- [ ] Integrate homepage shell\n"
+        "\n## End Goal\n- Ship homepage\n",
+        encoding="utf-8",
+    )
+
+    result = runtime.plan_connect(project, "2026-03-30-lane-summary", run_preflight=False)
+
+    assert result["connected"] is True
+    assert result["plan_source"] == "session_plan"
+    assert result["progress"] == "0/2"
+    assert result["next_steps"] == ["Build hero component", "Integrate homepage shell"]
+    assert result["lane_summary"]["graph"]["phase_order"] == ["homepage-foundation"]
+    assert result["lane_summary"]["runnable"]["runnable_lane_ids"] == ["homepage-hero"]
+    assert result["lane_summary"]["runnable"]["waiting_on"] == {"homepage-shell": ["homepage-hero"]}
+    assert "phase_order" not in result["lane_summary"]["runnable"]
+    assert result["lane_summary"]["graph"] == result["conductor"]["graph"]
+    assert result["lane_summary"]["runnable"] == result["conductor"]["runnable"]
+
+
+def test_handoff_step_update_accepts_completed_status(tmp_path: Path) -> None:
+    """handoff step updates accept completed and normalize legacy done safely."""
+    runtime, project = _make_runtime(tmp_path)
+    session = runtime.hub.sessions.create_session(
+        project,
+        "2026-03-30-handoff-step",
+        "Handoff Step",
+        "user",
+        "Track handoff completion",
+    )
+
+    runtime.hub.sessions.upsert_handoff_step(
+        project,
+        session.session_id,
+        text="Close the handoff loop",
+        status="completed",
+    )
+    runtime.hub.sessions.upsert_handoff_step(
+        project,
+        session.session_id,
+        step_id="s1",
+        status="done",
+    )
+
+    steps = runtime.hub.sessions.read_handoff_steps(project, session.session_id)
+    handoff_text = runtime.hub.sessions.handoff_file(project, session.session_id).read_text(encoding="utf-8")
+
+    assert len(steps) == 1
+    assert steps[0]["status"] == "completed"
+    assert steps[0]["text"] == "Close the handoff loop"
+    assert "- [x] s1 @" in handoff_text

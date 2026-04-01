@@ -774,7 +774,7 @@ class CodeIndexStore:
         paths = self.session_store.session_code_targets(project_root, session_id)
         return self.sync_code_files(project_root, paths=paths, include_tests=include_tests)
 
-    def code_status(self, project_root: Path) -> dict[str, int | str]:
+    def code_status(self, project_root: Path) -> dict[str, object]:
         self.init_db(project_root)
         with self.connect(project_root) as conn:
             code_count = conn.execute("SELECT COUNT(*) FROM code_files").fetchone()[0]
@@ -809,6 +809,67 @@ class CodeIndexStore:
             "role_groups": role_groups,
             "language_tiers": tiers,
             "language_sources": sources,
+            "freshness": self._code_freshness(project_root),
+        }
+
+    def _code_freshness(self, project_root: Path) -> dict[str, object]:
+        indexed_rows: dict[str, sqlite3.Row] = {}
+        with self.connect(project_root) as conn:
+            for row in conn.execute("SELECT path, checksum, mtime_ns, parsed FROM code_files ORDER BY path"):
+                indexed_rows[str(row["path"])] = row
+
+        include_tests = any(self._path_looks_like_test(path) for path in indexed_rows)
+        tracked_paths: dict[str, dict[str, int | str]] = {}
+        for path in self._walk_source_files(project_root, include_tests=include_tests):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(project_root).as_posix()
+            code_language = self._language_for(path, project_root=project_root)
+            if code_language is None:
+                continue
+            stat = path.stat()
+            checksum = hashlib.sha256(path.read_text(encoding="utf-8", errors="ignore").encode("utf-8")).hexdigest()
+            tracked_paths[rel] = {
+                "mtime_ns": int(stat.st_mtime_ns),
+                "checksum": checksum,
+            }
+
+        indexed_path_set = set(indexed_rows)
+        tracked_path_set = set(tracked_paths)
+        missing_paths = sorted(tracked_path_set - indexed_path_set)
+        extra_paths = sorted(indexed_path_set - tracked_path_set)
+        drifted_paths = sorted(
+            path
+            for path in tracked_path_set & indexed_path_set
+            if str(indexed_rows[path]["checksum"] or "") != str(tracked_paths[path]["checksum"])
+        )
+        unparsed_paths = sorted(path for path, row in indexed_rows.items() if int(row["parsed"] or 0) != 1)
+        reasons: list[str] = []
+        if missing_paths or extra_paths:
+            reasons.append("path_drift")
+        if drifted_paths:
+            reasons.append("content_drift")
+        if unparsed_paths or (tracked_paths and not indexed_rows):
+            reasons.append("missing_index_state")
+        if tracked_paths and not indexed_rows:
+            state = "missing"
+        elif reasons:
+            state = "stale"
+        else:
+            state = "ready"
+        latest_source_mtime_ns = max((int(meta["mtime_ns"]) for meta in tracked_paths.values()), default=None)
+        latest_indexed_mtime_ns = max((int(row["mtime_ns"] or 0) for row in indexed_rows.values()), default=None)
+        return {
+            "state": state,
+            "reasons": reasons,
+            "tracked_paths": len(tracked_paths),
+            "indexed_paths": len(indexed_rows),
+            "drifted_paths": sorted(dict.fromkeys(missing_paths + drifted_paths + extra_paths)),
+            "missing_paths": missing_paths,
+            "extra_paths": extra_paths,
+            "unparsed_paths": unparsed_paths,
+            "latest_source_mtime_ns": latest_source_mtime_ns,
+            "latest_indexed_mtime_ns": latest_indexed_mtime_ns,
         }
 
     def search_code(self, project_root: Path, query: str, limit: int = 10) -> list[dict[str, str | int]]:
@@ -4553,7 +4614,7 @@ class CodeIndexStore:
     _PRUNE_DIRS_BASE: set[str] = {
         ".git", ".memory", ".opencode", ".claude", ".github", ".backup", ".backups",
         "node_modules", ".next", ".docusaurus", "__pycache__", ".venv", "venv",
-        "dist", "coverage", "obj", "bin", "compiled", "vendor", "vendors",
+        "dist", "build", "coverage", "obj", "bin", "compiled", "vendor", "vendors",
         "datatables", "target", "migrations", "dumps", "backups", "backup",
         "temp", "tmp",
     }
@@ -4584,13 +4645,11 @@ class CodeIndexStore:
             # Prune directories in-place (modifying dirnames prevents os.walk from descending)
             rel_dir = os.path.relpath(dirpath, root_str).replace("\\", "/")
             rel_parts = rel_dir.lower().split("/") if rel_dir != "." else []
-
             dirnames[:] = [
                 d for d in dirnames
                 if d.lower() not in self._prune_dirs()
                 and d.lower() != "index_languages"
                 and not d.startswith(".")
-                and not (d.lower() == "build" and "website" in rel_parts)
                 and not (d.lower() == "lib" and "wwwroot" in rel_parts)
             ]
 
@@ -4655,14 +4714,15 @@ class CodeIndexStore:
             return True
         if any(
             segment in parts
-            for segment in (
-                "node_modules",
-                ".next",
-                ".docusaurus",
-                "compiled",
-                "vendor",
-                "vendors",
-                "datatables",
+                for segment in (
+                    "node_modules",
+                    ".next",
+                    ".docusaurus",
+                    "build",
+                    "compiled",
+                    "vendor",
+                    "vendors",
+                    "datatables",
                 "dist",
                 "coverage",
                 "obj",
@@ -4683,8 +4743,6 @@ class CodeIndexStore:
             return True
         if "sqlscripts" in parts:
             return True
-        if "website" in parts and "build" in parts:
-            return True
         if "wwwroot" in parts and "lib" in parts:
             return True
         if path.name.lower().endswith((".min.js", ".min.css", ".bak", ".dump", ".backup")):
@@ -4701,9 +4759,18 @@ class CodeIndexStore:
         if lower_name.endswith(".json") and path.stat().st_size > self._max_json_size():
             return True
         if not include_tests:
-            if "tests" in parts or "e2e" in parts or any(part.endswith(".test") for part in parts):
+            if self._path_looks_like_test(rel):
                 return True
         return False
+
+    @staticmethod
+    def _path_looks_like_test(path: str) -> bool:
+        parts = [part for part in path.lower().split("/") if part]
+        return any(
+            part in {"tests", "test", "e2e", "__tests__", "__test__"}
+            or part.endswith(".test")
+            for part in parts
+        )
 
     def _language_for(self, path: Path, project_root: Path | None = None) -> str | None:
         if project_root is not None:

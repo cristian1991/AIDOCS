@@ -1,0 +1,44 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "bash './hooks/session-start'",
+            "timeout": 30,
+            "statusMessage": "AIDOCS startup routing"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "bash './scripts/claude-hook.sh'",
+            "timeout": 30,
+            "statusMessage": "AIDOCS prompt routing"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|Glob|Grep|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "bash './scripts/claude-hook.sh'",
+            "timeout": 30,
+            "statusMessage": "AIDOCS tool guardrails"
+          }
+        ]
+      }
+    ]
+  }
+}

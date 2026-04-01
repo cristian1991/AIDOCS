@@ -55,6 +55,23 @@ def test_sync_code_files_skips_generated_website_and_temp_plugin_outputs(tmp_pat
         rows = conn.execute("SELECT path FROM code_files ORDER BY path").fetchall()
     assert [r["path"] for r in rows] == ["web/src/app.ts"]
 
+
+def test_sync_code_files_skips_generic_build_outputs(tmp_path: Path) -> None:
+    store = CodeIndexStore()
+    project_root = tmp_path / "project"
+    (project_root / "mcp" / "build" / "lib").mkdir(parents=True, exist_ok=True)
+    (project_root / "src").mkdir(parents=True, exist_ok=True)
+    (project_root / "mcp" / "build" / "lib" / "generated.py").write_text("def nope(): pass\n", encoding="utf-8")
+    (project_root / "src" / "real.py").write_text("def ok(): pass\n", encoding="utf-8")
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    count = store.sync_code_files(project_root)
+
+    assert count == 1
+    with store.connect(project_root) as conn:
+        rows = conn.execute("SELECT path FROM code_files ORDER BY path").fetchall()
+    assert [r["path"] for r in rows] == ["src/real.py"]
+
 def test_sync_code_files_skips_obj_backup_and_temp_outputs(tmp_path: Path) -> None:
     store = CodeIndexStore()
     project_root = tmp_path / "project"

@@ -15,7 +15,7 @@ from .constants import (
     SESSION_TEMPLATE_NAME,
     VALID_SESSION_STATUSES,
 )
-from .types import ContextData, HandoffData, PlanData, SessionData, SessionSummary
+from .types import ContextData, HandoffData, PlanData, PlanLane, PlanPhase, PlanStep, SessionData, SessionSummary
 
 
 class SessionStore:
@@ -23,10 +23,49 @@ class SessionStore:
 
     HANDOFF_STEP_MARKERS = {
         "open": "[ ]",
+        "completed": "[x]",
         "done": "[x]",
         "failed": "[!]",
         "reset": "[~]",
         "stale": "[?]",
+    }
+    HANDOFF_MARKER_STATES = {
+        "[ ]": "open",
+        "[~]": "reset",
+        "[!]": "failed",
+        "[?]": "stale",
+        "[x]": "completed",
+        "[X]": "completed",
+    }
+    ROADMAP_STEP_MARKERS = {
+        "open": "[ ]",
+        "in_progress": "[~]",
+        "pending_user_feedback": "[>]",
+        "completed": "[x]",
+        "blocked": "[!]",
+    }
+    ROADMAP_MARKER_STATES = {
+        "[ ]": "open",
+        "[~]": "in_progress",
+        "[>]": "pending_user_feedback",
+        "[!]": "blocked",
+        "[x]": "completed",
+        "[X]": "completed",
+    }
+    PLAN_STEP_MARKERS = {
+        "open": "[ ]",
+        "in_progress": "[~]",
+        "awaiting_feedback": "[>]",
+        "completed": "[x]",
+        "blocked": "[!]",
+    }
+    PLAN_MARKER_STATES = {
+        "[ ]": "open",
+        "[~]": "in_progress",
+        "[>]": "awaiting_feedback",
+        "[!]": "blocked",
+        "[x]": "completed",
+        "[X]": "completed",
     }
 
     def __init__(self, templates_root: Path) -> None:
@@ -108,6 +147,15 @@ class SessionStore:
             sections.setdefault(section, ["-"])
         return HandoffData(session_id=session_id, path=path, sections=sections)
 
+    def read_handoff_optional(self, project_root: Path, session_id: str) -> HandoffData | None:
+        path = self._handoff_source_file(project_root, session_id)
+        if path is None or not path.exists():
+            return None
+        sections = self._parse_sections(path.read_text(encoding="utf-8", errors="ignore"))
+        for section in HANDOFF_SECTION_ORDER:
+            sections.setdefault(section, ["-"])
+        return HandoffData(session_id=session_id, path=path, sections=sections)
+
     def update_handoff(self, project_root: Path, session_id: str, patch: dict[str, list[str]], append: bool = False) -> HandoffData:
         data = self.read_handoff(project_root, session_id)
         for key, value in patch.items():
@@ -121,11 +169,16 @@ class SessionStore:
                 data.sections[key] = value or ["-"]
         if "Freshness" not in patch:
             data.sections["Freshness"] = [f"- Updated {self._timestamp()} automatically."]
-        self.handoff_file(project_root, session_id).write_text(self._render_handoff_sections(data.sections), encoding="utf-8")
-        return self.read_handoff(project_root, session_id)
+        return self._write_handoff_sections(project_root, session_id, data.sections)
 
     def read_handoff_steps(self, project_root: Path, session_id: str) -> list[dict[str, str]]:
         handoff = self.read_handoff(project_root, session_id)
+        return self._parse_handoff_steps(handoff.sections.get("Steps", []))
+
+    def read_handoff_steps_optional(self, project_root: Path, session_id: str) -> list[dict[str, str]]:
+        handoff = self.read_handoff_optional(project_root, session_id)
+        if handoff is None:
+            return []
         return self._parse_handoff_steps(handoff.sections.get("Steps", []))
 
     def upsert_handoff_step(
@@ -137,7 +190,8 @@ class SessionStore:
         status: str = "open",
         append: bool = True,
     ) -> HandoffData:
-        if status not in self.HANDOFF_STEP_MARKERS:
+        normalized_status = self._normalize_handoff_step_status(status)
+        if normalized_status not in self.HANDOFF_STEP_MARKERS:
             raise ValueError(f"Unknown handoff step status: {status}")
         existing = self.read_handoff_steps(project_root, session_id)
         now = self._timestamp()
@@ -156,7 +210,7 @@ class SessionStore:
                 updated.append(
                     {
                         "id": step_id,
-                        "status": status or item["status"],
+                        "status": normalized_status,
                         "text": text if text is not None else item["text"],
                         "updated_at": now,
                     }
@@ -166,9 +220,46 @@ class SessionStore:
         if not found:
             if not append and existing:
                 updated = []
-            updated.append({"id": step_id, "status": status, "text": text or step_id, "updated_at": now})
+            updated.append({"id": step_id, "status": normalized_status, "text": text or step_id, "updated_at": now})
         step_lines = self._render_handoff_steps(updated)
         return self.update_handoff(project_root, session_id, {"Steps": step_lines}, append=False)
+
+    def normalize_handoff_steps(self, project_root: Path, session_id: str) -> dict[str, object]:
+        handoff = self.read_handoff(project_root, session_id)
+        original_lines = list(handoff.sections.get("Steps", ["-"]))
+        normalized_lines: list[str] = []
+        changed: list[dict[str, str]] = []
+        untouched: list[str] = []
+
+        for line in original_lines:
+            normalized_line = self._normalize_handoff_step_line(line)
+            if normalized_line is None:
+                normalized_lines.append(line)
+                stripped = line.strip()
+                if stripped and stripped != "-":
+                    untouched.append(line)
+                continue
+            normalized_lines.append(normalized_line)
+            if normalized_line != line:
+                changed.append({"from": line, "to": normalized_line})
+            else:
+                untouched.append(line)
+
+        if not normalized_lines:
+            normalized_lines = ["-"]
+
+        if changed:
+            handoff.sections["Steps"] = normalized_lines
+            handoff = self._write_handoff_sections(project_root, session_id, handoff.sections)
+
+        return {
+            "session_id": session_id,
+            "path": str(handoff.path),
+            "status": "normalized" if changed else "unchanged",
+            "changed": changed,
+            "untouched": untouched,
+            "normalized_lines": normalized_lines,
+        }
 
     def read_plan(self, project_root: Path, session_id: str) -> PlanData:
         path = self.plan_file(project_root, session_id)
@@ -177,7 +268,112 @@ class SessionStore:
         sections = self._parse_sections(path.read_text(encoding="utf-8"))
         for section in PLAN_SECTION_ORDER:
             sections.setdefault(section, ["-"])
-        return PlanData(session_id=session_id, path=path, sections=sections)
+        phases, lanes = self._parse_lane_aware_steps(sections.get("Steps", []))
+        return PlanData(session_id=session_id, path=path, sections=sections, phases=phases, lanes=lanes)
+
+    def read_plan_optional(self, project_root: Path, session_id: str) -> PlanData | None:
+        path = self.plan_file(project_root, session_id)
+        if not path.exists():
+            return None
+        return self.read_plan(project_root, session_id)
+
+    def roadmap_candidates(self, project_root: Path) -> list[Path]:
+        return [project_root / "ROADMAP_2_0_0.md"]
+
+    def read_roadmap_steps(self, project_root: Path) -> list[dict[str, object]]:
+        for path in self.roadmap_candidates(project_root):
+            if not path.exists():
+                continue
+            steps: list[dict[str, object]] = []
+            for line_number, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), start=1):
+                match = re.match(r"^\s*-\s+(\[[ xX~>!]\])\s+(.+?)\s*$", line)
+                if not match:
+                    continue
+                marker, text = match.groups()
+                status = self.ROADMAP_MARKER_STATES.get(marker)
+                if status is None or status == "completed":
+                    continue
+                try:
+                    relative_path = str(path.relative_to(project_root)).replace("\\", "/")
+                except ValueError:
+                    relative_path = str(path).replace("\\", "/")
+                steps.append(
+                    {
+                        "text": text.strip(),
+                        "status": status,
+                        "line_number": line_number,
+                        "path": relative_path,
+                    }
+                )
+            if steps:
+                return steps
+        return []
+
+    def find_roadmap_step_matches(self, project_root: Path, step_text: str) -> list[dict[str, object]]:
+        normalized_target = self._normalize_step_text(step_text)
+        matches: list[dict[str, object]] = []
+        for path in self.roadmap_candidates(project_root):
+            if not path.exists():
+                continue
+            for line_number, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), start=1):
+                match = re.match(r"^\s*-\s+(\[[ xX~>!]\])\s+(.+?)\s*$", line)
+                if not match:
+                    continue
+                marker, text = match.groups()
+                status = self.ROADMAP_MARKER_STATES.get(marker)
+                if status is None:
+                    continue
+                if self._normalize_step_text(text) != normalized_target:
+                    continue
+                try:
+                    relative_path = str(path.relative_to(project_root)).replace("\\", "/")
+                except ValueError:
+                    relative_path = str(path).replace("\\", "/")
+                matches.append(
+                    {
+                        "text": text.strip(),
+                        "status": status,
+                        "line_number": line_number,
+                        "path": relative_path,
+                    }
+                )
+        return matches
+
+    def update_roadmap_step_state(self, project_root: Path, step_text: str, status: str) -> dict[str, object]:
+        marker = self.ROADMAP_STEP_MARKERS.get(status)
+        if marker is None:
+            raise ValueError(f"Unknown roadmap step status: {status}")
+        matches = self.find_roadmap_step_matches(project_root, step_text)
+        if len(matches) > 1:
+            raise ValueError(f"Ambiguous actionable roadmap step matched: {step_text}")
+        if not matches:
+            raise ValueError(f"No actionable roadmap step matched: {step_text}")
+        normalized_target = self._normalize_step_text(step_text)
+        for path in self.roadmap_candidates(project_root):
+            if not path.exists():
+                continue
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            for index, line in enumerate(lines):
+                match = re.match(r"^(\s*-\s+)(\[[ xX~>!]\])(\s+)(.+?)\s*$", line)
+                if not match:
+                    continue
+                prefix, _, spacing, text = match.groups()
+                if self._normalize_step_text(text) != normalized_target:
+                    continue
+                lines[index] = f"{prefix}{marker}{spacing}{text.strip()}"
+                rendered = "\n".join(lines).rstrip() + "\n"
+                path.write_text(rendered, encoding="utf-8")
+                try:
+                    relative_path = str(path.relative_to(project_root)).replace("\\", "/")
+                except ValueError:
+                    relative_path = str(path).replace("\\", "/")
+                return {
+                    "text": text.strip(),
+                    "status": status,
+                    "path": relative_path,
+                    "line_number": index + 1,
+                    }
+        raise ValueError(f"No actionable roadmap step matched: {step_text}")
 
     def update_plan(self, project_root: Path, session_id: str, patch: dict[str, list[str]]) -> PlanData:
         data = self.read_plan(project_root, session_id)
@@ -187,6 +383,83 @@ class SessionStore:
             data.sections[key] = value or ["-"]
         self.plan_file(project_root, session_id).write_text(self._render_plan_sections(data.sections), encoding="utf-8")
         return self.read_plan(project_root, session_id)
+
+    def preview_plan_feedback_sections(self, project_root: Path, session_id: str) -> dict[str, object]:
+        plan = self.read_plan(project_root, session_id)
+        existing_lines = list(plan.sections.get("Steps", []))
+        normalized_lines: list[str] = []
+        changed: list[dict[str, str]] = []
+        untouched: list[str] = []
+        original_prose: list[str] = []
+        seen_existing = {line.strip() for line in existing_lines}
+
+        for line in existing_lines:
+            parsed = self._parse_plan_checkbox_line(line)
+            if parsed is not None:
+                stripped = line.strip()
+                if stripped:
+                    untouched.append(stripped)
+                continue
+            stripped = line.strip()
+            if self._is_lane_metadata_line(stripped):
+                untouched.append(stripped)
+                continue
+            if not stripped or stripped == "-" or not stripped.startswith("-"):
+                if stripped and stripped != "-":
+                    untouched.append(line)
+                continue
+            prose = stripped[1:].strip()
+            if not prose:
+                continue
+            original_prose.append(prose)
+            normalized = f"- [>] {self._normalize_plan_prose_text(prose)}"
+            if normalized.strip() in seen_existing:
+                untouched.append(stripped)
+                continue
+            normalized_lines.append(normalized)
+            changed.append({"from": stripped, "to": normalized})
+            seen_existing.add(normalized.strip())
+
+        return {
+            "session_id": session_id,
+            "path": str(plan.path),
+            "status": "awaiting_feedback" if normalized_lines else "unchanged",
+            "changed": changed,
+            "untouched": untouched,
+            "original_prose": original_prose,
+            "normalized_lines": normalized_lines,
+        }
+
+    def normalize_plan_feedback_sections(self, project_root: Path, session_id: str) -> dict[str, object]:
+        result = self.preview_plan_feedback_sections(project_root, session_id)
+        normalized_lines = list(result.get("normalized_lines", []))
+        if normalized_lines:
+            plan = self.read_plan(project_root, session_id)
+            existing_lines = list(plan.sections.get("Steps", []))
+            plan = self.update_plan(project_root, session_id, {"Steps": existing_lines + normalized_lines})
+            result["path"] = str(plan.path)
+        return result
+
+    def normalize_session_artifacts(self, project_root: Path, session_id: str) -> dict[str, object]:
+        handoff_steps = self.normalize_handoff_steps(project_root, session_id)
+        plan_feedback_sections = self.normalize_plan_feedback_sections(project_root, session_id)
+        changed: list[str] = []
+        untouched: list[str] = []
+        for artifact_name, result in (
+            ("handoff_steps", handoff_steps),
+            ("plan_feedback_sections", plan_feedback_sections),
+        ):
+            if result.get("status") in {"normalized", "awaiting_feedback"}:
+                changed.append(artifact_name)
+            else:
+                untouched.append(artifact_name)
+        return {
+            "session_id": session_id,
+            "changed": changed,
+            "untouched": untouched,
+            "handoff_steps": handoff_steps,
+            "plan_feedback_sections": plan_feedback_sections,
+        }
 
     def session_code_targets(self, project_root: Path, session_id: str) -> list[str]:
         session = self.read_session(project_root, session_id)
@@ -506,9 +779,13 @@ class SessionStore:
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
+    def _write_handoff_sections(self, project_root: Path, session_id: str, sections: dict[str, list[str]]) -> HandoffData:
+        path = self.handoff_file(project_root, session_id)
+        path.write_text(self._render_handoff_sections(sections), encoding="utf-8")
+        return self.read_handoff(project_root, session_id)
+
     def _parse_handoff_steps(self, lines: list[str]) -> list[dict[str, str]]:
         result: list[dict[str, str]] = []
-        markers = {marker: status for status, marker in self.HANDOFF_STEP_MARKERS.items()}
         for line in lines:
             stripped = line.strip()
             if not stripped or stripped == "-":
@@ -520,7 +797,7 @@ class SessionStore:
                     marker, step_id, text = legacy_match.groups()
                     result.append({
                         "id": step_id,
-                        "status": markers.get(marker, "open"),
+                        "status": self._normalize_handoff_step_marker(marker),
                         "text": text.strip(),
                         "updated_at": "",
                     })
@@ -528,7 +805,7 @@ class SessionStore:
             marker, step_id, updated_at, text = match.groups()
             result.append({
                 "id": step_id,
-                "status": markers.get(marker, "open"),
+                "status": self._normalize_handoff_step_marker(marker),
                 "text": text.strip(),
                 "updated_at": updated_at,
             })
@@ -539,9 +816,12 @@ class SessionStore:
             return ["-"]
         lines = []
         for step in steps:
-            marker = self.HANDOFF_STEP_MARKERS.get(step.get("status", "open"), "[ ]")
-            updated_at = step.get("updated_at") or self._timestamp()
-            lines.append(f"- {marker} {step['id']} @ {updated_at}: {step['text']}")
+            marker = self.HANDOFF_STEP_MARKERS.get(self._normalize_handoff_step_status(step.get("status", "open")), "[ ]")
+            updated_at = str(step.get("updated_at") or "").strip()
+            if updated_at:
+                lines.append(f"- {marker} {step['id']} @ {updated_at}: {step['text']}")
+            else:
+                lines.append(f"- {marker} {step['id']}: {step['text']}")
         return lines
 
     def _extract_bullet_path(self, line: str) -> str | None:
@@ -550,6 +830,184 @@ class SessionStore:
             return None
         value = stripped[1:].strip().strip('`')
         return value or None
+
+    def _normalize_step_text(self, text: str) -> str:
+        return re.sub(r"\s+", " ", text.strip()).casefold()
+
+    def _normalize_handoff_step_status(self, status: str) -> str:
+        return "completed" if status == "done" else status
+
+    def _normalize_handoff_step_line(self, line: str) -> str | None:
+        stripped = line.strip()
+        if not stripped or stripped == "-":
+            return None
+        match = re.match(r"^-\s+(\[[^\]]+\])\s+([A-Za-z0-9_-]+)\s+@\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}):\s+(.+)$", stripped)
+        if match:
+            marker, step_id, updated_at, text = match.groups()
+            status = self._normalize_handoff_step_marker(marker)
+            return self._render_handoff_steps([
+                {"id": step_id, "status": status, "text": text.strip(), "updated_at": updated_at}
+            ])[0]
+        legacy_match = re.match(r"^-\s+(\[[^\]]+\])\s+([A-Za-z0-9_-]+):\s+(.+)$", stripped)
+        if legacy_match:
+            marker, step_id, text = legacy_match.groups()
+            status = self._normalize_handoff_step_marker(marker)
+            return self._render_handoff_steps([
+                {"id": step_id, "status": status, "text": text.strip(), "updated_at": ""}
+            ])[0]
+        return None
+
+    def _normalize_handoff_step_marker(self, marker: str) -> str:
+        normalized = re.sub(r"\s+", "", marker).casefold()
+        aliases = {
+            "[]": "open",
+            "[open]": "open",
+            "[todo]": "open",
+            "[x]": "completed",
+            "[done]": "completed",
+            "[complete]": "completed",
+            "[completed]": "completed",
+            "[~]": "reset",
+            "[reset]": "reset",
+            "[reopen]": "reset",
+            "[re-open]": "reset",
+            "[!]": "failed",
+            "[failed]": "failed",
+            "[fail]": "failed",
+            "[?]": "stale",
+            "[stale]": "stale",
+        }
+        return aliases.get(normalized, self.HANDOFF_MARKER_STATES.get(marker, "open"))
+
+    def _parse_plan_checkbox_line(self, line: str) -> dict[str, str] | None:
+        stripped = line.strip()
+        match = re.match(r"^-\s+(\[[ xX~>!]\])\s+(.+)$", stripped)
+        if not match:
+            return None
+        marker, text = match.groups()
+        status = self.PLAN_MARKER_STATES.get(marker)
+        if status is None:
+            return None
+        return {"status": status, "text": text.strip()}
+
+
+    def _parse_lane_aware_steps(self, lines: list[str]) -> tuple[list[PlanPhase], list[PlanLane]]:
+        phases: list[PlanPhase] = []
+        lanes: list[PlanLane] = []
+        current_phase: PlanPhase | None = None
+        current_lane: PlanLane | None = None
+        saw_lane_metadata = False
+        phase_ids: set[str] = set()
+        lane_ids: set[str] = set()
+
+        def finalize_lane() -> None:
+            nonlocal current_lane
+            if current_lane is None:
+                return
+            if not current_lane.files:
+                raise ValueError(f"Files are required for lane '{current_lane.name}'")
+            lanes.append(current_lane)
+            if current_phase is not None:
+                current_phase.lanes.append(current_lane)
+            current_lane = None
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped == "-":
+                continue
+
+            metadata = self._parse_lane_metadata_line(stripped)
+            if metadata is not None:
+                saw_lane_metadata = True
+                kind, value = metadata
+                if kind == "phase":
+                    finalize_lane()
+                    phase_id = self._slugify_plan_metadata(value, fallback="phase")
+                    if phase_id in phase_ids:
+                        raise ValueError(f"Duplicate phase id '{phase_id}' in lane-aware plan")
+                    phase_ids.add(phase_id)
+                    current_phase = PlanPhase(phase_id=phase_id, name=value)
+                    phases.append(current_phase)
+                    continue
+                if kind == "lane":
+                    if current_phase is None:
+                        raise ValueError("Lane entries require a Phase before the first Lane")
+                    finalize_lane()
+                    lane_id = self._slugify_plan_metadata(value, fallback="lane")
+                    if lane_id in lane_ids:
+                        raise ValueError(f"Duplicate lane id '{lane_id}' in lane-aware plan")
+                    lane_ids.add(lane_id)
+                    current_lane = PlanLane(
+                        lane_id=lane_id,
+                        phase_id=current_phase.phase_id,
+                        name=value,
+                    )
+                    continue
+                if kind == "files":
+                    if current_lane is None:
+                        raise ValueError("Files entries require an active Lane")
+                    if current_lane.files:
+                        raise ValueError(f"Files already declared for lane '{current_lane.name}'")
+                    current_lane.files = self._parse_plan_metadata_list(value, field_name="Files")
+                    continue
+                if kind == "depends_on":
+                    if current_lane is None:
+                        raise ValueError("depends_on entries require an active Lane")
+                    if current_lane.depends_on:
+                        raise ValueError(f"depends_on already declared for lane '{current_lane.name}'")
+                    current_lane.depends_on = self._parse_plan_metadata_list(value, field_name="depends_on")
+                    continue
+
+            parsed_step = self._parse_plan_checkbox_line(line)
+            if parsed_step is not None and current_lane is not None:
+                current_lane.steps.append(PlanStep(status=parsed_step["status"], text=parsed_step["text"]))
+
+        finalize_lane()
+        if not saw_lane_metadata:
+            return [], []
+
+        for lane in lanes:
+            for dependency in lane.depends_on:
+                if dependency == lane.lane_id:
+                    raise ValueError(f"Lane '{lane.name}' cannot depend on itself")
+                if dependency not in lane_ids:
+                    raise ValueError(f"Unknown depends_on lane id '{dependency}' for lane '{lane.name}'")
+
+        return phases, lanes
+
+    def _parse_plan_metadata_list(self, raw_value: str, field_name: str) -> list[str]:
+        values = [item.strip() for item in raw_value.split(",") if item.strip()]
+        if not values:
+            raise ValueError(f"{field_name} must list at least one value")
+        return values
+
+    def _parse_lane_metadata_line(self, stripped_line: str) -> tuple[str, str] | None:
+        patterns = (
+            ("phase", r"^-\s+Phase:\s+(.+)$"),
+            ("lane", r"^-\s+Lane:\s+(.+)$"),
+            ("files", r"^-\s+Files:\s+(.+)$"),
+            ("depends_on", r"^-\s+depends_on:\s+(.+)$"),
+        )
+        for kind, pattern in patterns:
+            match = re.match(pattern, stripped_line)
+            if match:
+                return kind, match.group(1).strip()
+        return None
+
+    def _is_lane_metadata_line(self, stripped_line: str) -> bool:
+        return self._parse_lane_metadata_line(stripped_line) is not None
+
+    def _slugify_plan_metadata(self, value: str, fallback: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+        return slug or fallback
+
+    def _normalize_plan_prose_text(self, text: str) -> str:
+        normalized = text.strip().rstrip(".")
+        normalized = re.sub(r"^(the\s+agent\s+should|agent\s+should|should)\s+", "", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized:
+            return ""
+        return normalized[0].upper() + normalized[1:]
 
     def _extract_code_paths_from_text(self, text: str) -> list[str]:
         matches: list[str] = []

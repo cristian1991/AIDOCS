@@ -162,6 +162,25 @@ def test_compile_project_rules_reads_split_workflow_files_first(tmp_path: Path) 
     assert result["actions"][0]["action_ref"] == "ci_status"
 
 
+def test_compile_project_rules_reads_canonical_workflow_md(tmp_path: Path) -> None:
+    service = WorkflowActionService()
+    project_root = tmp_path / "project"
+    rules_dir = project_root / ".MEMORY" / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "workflow.md").write_text(
+        "# Workflow\n\n"
+        "## Automation Rules\n"
+        "- After push, check GitHub workflow status.\n",
+        encoding="utf-8",
+    )
+
+    result = service.compile_project_rules(project_root)
+
+    assert result["action_count"] == 1
+    assert result["actions"][0]["kind"] == "github_workflow_check"
+    assert result["source_path"].endswith("workflow.md")
+
+
 # ── triggers_for_action_kind tests ───────────────────────────────────
 
 

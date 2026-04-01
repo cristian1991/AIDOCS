@@ -15,12 +15,13 @@ from .managed_file_service import ManagedFileService
 from .managed_mode_service import ManagedModeService
 from .memory_store import MemoryStore
 from .project_status_service import ProjectStatusService
+from .query_gate import QueryGateStore
 from .related_project_service import RelatedProjectService
 from .session_store import SessionStore
 from .schema_index_store import SchemaIndexStore
+from .skill_store import SkillStore
 from .updater_service import UpdaterService
 from .workflow_action_service import WorkflowActionService
-
 
 class AidocsServiceHub:
     """Small composition root for the first MCP-backed AIDOCS services."""
@@ -37,10 +38,13 @@ class AidocsServiceHub:
         self.procedures = ProcedureIndexStore()
         self.procedure_links = ProcedureCapabilityLinkStore()
         self.schema = SchemaIndexStore()
+        self.skills = SkillStore()
+        self.query_gate = QueryGateStore()
         self.updater = UpdaterService(script_root=script_root or templates_root.parents[2] / "scripts")
         self.legacy = LegacyMigrationService()
         self.related = RelatedProjectService()
         self.policy = PolicyService(self)
+
         self.project_status = ProjectStatusService(self)
         self.action_surface = ActionSurfaceService(self)
         self.workflow = WorkflowActionService()

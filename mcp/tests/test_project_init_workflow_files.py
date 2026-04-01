@@ -11,8 +11,8 @@ def test_project_init_creates_split_workflow_files(tmp_path: Path) -> None:
     async def run() -> object:
         server = create_server()
         tools = await server.list_tools()
-        assert any(item.name == "project_init" for item in tools)
-        return await server.call_tool("project_init", {"project_root": str(project_root), "init_git": False, "create_remote": False})
+        assert any(item.name == "aidocs_project_init" for item in tools)
+        return await server.call_tool("aidocs_project_init", {"project_root": str(project_root), "init_git": False, "create_remote": False})
 
     result = asyncio.run(run())
     payload = result[0].text if isinstance(result, list) else str(result)

@@ -10,14 +10,105 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MethodType
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
-from .config import TOOLS_CALL_TIMEOUT, TOOLS_SYNC_TIMEOUT, TOOLS_GIT_TIMEOUT, TOOLS_MAX_TIMEOUT
-from .file_ops import get_lines as _file_get_lines, edit_lines as _file_edit_lines, batch_edit as _file_batch_edit
-from .language_descriptors import descriptor_match_summary, descriptor_registry_summary, descriptor_semantics_summary, validate_language_descriptors
+from .config import (
+    TOOLS_CALL_TIMEOUT,
+    TOOLS_SYNC_TIMEOUT,
+    TOOLS_GIT_TIMEOUT,
+    TOOLS_MAX_TIMEOUT,
+)
+from .config_schema import available_config_edit_modes, self_edit_available_in_profile
+from .file_ops import (
+    get_lines as _file_get_lines,
+    edit_lines as _file_edit_lines,
+    batch_edit as _file_batch_edit,
+    create_file as _file_create_file,
+)
+from .language_descriptors import (
+    descriptor_match_summary,
+    descriptor_registry_summary,
+    descriptor_semantics_summary,
+    validate_language_descriptors,
+)
+from .plan_conductor import PlanConductor
 from .runtime_service import RuntimeService
 from .service_hub import AidocsServiceHub
+from .skill_provider import BUNDLED_PROVIDER_ID
+
+
+_BUNDLED_OVERRIDE_PROVIDER_ID = "superpowers_external"
+
+
+def _selected_skill_override_identity(
+    selected_skill_id: str, provider_states: dict[str, Any] | None = None
+) -> tuple[str, str] | None:
+    if "/" in selected_skill_id:
+        return tuple(selected_skill_id.split("/", 1))
+    if isinstance(provider_states, dict) and BUNDLED_PROVIDER_ID in provider_states:
+        return _BUNDLED_OVERRIDE_PROVIDER_ID, selected_skill_id
+    return None
+
+
+def _selected_skill_trigger_identity(
+    selected_skill_id: str,
+    *,
+    provider_states: dict[str, Any] | None = None,
+    override_store: Any = None,
+) -> tuple[str, str, str] | None:
+    override_target = _selected_skill_override_identity(
+        selected_skill_id, provider_states=provider_states
+    )
+    if override_target is None:
+        return None
+    policy_provider_id, selected_name = override_target
+    source_provider_id = (
+        selected_skill_id.split("/", 1)[0]
+        if "/" in selected_skill_id
+        else BUNDLED_PROVIDER_ID
+    )
+    resolved_skill_id = selected_skill_id
+    provider = source_provider_id
+    runtime_provider = source_provider_id
+    if override_store is not None:
+        decision = override_store.resolve(policy_provider_id, selected_name)
+        override_mode = str(decision.mode or "").strip()
+        if override_mode == "aidocs_native_override":
+            resolved_skill_id = str(decision.skill_id or selected_name)
+            provider = "aidocs"
+            runtime_provider = "aidocs"
+        elif override_mode == "provider_content_aidocs_runtime":
+            runtime_provider = "aidocs"
+    elif (
+        selected_name == selected_skill_id and selected_skill_id not in provider_states
+    ):
+        return None
+    return resolved_skill_id, provider, runtime_provider
+
+
+def _match_selected_skill_id_for_trigger(
+    *,
+    selected_skills: list[str],
+    skill_id: str,
+    provider: str,
+    runtime_provider: str,
+    provider_states: dict[str, Any] | None = None,
+    override_store: Any = None,
+) -> str | None:
+    if skill_id in selected_skills:
+        return skill_id
+    matches = [
+        selected_skill_id
+        for selected_skill_id in selected_skills
+        if _selected_skill_trigger_identity(
+            selected_skill_id,
+            provider_states=provider_states,
+            override_store=override_store,
+        )
+        == (skill_id, provider, runtime_provider)
+    ]
+    return sorted(matches)[0] if matches else None
 
 
 # ── Tool timeout infrastructure ──────────────────────────────────────
@@ -32,7 +123,9 @@ def _run_with_timeout(fn, timeout_seconds: int, *args, **kwargs) -> Any:
         return future.result(timeout=timeout_seconds)
     except FuturesTimeoutError:
         future.cancel()
-        raise TimeoutError(f"Tool call timed out after {timeout_seconds}s. Use timeout= parameter for longer operations.")
+        raise TimeoutError(
+            f"Tool call timed out after {timeout_seconds}s. Use timeout= parameter for longer operations."
+        )
 
 
 def _resolve_timeout(kwargs: dict, default: int | None = None) -> int:
@@ -49,6 +142,7 @@ def _resolve_timeout(kwargs: dict, default: int | None = None) -> int:
 
 def _make_timed_decorator(default_timeout_value: int):
     """Factory for timed tool decorators with a specific default timeout."""
+
     def decorator(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
@@ -59,19 +153,25 @@ def _make_timed_decorator(default_timeout_value: int):
                 return {"error": str(exc), "timeout": timeout}
             except Exception as exc:
                 return {"error": f"Tool failed: {exc}"}
+
         return wrapper
+
     return decorator
 
+
 # Category-specific decorators
-timed_tool = _make_timed_decorator(TOOLS_CALL_TIMEOUT)         # 10s default
-timed_sync = _make_timed_decorator(TOOLS_SYNC_TIMEOUT)         # 30s default
-timed_git = _make_timed_decorator(TOOLS_GIT_TIMEOUT)           # 30s default
+timed_tool = _make_timed_decorator(TOOLS_CALL_TIMEOUT)  # 10s default
+timed_sync = _make_timed_decorator(TOOLS_SYNC_TIMEOUT)  # 30s default
+timed_git = _make_timed_decorator(TOOLS_GIT_TIMEOUT)  # 30s default
 
 
 _GIT_SAFE_DIR = ["-c", "safe.directory=*"]
 _GIT_TIMEOUT = 10
+
+
 def _make_timed_async_decorator(default_timeout_value: int):
     """Factory for async timed tool decorators."""
+
     def decorator(fn):
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
@@ -79,11 +179,17 @@ def _make_timed_async_decorator(default_timeout_value: int):
             try:
                 return await asyncio.wait_for(fn(*args, **kwargs), timeout=timeout)
             except asyncio.TimeoutError:
-                return {"error": f"Tool call timed out after {timeout}s. Use timeout= parameter for slower operations.", "timeout": timeout}
+                return {
+                    "error": f"Tool call timed out after {timeout}s. Use timeout= parameter for slower operations.",
+                    "timeout": timeout,
+                }
             except Exception as exc:
                 return {"error": f"Tool failed: {exc}"}
+
         return wrapper
+
     return decorator
+
 
 timed_tool_async = _make_timed_async_decorator(TOOLS_CALL_TIMEOUT)
 timed_git_async = _make_timed_async_decorator(TOOLS_GIT_TIMEOUT)
@@ -93,14 +199,177 @@ _GIT_FAST_DIVERGENCE = 500
 _GIT_SAMPLE_DIVERGENCE = 1500
 
 
-def _apply_trace_depth(payload: dict[str, Any], mode: str, max_depth: int | None) -> dict[str, Any]:
+def _grant_indexed_read_gate(
+    hub: AidocsServiceHub, project_root: Path, tool_name: str
+) -> None:
+    managed = hub.managed_mode.get_mode(project_root)
+    session_id = managed.get("session_id") if isinstance(managed, dict) else None
+    if managed.get("active") and session_id:
+        hub.query_gate.set(
+            project_root,
+            str(session_id),
+            allow_read=True,
+            last_tool=tool_name,
+            known_exact_paths=[],
+        )
+
+
+def _grant_known_exact_path_read(
+    hub: AidocsServiceHub, project_root: Path, tool_name: str, path: str
+) -> None:
+    managed = hub.managed_mode.get_mode(project_root)
+    session_id = managed.get("session_id") if isinstance(managed, dict) else None
+    if not managed.get("active") or not session_id:
+        return
+    canonical_path = path.replace("\\", "/").strip()
+    if not _is_safe_known_exact_read_path(canonical_path):
+        return
+    marker = f"known_exact_path:{tool_name}:{canonical_path}"
+    state = hub.query_gate.get(project_root, str(session_id))
+    known_exact_paths = [
+        str(item)
+        for item in state.get("known_exact_paths", [])
+        if isinstance(item, str)
+    ]
+    if canonical_path not in known_exact_paths:
+        known_exact_paths.append(canonical_path)
+    hub.query_gate.set(
+        project_root,
+        str(session_id),
+        allow_read=False,
+        last_tool=marker,
+        known_exact_paths=known_exact_paths,
+    )
+
+
+def _known_exact_path_marker_matches(last_tool: Any, exact_path: str | None) -> bool:
+    if not exact_path or not isinstance(last_tool, str):
+        return False
+    prefix = "known_exact_path:"
+    if not last_tool.startswith(prefix):
+        return False
+    _, _, granted_path = last_tool.partition(":")
+    _, _, granted_path = granted_path.partition(":")
+    return granted_path == exact_path.replace("\\", "/").strip()
+
+
+def _known_exact_path_is_granted(state: dict[str, Any], exact_path: str | None) -> bool:
+    if not _is_safe_known_exact_read_path(exact_path):
+        return False
+    normalized = exact_path.replace("\\", "/").strip()
+    known_exact_paths = state.get("known_exact_paths")
+    if isinstance(known_exact_paths, list) and normalized in known_exact_paths:
+        return True
+    return _known_exact_path_marker_matches(state.get("last_tool"), normalized)
+
+
+_PROTECTED_EXACT_READ_FILENAMES: set[str] = {"aidocs.toml", "aidocs-plugin.json"}
+_PROTECTED_EXACT_READ_PREFIXES: tuple[str, ...] = ("mcp/server/aidocs_mcp/",)
+
+
+def _is_safe_known_exact_read_path(exact_path: str | None) -> bool:
+    if not exact_path:
+        return False
+    normalized = exact_path.replace("\\", "/").strip()
+    if not _is_known_exact_relative_path(normalized):
+        return False
+    lower = normalized.lower()
+    if lower in _PROTECTED_EXACT_READ_FILENAMES:
+        return False
+    if any(lower.startswith(prefix) for prefix in _PROTECTED_EXACT_READ_PREFIXES):
+        return False
+    return True
+
+
+def _lane_exact_path_is_granted(state: dict[str, Any], exact_path: str | None) -> bool:
+    if not exact_path:
+        return False
+    normalized = exact_path.replace("\\", "/").strip()
+    if not _is_known_exact_relative_path(normalized):
+        return False
+    lane_exact_paths = state.get("lane_exact_paths")
+    return isinstance(lane_exact_paths, list) and normalized in lane_exact_paths
+
+
+def _lane_owned_exact_path_is_granted(
+    hub: AidocsServiceHub,
+    project_root: Path,
+    session_id: str,
+    state: dict[str, Any],
+    exact_path: str | None,
+) -> bool:
+    if not exact_path:
+        return False
+    normalized = exact_path.replace("\\", "/").strip()
+    if not _is_known_exact_relative_path(normalized):
+        return False
+    lane_id = state.get("current_lane_id")
+    if not isinstance(lane_id, str) or not lane_id.strip():
+        return False
+    try:
+        return PlanConductor(hub, project_root, session_id).owns_file(
+            normalized, lane_id=lane_id.strip()
+        )
+    except Exception:
+        return False
+
+
+def _require_indexed_read_gate(
+    hub: AidocsServiceHub, project_root: Path, exact_path: str | None = None
+) -> dict[str, Any] | None:
+    managed = hub.managed_mode.get_mode(project_root)
+    session_id = managed.get("session_id") if isinstance(managed, dict) else None
+    if not managed.get("active") or not session_id:
+        return None
+    state = hub.query_gate.get(project_root, str(session_id))
+    if state.get("allow_read"):
+        return None
+    if (
+        _is_safe_known_exact_read_path(exact_path)
+        and not state.get("current_lane_id")
+        and not state.get("known_exact_paths")
+    ):
+        return None
+    if _known_exact_path_is_granted(state, exact_path):
+        return None
+    if _lane_exact_path_is_granted(state, exact_path):
+        return None
+    if _lane_owned_exact_path_is_granted(
+        hub, project_root, str(session_id), state, exact_path
+    ):
+        return None
+    return {
+        "error": "Indexed-query prerequisite not satisfied. Use indexed retrieval tools first (for example: code_investigate, code_find, code_trace, code_bundle, schema_query, code_get_service_api)."
+    }
+
+
+def _is_known_exact_relative_path(path: str) -> bool:
+    clean = path.replace("\\", "/").strip()
+    if not clean or clean.startswith("/") or re.match(r"^[A-Za-z]:/", clean):
+        return False
+    if any(token in clean for token in ("*", "?", "[", "]", "{", "}")):
+        return False
+    if any(part in {"", ".", ".."} for part in clean.split("/")):
+        return False
+    return True
+
+
+def _apply_trace_depth(
+    payload: dict[str, Any], mode: str, max_depth: int | None
+) -> dict[str, Any]:
     if not max_depth or max_depth <= 0:
         return payload
     m = mode.strip().lower()
-    if m in {"service", "component", "field_flow", "setting"} and isinstance(payload.get("matches"), list):
+    if m in {"service", "component", "field_flow", "setting"} and isinstance(
+        payload.get("matches"), list
+    ):
         order = {"definition": 1, "reference": 2, "file_match": 3}
         result = dict(payload)
-        result["matches"] = [item for item in payload["matches"] if order.get(str(item.get("source")), 3) <= max_depth]
+        result["matches"] = [
+            item
+            for item in payload["matches"]
+            if order.get(str(item.get("source")), 3) <= max_depth
+        ]
         return result
     if m == "api_to_ui":
         result = dict(payload)
@@ -119,6 +388,7 @@ def _run_git_sync(cwd: str, *args: str, timeout: int = _GIT_TIMEOUT) -> str:
     import tempfile
     import os as _os
     import sys as _sys
+
     out_path = err_path = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".out", delete=False) as f:
@@ -167,8 +437,11 @@ async def _run_git(cwd: str, *args: str, timeout: int = _GIT_TIMEOUT) -> str:
     """Run a git command from inside an async context by offloading to a thread."""
     import asyncio
     from functools import partial
+
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, partial(_run_git_sync, cwd, *args, timeout=timeout))
+    return await loop.run_in_executor(
+        None, partial(_run_git_sync, cwd, *args, timeout=timeout)
+    )
 
 
 def _find_git_root(project_root: str) -> Path:
@@ -177,6 +450,7 @@ def _find_git_root(project_root: str) -> Path:
     Raises RuntimeError if no git repository is found.
     """
     import subprocess
+
     root = Path(project_root)
     if not root.is_dir():
         raise RuntimeError(f"Directory does not exist: {project_root}")
@@ -220,6 +494,155 @@ def _session_summary_to_dict(summary: Any) -> dict[str, Any]:
     }
 
 
+def _build_skill_mode_metadata(
+    state: dict[str, Any] | None, override_store: Any = None
+) -> dict[str, Any] | None:
+    if not isinstance(state, dict):
+        return None
+    triggered = state.get("triggered")
+    selected_skills = [
+        str(item) for item in state.get("selected_skills", []) if str(item).strip()
+    ]
+    active_skills = [
+        str(item) for item in state.get("active_skills", []) if str(item).strip()
+    ]
+    provider_states = (
+        state.get("provider_states")
+        if isinstance(state.get("provider_states"), dict)
+        else {}
+    )
+    active_skill_modes: dict[str, str] = {}
+    selected_skill_modes: dict[str, str] = {}
+    decisions: list[dict[str, Any]] = []
+    for item in triggered if isinstance(triggered, list) else []:
+        if not isinstance(item, dict):
+            continue
+        skill_id = str(item.get("skill_id") or "").strip()
+        override_mode = str(item.get("override_mode") or "").strip()
+        provider = str(item.get("provider") or "").strip()
+        runtime_provider = (
+            str(item.get("runtime_provider") or provider).strip() or provider
+        )
+        if not skill_id or not override_mode:
+            continue
+        active_skill_modes[skill_id] = override_mode
+        selected_skill_id = _match_selected_skill_id_for_trigger(
+            selected_skills=selected_skills,
+            skill_id=skill_id,
+            provider=provider,
+            runtime_provider=runtime_provider,
+            provider_states=provider_states,
+            override_store=override_store,
+        )
+        if selected_skill_id:
+            selected_skill_modes[selected_skill_id] = override_mode
+        decisions.append(
+            {
+                "skill_id": skill_id,
+                "selected_skill_id": selected_skill_id,
+                "override_mode": override_mode,
+                "provider": item.get("provider"),
+                "runtime_provider": item.get("runtime_provider"),
+            }
+        )
+    for selected_skill_id in selected_skills:
+        if selected_skill_id in selected_skill_modes:
+            continue
+        if "/" in selected_skill_id:
+            provider_id, selected_name = selected_skill_id.split("/", 1)
+        elif BUNDLED_PROVIDER_ID in provider_states:
+            provider_id, selected_name = (
+                _BUNDLED_OVERRIDE_PROVIDER_ID,
+                selected_skill_id,
+            )
+        else:
+            continue
+        override_mode = None
+        resolved_skill_id = selected_skill_id
+        provider = provider_id
+        runtime_provider = provider_id
+        if override_store is not None:
+            decision = override_store.resolve(provider_id, selected_name)
+            override_mode = str(decision.mode or "").strip()
+            if override_mode == "aidocs_native_override":
+                resolved_skill_id = str(decision.skill_id or selected_name)
+                provider = "aidocs"
+                runtime_provider = "aidocs"
+            elif override_mode == "provider_content_aidocs_runtime":
+                resolved_skill_id = selected_skill_id
+                runtime_provider = "aidocs"
+        elif selected_name in active_skills and selected_skill_id not in active_skills:
+            override_mode = "aidocs_native_override"
+            resolved_skill_id = selected_name
+            provider = "aidocs"
+            runtime_provider = "aidocs"
+        if not override_mode:
+            continue
+        if (
+            resolved_skill_id not in active_skills
+            and selected_skill_id not in active_skills
+            and override_mode != "aidocs_native_override"
+        ):
+            continue
+        selected_skill_modes[selected_skill_id] = override_mode
+        active_skill_modes[resolved_skill_id] = override_mode
+        decisions.append(
+            {
+                "skill_id": resolved_skill_id,
+                "selected_skill_id": selected_skill_id,
+                "override_mode": override_mode,
+                "provider": provider,
+                "runtime_provider": runtime_provider,
+            }
+        )
+    if not active_skill_modes and not selected_skill_modes:
+        return None
+    return {
+        "active_skill_modes": active_skill_modes,
+        "selected_skill_modes": selected_skill_modes,
+        "decisions": decisions,
+    }
+
+
+def _annotate_imported_skill_state(
+    imported_skill_state: Any, override_store: Any = None
+) -> Any:
+    if not isinstance(imported_skill_state, dict):
+        return imported_skill_state
+    mode_metadata = _build_skill_mode_metadata(
+        imported_skill_state, override_store=override_store
+    )
+    if mode_metadata is None:
+        return imported_skill_state
+    return {
+        **imported_skill_state,
+        "mode_metadata": mode_metadata,
+    }
+
+
+def _annotate_skill_result(
+    payload: dict[str, Any], override_store: Any = None
+) -> dict[str, Any]:
+    result = dict(payload)
+    mode_metadata = _build_skill_mode_metadata(result, override_store=override_store)
+    if mode_metadata is not None:
+        result["override_modes"] = dict(mode_metadata["active_skill_modes"])
+    imported_skill_state = result.get("imported_skill_state")
+    if isinstance(imported_skill_state, dict):
+        result["imported_skill_state"] = _annotate_imported_skill_state(
+            imported_skill_state, override_store=override_store
+        )
+        if "override_modes" not in result and isinstance(
+            result["imported_skill_state"], dict
+        ):
+            imported_mode_metadata = result["imported_skill_state"].get("mode_metadata")
+            if isinstance(imported_mode_metadata, dict):
+                result["override_modes"] = dict(
+                    imported_mode_metadata.get("active_skill_modes") or {}
+                )
+    return result
+
+
 def create_server() -> Any:
     try:
         from fastmcp import FastMCP
@@ -228,16 +651,49 @@ def create_server() -> Any:
             "FastMCP is not installed. Install the MCP package dependencies before running the server."
         ) from exc
 
-    hub = AidocsServiceHub(templates_root=_resolve_templates_root(), script_root=_resolve_script_root())
+    hub = AidocsServiceHub(
+        templates_root=_resolve_templates_root(), script_root=_resolve_script_root()
+    )
     runtime = RuntimeService(hub)
     server = FastMCP("AIDOCS MCP")
+    server._aidocs_test_hub = hub  # test access only
+
+    raw_server_tool = server.tool
+
+    def _prefixed_public_tool_name(name: str) -> str:
+        return name if name.startswith("aidocs_") else f"aidocs_{name}"
+
+    def _taxonomy_tool(*args: Any, **kwargs: Any) -> Any:
+        explicit_name = kwargs.pop("name", None)
+
+        def decorator(func: Any) -> Any:
+            return raw_server_tool(
+                *args,
+                name=_prefixed_public_tool_name(explicit_name or func.__name__),
+                **kwargs,
+            )(func)
+
+        return decorator
+
+    server.tool = _taxonomy_tool
 
     def _registered_tools() -> list[Any]:
-        components = getattr(getattr(server, "_local_provider", None), "_components", {})
-        return [component for key, component in components.items() if str(key).startswith("tool:")]
+        components = getattr(
+            getattr(server, "_local_provider", None), "_components", {}
+        )
+        return [
+            component
+            for key, component in components.items()
+            if str(key).startswith("tool:")
+        ]
 
     def _timestamp() -> str:
-        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        return (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
 
     def _project_root_from_args(arguments: dict[str, Any] | None) -> Path | None:
         if not isinstance(arguments, dict):
@@ -247,10 +703,12 @@ def create_server() -> Any:
             return None
         return Path(project_root)
 
-    def _capture_enabled(name: str, run_middleware: bool, arguments: dict[str, Any] | None) -> bool:
+    def _capture_enabled(
+        name: str, run_middleware: bool, arguments: dict[str, Any] | None
+    ) -> bool:
         if run_middleware:
             return False
-        if name in {"execution_run_record", "execution_event_record"}:
+        if name in {"aidocs_execution_run_record", "aidocs_execution_event_record"}:
             return False
         return _project_root_from_args(arguments) is not None
 
@@ -260,7 +718,9 @@ def create_server() -> Any:
         }
         structured = getattr(result, "structured_content", None)
         if isinstance(structured, dict):
-            summary["structured_keys"] = sorted(str(key) for key in structured.keys())[:10]
+            summary["structured_keys"] = sorted(str(key) for key in structured.keys())[
+                :10
+            ]
             result_value = structured.get("result")
             if isinstance(result_value, list):
                 summary["result_length"] = len(result_value)
@@ -292,18 +752,32 @@ def create_server() -> Any:
         task_meta: Any = None,
     ) -> Any:
         if not _capture_enabled(name, run_middleware, arguments):
-            return await original_call_tool(name, arguments, version=version, run_middleware=run_middleware, task_meta=task_meta)
+            return await original_call_tool(
+                name,
+                arguments,
+                version=version,
+                run_middleware=run_middleware,
+                task_meta=task_meta,
+            )
 
         project_root = _project_root_from_args(arguments)
         if project_root is None:
-            return await original_call_tool(name, arguments, version=version, run_middleware=run_middleware, task_meta=task_meta)
+            return await original_call_tool(
+                name,
+                arguments,
+                version=version,
+                run_middleware=run_middleware,
+                task_meta=task_meta,
+            )
 
         managed = hub.managed_mode.get_mode(project_root)
         session_id = str(managed.get("session_id") or "").strip() or None
         run_id = f"mcp-{uuid4()}"
         payload_summary = {
             "tool_name": name,
-            "argument_keys": sorted(arguments.keys()) if isinstance(arguments, dict) else [],
+            "argument_keys": sorted(arguments.keys())
+            if isinstance(arguments, dict)
+            else [],
         }
         hub.execution.record_run(
             project_root,
@@ -328,7 +802,13 @@ def create_server() -> Any:
             run_id=run_id,
         )
         try:
-            result = await original_call_tool(name, arguments, version=version, run_middleware=run_middleware, task_meta=task_meta)
+            result = await original_call_tool(
+                name,
+                arguments,
+                version=version,
+                run_middleware=run_middleware,
+                task_meta=task_meta,
+            )
         except Exception as exc:
             hub.execution.record_run(
                 project_root,
@@ -386,7 +866,9 @@ def create_server() -> Any:
     def _resolve_related_root(project_root: str, name: str) -> Path:
         resolved = hub.related.resolve_related_project_path(Path(project_root), name)
         if resolved is None:
-            raise FileNotFoundError(f"Related project '{name}' is not configured or its path does not exist.")
+            raise FileNotFoundError(
+                f"Related project '{name}' is not configured or its path does not exist."
+            )
         return resolved
 
     @server.tool()
@@ -429,6 +911,16 @@ def create_server() -> Any:
         )
 
     @server.tool()
+    def session_start_state_get(
+        project_root: str, session_id: str | None = None
+    ) -> dict[str, Any]:
+        """Return lightweight startup readiness and imported skill state for a session."""
+        return _annotate_skill_result(
+            runtime.session_start_state(Path(project_root), session_id=session_id),
+            override_store=runtime._skill_overrides,
+        )
+
+    @server.tool()
     @timed_sync
     def project_bootstrap_or_resume(
         project_root: str,
@@ -468,17 +960,21 @@ def create_server() -> Any:
 
     @server.tool()
     def aidocs_mode_get(project_root: str) -> dict[str, Any]:
-        """Read the current AIDOCS-managed mode state for this project."""
+        """Read the current runtime/session-binding AIDOCS-managed mode state."""
         return hub.managed_mode.get_mode(Path(project_root))
 
     @server.tool()
-    def aidocs_mode_set(project_root: str, session_id: str, source: str = "/aidocs") -> dict[str, Any]:
-        """Set AIDOCS-managed mode and bind it to a selected session."""
-        return hub.managed_mode.set_mode(Path(project_root), session_id=session_id, source=source)
+    def aidocs_mode_set(
+        project_root: str, session_id: str, source: str = "/aidocs"
+    ) -> dict[str, Any]:
+        """Set runtime/session-binding AIDOCS-managed mode for a selected session."""
+        return hub.managed_mode.set_mode(
+            Path(project_root), session_id=session_id, source=source
+        )
 
     @server.tool()
     def aidocs_mode_clear(project_root: str) -> dict[str, Any]:
-        """Clear the current AIDOCS-managed mode state for this project."""
+        """Clear the current runtime/session-binding AIDOCS-managed mode state."""
         return hub.managed_mode.clear_mode(Path(project_root))
 
     @server.tool()
@@ -489,17 +985,24 @@ def create_server() -> Any:
         explicit_targets: list[str] | None = None,
     ) -> dict[str, Any]:
         """Return the deterministic MCP routing decision for a normal user prompt."""
-        return runtime.aidocs_route_prompt(
-            Path(project_root),
-            user_request=user_request,
-            action_kind=action_kind,
-            explicit_targets=explicit_targets,
+        return _annotate_skill_result(
+            runtime.aidocs_route_prompt(
+                Path(project_root),
+                user_request=user_request,
+                action_kind=action_kind,
+                explicit_targets=explicit_targets,
+            ),
+            override_store=runtime._skill_overrides,
         )
 
     @server.tool()
-    def aidocs_classify_prompt(user_request: str, explicit_targets: list[str] | None = None) -> dict[str, Any]:
+    def aidocs_classify_prompt(
+        user_request: str, explicit_targets: list[str] | None = None
+    ) -> dict[str, Any]:
         """Classify a normal prompt into a deterministic AIDOCS action kind."""
-        return runtime.classify_prompt_action(user_request, explicit_targets=explicit_targets)
+        return runtime.classify_prompt_action(
+            user_request, explicit_targets=explicit_targets
+        )
 
     @server.tool()
     def aidocs_handle_prompt(
@@ -549,34 +1052,70 @@ def create_server() -> Any:
         }
 
     @server.tool()
-    def session_claim_status(project_root: str, session_id: str, stale_after_minutes: int = 30) -> dict[str, Any]:
+    def session_claim_status(
+        project_root: str, session_id: str, stale_after_minutes: int = 30
+    ) -> dict[str, Any]:
         """List advisory session claims and whether they are stale."""
-        claims = hub.sessions.list_claims(Path(project_root), session_id, stale_after_minutes=stale_after_minutes)
+        claims = hub.sessions.list_claims(
+            Path(project_root), session_id, stale_after_minutes=stale_after_minutes
+        )
         return {"session_id": session_id, "claims": claims}
 
     @server.tool()
-    def session_claim(project_root: str, session_id: str, agent_id: str, run_id: str, mode: str = "active") -> dict[str, Any]:
+    def session_claim(
+        project_root: str,
+        session_id: str,
+        agent_id: str,
+        run_id: str,
+        mode: str = "active",
+    ) -> dict[str, Any]:
         """Add or refresh an advisory agent claim on a session."""
-        session = hub.sessions.claim_session(Path(project_root), session_id, agent_id=agent_id, run_id=run_id, mode=mode)
-        return {"session_id": session.session_id, "path": str(session.path), "sections": session.sections}
+        session = hub.sessions.claim_session(
+            Path(project_root), session_id, agent_id=agent_id, run_id=run_id, mode=mode
+        )
+        return {
+            "session_id": session.session_id,
+            "path": str(session.path),
+            "sections": session.sections,
+        }
 
     @server.tool()
-    def session_release(project_root: str, session_id: str, agent_id: str, run_id: str | None = None) -> dict[str, Any]:
+    def session_release(
+        project_root: str, session_id: str, agent_id: str, run_id: str | None = None
+    ) -> dict[str, Any]:
         """Release one advisory agent claim from a session."""
-        session = hub.sessions.release_claim(Path(project_root), session_id, agent_id=agent_id, run_id=run_id)
-        return {"session_id": session.session_id, "path": str(session.path), "sections": session.sections}
+        session = hub.sessions.release_claim(
+            Path(project_root), session_id, agent_id=agent_id, run_id=run_id
+        )
+        return {
+            "session_id": session.session_id,
+            "path": str(session.path),
+            "sections": session.sections,
+        }
 
     @server.tool()
-    def session_prune_stale_claims(project_root: str, session_id: str, stale_after_minutes: int = 30) -> dict[str, Any]:
+    def session_prune_stale_claims(
+        project_root: str, session_id: str, stale_after_minutes: int = 30
+    ) -> dict[str, Any]:
         """Remove stale advisory claims from a session."""
-        session = hub.sessions.prune_stale_claims(Path(project_root), session_id, stale_after_minutes=stale_after_minutes)
-        return {"session_id": session.session_id, "path": str(session.path), "sections": session.sections}
+        session = hub.sessions.prune_stale_claims(
+            Path(project_root), session_id, stale_after_minutes=stale_after_minutes
+        )
+        return {
+            "session_id": session.session_id,
+            "path": str(session.path),
+            "sections": session.sections,
+        }
 
     @server.tool()
     def session_handoff_get(project_root: str, session_id: str) -> dict[str, Any]:
         """Read the structured collaboration handoff for a session."""
         handoff = hub.sessions.read_handoff(Path(project_root), session_id)
-        return {"session_id": handoff.session_id, "path": str(handoff.path), "sections": handoff.sections}
+        return {
+            "session_id": handoff.session_id,
+            "path": str(handoff.path),
+            "sections": handoff.sections,
+        }
 
     @server.tool()
     def session_handoff_update(
@@ -634,13 +1173,29 @@ def create_server() -> Any:
             patch["Related Project Links"] = runtime._as_bullets(normalized)
         if freshness is not None:
             patch["Freshness"] = runtime._as_bullets(freshness)
-        handoff = hub.sessions.update_handoff(Path(project_root), session_id, patch, append=append)
-        return {"session_id": handoff.session_id, "path": str(handoff.path), "sections": handoff.sections}
+        handoff = hub.sessions.update_handoff(
+            Path(project_root), session_id, patch, append=append
+        )
+        return {
+            "session_id": handoff.session_id,
+            "path": str(handoff.path),
+            "sections": handoff.sections,
+        }
 
     @server.tool()
     def session_handoff_steps_get(project_root: str, session_id: str) -> dict[str, Any]:
         """Read structured handoff steps for a session."""
-        return {"session_id": session_id, "steps": hub.sessions.read_handoff_steps(Path(project_root), session_id)}
+        return {
+            "session_id": session_id,
+            "steps": hub.sessions.read_handoff_steps(Path(project_root), session_id),
+        }
+
+    @server.tool()
+    def session_handoff_steps_normalize(
+        project_root: str, session_id: str
+    ) -> dict[str, Any]:
+        """Normalize legacy/drifted handoff step markers into canonical step states."""
+        return hub.sessions.normalize_handoff_steps(Path(project_root), session_id)
 
     @server.tool()
     def session_handoff_step_update(
@@ -660,12 +1215,74 @@ def create_server() -> Any:
             status=status,
             append=append,
         )
-        return {"session_id": handoff.session_id, "path": str(handoff.path), "sections": handoff.sections}
+        return {
+            "session_id": handoff.session_id,
+            "path": str(handoff.path),
+            "sections": handoff.sections,
+        }
 
     @server.tool()
     def session_compliance_get(project_root: str, session_id: str) -> dict[str, Any]:
         """Return task/logging debt and actionable continuity state for a session."""
         return runtime.session_compliance_summary(Path(project_root), session_id)
+
+    @server.tool()
+    def skill_registry_get(project_root: str) -> dict[str, Any]:
+        """Return the available built-in + project-local skills."""
+        return {"skills": hub.skills.list_skills(Path(project_root))}
+
+    @server.tool()
+    def session_skills_get(project_root: str, session_id: str) -> dict[str, Any]:
+        """Return the selected skills for a session."""
+        return hub.skills.get_selected_skills(Path(project_root), session_id)
+
+    @server.tool()
+    def skill_trigger_state_get(
+        project_root: str,
+        session_id: str,
+        intent: str,
+        workflow_state: str | None = None,
+    ) -> dict[str, Any]:
+        """Return the AIDOCS-native active skill trigger state for a session."""
+        return _annotate_skill_result(
+            runtime.skill_trigger_state(
+                Path(project_root), session_id, intent, workflow_state
+            ),
+            override_store=runtime._skill_overrides,
+        )
+
+    @server.tool()
+    def skill_override_registry_get(project_root: str) -> dict[str, Any]:
+        """Return the configured skill override rules for inspection/debugging."""
+        _ = project_root
+        return {
+            "rules": [item.to_dict() for item in runtime._skill_overrides.list_rules()]
+        }
+
+    @server.tool()
+    def skill_provider_status_get(
+        project_root: str, provider_id: str
+    ) -> dict[str, Any]:
+        """Return compatibility status and user choices for one external skill provider."""
+        return runtime.skill_provider_status(Path(project_root), provider_id)
+
+    @server.tool()
+    def skill_provider_override_set(
+        project_root: str, provider_id: str, choice: str | None
+    ) -> dict[str, Any]:
+        """Persist a user override choice for one external skill provider."""
+        return runtime.set_skill_provider_override(
+            Path(project_root), provider_id, choice
+        )
+
+    @server.tool()
+    def session_skills_set(
+        project_root: str, session_id: str, selected_skills: list[str]
+    ) -> dict[str, Any]:
+        """Set the selected skills for a session."""
+        return runtime.set_session_skills(
+            Path(project_root), session_id, selected_skills
+        )
 
     @server.tool()
     def session_resume_bundle(
@@ -699,7 +1316,78 @@ def create_server() -> Any:
         Returns progress, next steps, and (with run_preflight=True) a decision map so the agent
         can resolve everything upfront and implement without mid-plan stops.
         """
-        return runtime.plan_connect(Path(project_root), session_id=session_id, run_preflight=run_preflight)
+        return runtime.plan_connect(
+            Path(project_root), session_id=session_id, run_preflight=run_preflight
+        )
+
+    @server.tool()
+    @timed_sync
+    def plan_conductor_graph(
+        project_root: str,
+        session_id: str,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Return the conductor lane graph for a lane-aware session plan."""
+        return runtime.plan_conductor_graph(Path(project_root), session_id=session_id)
+
+    @server.tool()
+    @timed_sync
+    def plan_conductor_status(
+        project_root: str,
+        session_id: str,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Return the conductor graph plus runnable lane status for a lane-aware session plan."""
+        return runtime.plan_conductor_status(Path(project_root), session_id=session_id)
+
+    @server.tool()
+    @timed_sync
+    def plan_conductor_report_inflight_overlap(
+        project_root: str,
+        session_id: str,
+        paused_lane_id: str,
+        conflicting_lane_id: str,
+        file_path: str,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Pause a lane when another in-flight lane reports emergent file overlap."""
+        return runtime.plan_conductor_report_inflight_overlap(
+            Path(project_root),
+            session_id=session_id,
+            paused_lane_id=paused_lane_id,
+            conflicting_lane_id=conflicting_lane_id,
+            file_path=file_path,
+        )
+
+    @server.tool()
+    @timed_sync
+    def plan_conductor_resume_lane(
+        project_root: str,
+        session_id: str,
+        lane_id: str,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Resume a paused lane after explicit user override or conflict resolution."""
+        return runtime.plan_conductor_resume_lane(
+            Path(project_root), session_id=session_id, lane_id=lane_id
+        )
+
+    @server.tool()
+    @timed_sync
+    def plan_conductor_mark_contract_ready(
+        project_root: str,
+        session_id: str,
+        lane_id: str,
+        ready: bool = True,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Mark a contract lane ready so compatible dependent lanes can run."""
+        return runtime.plan_conductor_mark_contract_ready(
+            Path(project_root),
+            session_id=session_id,
+            lane_id=lane_id,
+            ready=ready,
+        )
 
     @server.tool()
     @timed_sync
@@ -811,6 +1499,39 @@ def create_server() -> Any:
         )
 
     @server.tool()
+    def roadmap_feedback_update(
+        project_root: str,
+        step_text: str,
+        feedback: str,
+    ) -> dict[str, Any]:
+        """Update a pending roadmap step after user feedback."""
+        return runtime.update_roadmap_feedback_state(
+            Path(project_root),
+            step_text=step_text,
+            feedback=feedback,
+        )
+
+    @server.tool()
+    def plan_normalize_prose(
+        project_root: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Preserve prose-only plan additions and append normalized steps awaiting feedback."""
+        return hub.sessions.normalize_plan_feedback_sections(
+            Path(project_root), session_id=session_id
+        )
+
+    @server.tool()
+    def session_artifacts_normalize(
+        project_root: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Normalize explicit session artifacts and report changed vs untouched items."""
+        return hub.sessions.normalize_session_artifacts(
+            Path(project_root), session_id=session_id
+        )
+
+    @server.tool()
     def session_journal_read(
         project_root: str,
         session_id: str,
@@ -844,8 +1565,11 @@ def create_server() -> Any:
             outcome: What happened (1-2 sentences, max 120 chars).
         """
         return hub.sessions.write_journal_entry(
-            Path(project_root), session_id,
-            action_kind=action_kind, intent=intent, outcome=outcome,
+            Path(project_root),
+            session_id,
+            action_kind=action_kind,
+            intent=intent,
+            outcome=outcome,
         )
 
     @server.tool()
@@ -864,7 +1588,9 @@ def create_server() -> Any:
         )
 
     @server.tool()
-    def session_update(project_root: str, session_id: str, patch: dict[str, list[str]]) -> dict[str, Any]:
+    def session_update(
+        project_root: str, session_id: str, patch: dict[str, list[str]]
+    ) -> dict[str, Any]:
         """Update structured sections in an existing SESSION.md file."""
         session = hub.sessions.update_session(Path(project_root), session_id, patch)
         return {
@@ -890,26 +1616,36 @@ def create_server() -> Any:
 
     @server.tool()
     @timed_sync
-    def schema_index_sync(project_root: str, timeout: int | None = None) -> dict[str, int]:
+    def schema_index_sync(
+        project_root: str, timeout: int | None = None
+    ) -> dict[str, int]:
         """Rebuild the derived schema catalog from code and SQL files."""
         return hub.schema.sync_schema(Path(project_root))
 
     @server.tool()
-    def memory_search(project_root: str, query: str, limit: int = 10) -> list[dict[str, str]]:
+    def memory_search(
+        project_root: str, query: str, limit: int = 10
+    ) -> list[dict[str, str]]:
         """Search the derived memory index by path, title, or body text."""
         return hub.index.search_memory(Path(project_root), query=query, limit=limit)
 
     @server.tool()
     @timed_sync
-    def code_index_sync(project_root: str, include_tests: bool = False, timeout: int | None = None) -> dict[str, int]:
+    def code_index_sync(
+        project_root: str, include_tests: bool = False, timeout: int | None = None
+    ) -> dict[str, int]:
         """Rebuild the derived code file manifest and summary index."""
         return {
-            "code_files": hub.code.sync_code_files(Path(project_root), include_tests=include_tests),
+            "code_files": hub.code.sync_code_files(
+                Path(project_root), include_tests=include_tests
+            ),
             "modules": hub.code.sync_modules(Path(project_root)),
         }
 
     @server.tool()
-    def code_get_modules(project_root: str, kind: str | None = None) -> list[dict[str, Any]]:
+    def code_get_modules(
+        project_root: str, kind: str | None = None
+    ) -> list[dict[str, Any]]:
         """List detected project modules (workspaces, subprojects, informal modules).
 
         Detects formal workspaces (npm, Cargo, .csproj) and informal monorepo
@@ -921,13 +1657,17 @@ def create_server() -> Any:
         return hub.code.get_modules(Path(project_root), kind=kind)
 
     @server.tool()
-    def code_get_module_files(project_root: str, module_path: str, limit: int = 200) -> list[dict[str, Any]]:
+    def code_get_module_files(
+        project_root: str, module_path: str, limit: int = 200
+    ) -> list[dict[str, Any]]:
         """List all indexed source files belonging to a specific module.
 
         Args:
             module_path: The module's relative path (e.g., 'cli', 'server', 'src/Web').
         """
-        return hub.code.get_module_files(Path(project_root), module_path=module_path, limit=limit)
+        return hub.code.get_module_files(
+            Path(project_root), module_path=module_path, limit=limit
+        )
 
     @server.tool()
     def code_index_status(project_root: str) -> dict[str, Any]:
@@ -935,9 +1675,15 @@ def create_server() -> Any:
         return hub.code.code_status(Path(project_root))
 
     @server.tool()
-    def code_search(project_root: str, query: str, limit: int = 10) -> list[dict[str, Any]]:
+    def code_search(
+        project_root: str, query: str, limit: int = 10
+    ) -> list[dict[str, Any]]:
         """Search the derived code index by file path and lightweight summary."""
-        return hub.code.search_code(Path(project_root), query=query, limit=limit)
+        root = Path(project_root)
+        result = hub.code.search_code(root, query=query, limit=limit)
+        if result:
+            _grant_indexed_read_gate(hub, root, "code_search")
+        return result
 
     @server.tool()
     def code_get_dependencies(project_root: str, path: str) -> list[dict[str, str]]:
@@ -953,13 +1699,17 @@ def create_server() -> Any:
         line_number: int | None = None,
     ) -> dict[str, Any]:
         """Return an exact code snippet for an indexed outline symbol."""
-        return hub.code.get_symbol_snippet(
-            Path(project_root),
+        root = Path(project_root)
+        result = hub.code.get_symbol_snippet(
+            root,
             path=path,
             symbol=symbol,
             kind=kind,
             line_number=line_number,
         )
+        if result:
+            _grant_indexed_read_gate(hub, root, "code_get_symbol_snippet")
+        return result
 
     @server.tool()
     def code_get_method_signature(
@@ -969,7 +1719,13 @@ def create_server() -> Any:
         limit: int = 20,
     ) -> dict[str, Any]:
         """Return exact method signatures so agents can call methods correctly without reading whole files."""
-        return hub.code.get_method_signature(Path(project_root), method_name=method, container=container, limit=limit)
+        root = Path(project_root)
+        result = hub.code.get_method_signature(
+            root, method_name=method, container=container, limit=limit
+        )
+        if result.get("matches"):
+            _grant_indexed_read_gate(hub, root, "code_get_method_signature")
+        return result
 
     @server.tool()
     def code_get_method_signatures(
@@ -979,12 +1735,16 @@ def create_server() -> Any:
         limit_per_method: int = 20,
     ) -> dict[str, Any]:
         """Return exact signatures for multiple methods in one call."""
-        return hub.code.get_method_signatures(
-            Path(project_root),
+        root = Path(project_root)
+        result = hub.code.get_method_signatures(
+            root,
             methods=methods,
             container=container,
             limit_per_method=limit_per_method,
         )
+        if result.get("methods"):
+            _grant_indexed_read_gate(hub, root, "code_get_method_signatures")
+        return result
 
     @server.tool()
     def code_get_enum_values(
@@ -994,7 +1754,13 @@ def create_server() -> Any:
         include_related: bool = False,
     ) -> dict[str, Any]:
         """Return indexed enum definitions with their enum members."""
-        return hub.code.get_enum_values(Path(project_root), enum_name=enum_name, limit=limit, include_related=include_related)
+        root = Path(project_root)
+        result = hub.code.get_enum_values(
+            root, enum_name=enum_name, limit=limit, include_related=include_related
+        )
+        if result.get("matches"):
+            _grant_indexed_read_gate(hub, root, "code_get_enum_values")
+        return result
 
     @server.tool()
     def code_get_constructor_params(
@@ -1004,7 +1770,13 @@ def create_server() -> Any:
         include_related: bool = False,
     ) -> dict[str, Any]:
         """Return constructor or record positional parameter information for a type."""
-        return hub.code.get_constructor_params(Path(project_root), type_name=type_name, limit=limit, include_related=include_related)
+        root = Path(project_root)
+        result = hub.code.get_constructor_params(
+            root, type_name=type_name, limit=limit, include_related=include_related
+        )
+        if result.get("matches"):
+            _grant_indexed_read_gate(hub, root, "code_get_constructor_params")
+        return result
 
     @server.tool()
     def code_get_constructor_params_batch(
@@ -1014,12 +1786,16 @@ def create_server() -> Any:
         limit_per_type: int = 20,
     ) -> dict[str, Any]:
         """Return constructor or record positional parameter information for multiple types."""
-        return hub.code.get_constructor_params_batch(
-            Path(project_root),
+        root = Path(project_root)
+        result = hub.code.get_constructor_params_batch(
+            root,
             types=types,
             include_related=include_related,
             limit_per_type=limit_per_type,
         )
+        if result.get("types"):
+            _grant_indexed_read_gate(hub, root, "code_get_constructor_params_batch")
+        return result
 
     @server.tool()
     def code_get_service_api(
@@ -1028,7 +1804,11 @@ def create_server() -> Any:
         limit: int = 100,
     ) -> dict[str, Any]:
         """Return all indexed public method signatures for a service-like class."""
-        return hub.code.get_service_api(Path(project_root), service_name=service_name, limit=limit)
+        root = Path(project_root)
+        result = hub.code.get_service_api(root, service_name=service_name, limit=limit)
+        if result.get("methods"):
+            _grant_indexed_read_gate(hub, root, "code_get_service_api")
+        return result
 
     @server.tool()
     def code_get_entity_properties(
@@ -1036,7 +1816,13 @@ def create_server() -> Any:
         entity_name: str,
     ) -> dict[str, Any]:
         """Return a lightweight property list for an entity or DTO."""
-        return hub.code.get_entity_properties(Path(project_root), entity_name=entity_name)
+        root = Path(project_root)
+        result = hub.code.get_entity_properties(root, entity_name=entity_name)
+        if result.get("entity_name") and (
+            result.get("properties") or result.get("note")
+        ):
+            _grant_indexed_read_gate(hub, root, "code_get_entity_properties")
+        return result
 
     # ── File operations (line-based read/edit with safety) ──
 
@@ -1047,23 +1833,59 @@ def create_server() -> Any:
         start_line: int = 1,
         count: int = 50,
         show_line_numbers: bool = True,
+        known_exact_path: bool = False,
     ) -> dict[str, Any]:
-        """Read specific lines from any file (no index needed).
+        """Read specific lines from any file after indexed retrieval has established enough context.
 
         Fast line-based retrieval for any file type — Razor, HTML, TOML, config, etc.
-        Use this instead of Read when you know the file and approximate line range.
+        Use this only after indexed retrieval has narrowed the file and logic context enough for a surgical line pull.
 
         Args:
             path: Relative path to the file from project root.
             start_line: First line to read (1-indexed).
             count: Number of lines to read (max 200).
             show_line_numbers: Prefix each line with its number for easy reference.
+            known_exact_path: Bypass the indexed-read gate only for an exact relative path.
         """
+        root = Path(project_root)
+        exact_path = (
+            path if known_exact_path and _is_known_exact_relative_path(path) else None
+        )
+        gate = _require_indexed_read_gate(hub, root, exact_path=exact_path)
+        if gate:
+            return gate
         return _file_get_lines(
-            Path(project_root), path,
-            start_line=start_line, count=count,
+            root,
+            path,
+            start_line=start_line,
+            count=count,
             show_line_numbers=show_line_numbers,
         )
+
+    @server.tool()
+    def code_create_file(
+        project_root: str,
+        path: str,
+        content: str,
+        config_edit_mode: Literal["explicit_user_permitted"] | None = None,
+    ) -> dict[str, Any]:
+        """Create a new file at a relative path with exact content.
+
+        The path must stay inside the project root and still respects the
+        existing sensitive-path and self-edit guardrails.
+        """
+        root = Path(project_root)
+        result = _file_create_file(
+            root, path, content, config_edit_mode=config_edit_mode
+        )
+        if result.get("success"):
+            _grant_known_exact_path_read(
+                hub,
+                root,
+                "code_create_file",
+                str(result.get("canonical_path") or result.get("path") or path),
+            )
+        return result
 
     @server.tool()
     def code_edit_lines(
@@ -1074,6 +1896,8 @@ def create_server() -> Any:
         new_content: str,
         expect: str | None = None,
         dry_run: bool = False,
+        mode: str = "auto",
+        config_edit_mode: Literal["explicit_user_permitted"] | None = None,
     ) -> dict[str, Any]:
         """Replace a range of lines with new content, with safety verification.
 
@@ -1090,13 +1914,28 @@ def create_server() -> Any:
             new_content: Replacement text (can be multi-line).
             expect: If set, current content of the line range must match this or edit is rejected.
             dry_run: Preview changes without writing.
+            mode: `auto`, `insert`, or `replace`.
         """
-        return _file_edit_lines(
-            Path(project_root), path,
-            start_line=start_line, end_line=end_line,
+        root = Path(project_root)
+        result = _file_edit_lines(
+            root,
+            path,
+            start_line=start_line,
+            end_line=end_line,
             new_content=new_content,
-            expect=expect, dry_run=dry_run,
+            expect=expect,
+            dry_run=dry_run,
+            mode=mode,
+            config_edit_mode=config_edit_mode,
         )
+        if result.get("success") and not result.get("dry_run"):
+            _grant_known_exact_path_read(
+                hub,
+                root,
+                "code_edit_lines",
+                str(result.get("canonical_path") or result.get("path") or path),
+            )
+        return result
 
     @server.tool()
     def code_batch_edit(
@@ -1104,10 +1943,11 @@ def create_server() -> Any:
         edits: list[dict[str, Any]],
         dry_run: bool = False,
         atomic: bool = True,
+        config_edit_mode: Literal["explicit_user_permitted"] | None = None,
     ) -> dict[str, Any]:
         """Apply multiple line edits atomically across one or more files.
 
-        Each edit: { "path": str, "start_line": int, "end_line": int, "new_content": str, "expect": str? }
+        Each edit: { "path": str, "start_line": int, "end_line": int, "new_content": str, "expect": str?, "mode": str? }
 
         If atomic=True (default), ALL edits are validated first. If any would fail, NONE are applied.
         Edits within the same file are applied bottom-up to preserve line numbers.
@@ -1118,10 +1958,37 @@ def create_server() -> Any:
             dry_run: Preview all changes without writing.
             atomic: All-or-nothing mode (default True).
         """
-        return _file_batch_edit(
-            Path(project_root), edits,
-            dry_run=dry_run, atomic=atomic,
+        root = Path(project_root)
+        result = _file_batch_edit(
+            root,
+            edits,
+            dry_run=dry_run,
+            atomic=atomic,
+            config_edit_mode=config_edit_mode,
         )
+        if result.get("success") and not dry_run:
+            for item in result.get("results", []):
+                if isinstance(item, dict) and item.get("success"):
+                    _grant_known_exact_path_read(
+                        hub,
+                        root,
+                        "code_batch_edit",
+                        str(item.get("canonical_path") or item.get("path") or ""),
+                    )
+        return result
+
+    @server.tool()
+    def config_edit_policy_get(
+        profile: Literal["release"] = "release",
+    ) -> dict[str, Any]:
+        """Return the release-profile config edit policy visible to agents."""
+        return {
+            "profile": profile,
+            "available_modes": available_config_edit_modes(profile),
+            "security": {
+                "self_edit_available": self_edit_available_in_profile(profile),
+            },
+        }
 
     @server.tool()
     @timed_tool
@@ -1145,7 +2012,13 @@ def create_server() -> Any:
             depth: `shallow`, `standard`, or `deep`.
             focus: `general`, `workflow`, `service`, `schema`, `ui`, or `backend`.
         """
-        return hub.code.investigate(Path(project_root), concept=concept, limit=limit, depth=depth, focus=focus)
+        root = Path(project_root)
+        result = hub.code.investigate(
+            root, concept=concept, limit=limit, depth=depth, focus=focus
+        )
+        if result.get("findings"):
+            _grant_indexed_read_gate(hub, root, "code_investigate")
+        return result
 
     # ═══════════════════════════════════════════════════════════════════════
     # Unified Tools (v1.1.0) — prefer these over granular tools below
@@ -1213,51 +2086,99 @@ def create_server() -> Any:
         if include_tests:
             hub.code.sync_code_files(root, include_tests=True)
 
+        def _grant(
+            result: dict[str, Any] | list[dict[str, Any]],
+        ) -> dict[str, Any] | list[dict[str, Any]]:
+            if isinstance(result, list):
+                if result:
+                    _grant_indexed_read_gate(hub, root, "code_find")
+                return result
+            if any(result.get(key) for key in ("matches", "cluster")):
+                _grant_indexed_read_gate(hub, root, "code_find")
+            return result
+
         if m == "symbols":
-            return hub.code.search_symbols(root, query=query, kind=kind, role=role, limit=limit)
+            return _grant(
+                hub.code.search_symbols(
+                    root, query=query, kind=kind, role=role, limit=limit
+                )
+            )
         if m == "references":
-            return hub.code.find_references(root, symbol=query, limit=limit)
+            return _grant(hub.code.find_references(root, symbol=query, limit=limit))
         if m == "routes":
-            return hub.code.find_routes(root, query=query, limit=limit)
+            return _grant(hub.code.find_routes(root, query=query, limit=limit))
         if m == "hotspots":
-            return hub.code.find_hotspots(root, query=query, limit=limit)
+            return _grant(hub.code.find_hotspots(root, query=query, limit=limit))
         if m == "query_hotspots":
-            return hub.code.find_query_hotspots(root, query=query, limit=limit)
+            return _grant(hub.code.find_query_hotspots(root, query=query, limit=limit))
         if m == "entrypoints":
-            return hub.code.find_entrypoints(root, concept=query, limit=limit)
+            return _grant(hub.code.find_entrypoints(root, concept=query, limit=limit))
         if m == "duplicates":
-            return hub.code.find_duplicate_structures(root, role_filter=query or None, limit=limit)
+            return _grant(
+                hub.code.find_duplicate_structures(
+                    root, role_filter=query or None, limit=limit
+                )
+            )
         if m == "partial_group":
-            return hub.code.find_partial_group(root, symbol=query, limit=limit)
+            return _grant(hub.code.find_partial_group(root, symbol=query, limit=limit))
         if m == "partial_consumers":
-            return hub.code.find_partial_consumers(root, partial_name=query, limit=limit)
+            return _grant(
+                hub.code.find_partial_consumers(root, partial_name=query, limit=limit)
+            )
         if m == "api_consumers":
-            return hub.code.find_api_consumers(root, endpoint=query, limit=limit)
+            return _grant(
+                hub.code.find_api_consumers(root, endpoint=query, limit=limit)
+            )
         if m == "frontend_symbols":
-            return hub.code.find_frontend_symbols(root, query=query, limit=limit)
+            return _grant(
+                hub.code.find_frontend_symbols(root, query=query, limit=limit)
+            )
         if m == "data_structures":
-            return hub.code.find_data_structures(root, query=query, limit=limit)
+            return _grant(hub.code.find_data_structures(root, query=query, limit=limit))
         if m == "initializers":
-            return hub.code.find_initializers(root, path=query if query.strip() else None, limit=limit)
+            return _grant(
+                hub.code.find_initializers(
+                    root, path=query if query.strip() else None, limit=limit
+                )
+            )
         if m == "mutations":
-            return hub.code.find_mutation_points(root, concept=query, limit=limit)
+            return _grant(
+                hub.code.find_mutation_points(root, concept=query, limit=limit)
+            )
         if m == "validation":
-            return hub.code.find_validation_surfaces(root, concept=query, limit=limit)
+            return _grant(
+                hub.code.find_validation_surfaces(root, concept=query, limit=limit)
+            )
         if m == "async":
-            return hub.code.find_async_boundaries(root, concept=query or None, limit=limit)
+            return _grant(
+                hub.code.find_async_boundaries(root, concept=query or None, limit=limit)
+            )
         if m == "policy":
-            return hub.code.find_policy_surfaces(root, concept=query, limit=limit)
+            return _grant(
+                hub.code.find_policy_surfaces(root, concept=query, limit=limit)
+            )
         if m == "touchpoints":
-            return hub.code.find_ui_backend_touchpoints(root, concept=query, limit=limit)
+            return _grant(
+                hub.code.find_ui_backend_touchpoints(root, concept=query, limit=limit)
+            )
         if m == "mismatches":
-            return hub.code.find_state_model_mismatch(root, concept=query, limit=limit)
+            return _grant(
+                hub.code.find_state_model_mismatch(root, concept=query, limit=limit)
+            )
         if m == "clusters":
-            return hub.code.find_domain_clusters(root, concept=query, limit=limit)
+            return _grant(
+                hub.code.find_domain_clusters(root, concept=query, limit=limit)
+            )
         if m == "transitions":
-            return hub.code.find_transition_points(root, concept=query, limit=limit)
+            return _grant(
+                hub.code.find_transition_points(root, concept=query, limit=limit)
+            )
         if m == "factories":
-            return hub.code.find_factories(root, query=query, limit=limit)
-        return {"error": f"Unknown mode: {mode}", "available_modes": list(create_server._FIND_MODES.keys())}
+            return _grant(hub.code.find_factories(root, query=query, limit=limit))
+        return {
+            "error": f"Unknown mode: {mode}",
+            "available_modes": list(create_server._FIND_MODES.keys()),
+        }
 
     _TRACE_MODES = {
         "field_flow": "Trace a field across model→service→UI layers",
@@ -1290,23 +2211,68 @@ def create_server() -> Any:
         """
         root = Path(project_root)
         m = mode.strip().lower()
+
+        def _grant(result: dict[str, Any]) -> dict[str, Any]:
+            if any(result.get(key) for key in ("matches", "api", "logic", "ui")):
+                _grant_indexed_read_gate(hub, root, "code_trace")
+            return result
+
         if m == "field_flow":
-            return _apply_trace_depth(hub.code.trace_field_flow(root, field_name=query, limit=limit), m, max_depth)
+            return _grant(
+                _apply_trace_depth(
+                    hub.code.trace_field_flow(root, field_name=query, limit=limit),
+                    m,
+                    max_depth,
+                )
+            )
         if m == "service":
-            return _apply_trace_depth(hub.code.trace_service_usage(root, service_name=query, limit=limit), m, max_depth)
+            return _grant(
+                _apply_trace_depth(
+                    hub.code.trace_service_usage(root, service_name=query, limit=limit),
+                    m,
+                    max_depth,
+                )
+            )
         if m == "model":
-            return hub.code.trace_model_usage(root, model_name=query, limit=limit)
+            return _grant(
+                hub.code.trace_model_usage(root, model_name=query, limit=limit)
+            )
         if m == "component":
-            return _apply_trace_depth(hub.code.trace_component_usage(root, component_name=query, limit=limit), m, max_depth)
+            return _grant(
+                _apply_trace_depth(
+                    hub.code.trace_component_usage(
+                        root, component_name=query, limit=limit
+                    ),
+                    m,
+                    max_depth,
+                )
+            )
         if m == "api_to_ui":
-            return _apply_trace_depth(hub.code.trace_api_to_ui(root, concept=query, limit=limit), m, max_depth)
+            return _grant(
+                _apply_trace_depth(
+                    hub.code.trace_api_to_ui(root, concept=query, limit=limit),
+                    m,
+                    max_depth,
+                )
+            )
         if m == "css_class":
-            return hub.code.trace_css_class_usage(root, class_name=query, limit=limit)
+            return _grant(
+                hub.code.trace_css_class_usage(root, class_name=query, limit=limit)
+            )
         if m == "query_shape":
-            return hub.code.trace_query_shape(root, path=query, limit=limit)
+            return _grant(hub.code.trace_query_shape(root, path=query, limit=limit))
         if m == "setting":
-            return _apply_trace_depth(hub.code.trace_setting_usage(root, setting_name=query, limit=limit), m, max_depth)
-        return {"error": f"Unknown mode: {mode}", "available_modes": list(create_server._TRACE_MODES.keys())}
+            return _grant(
+                _apply_trace_depth(
+                    hub.code.trace_setting_usage(root, setting_name=query, limit=limit),
+                    m,
+                    max_depth,
+                )
+            )
+        return {
+            "error": f"Unknown mode: {mode}",
+            "available_modes": list(create_server._TRACE_MODES.keys()),
+        }
 
     _BUNDLE_MODES = {
         "file": "Full file context: outline + deps + schema hints",
@@ -1346,46 +2312,84 @@ def create_server() -> Any:
         """
         root = Path(project_root)
         m = mode.strip().lower()
+
+        def _grant(
+            result: dict[str, Any] | list[dict[str, Any]],
+        ) -> dict[str, Any] | list[dict[str, Any]]:
+            if isinstance(result, list):
+                if result:
+                    _grant_indexed_read_gate(hub, root, "code_bundle")
+                return result
+            if any(
+                result.get(key)
+                for key in (
+                    "primary_files",
+                    "related_files",
+                    "files",
+                    "symbols",
+                    "matches",
+                )
+            ):
+                _grant_indexed_read_gate(hub, root, "code_bundle")
+            return result
+
         if m == "file":
-            return hub.code.get_file_bundle(root, path=target)
+            return _grant(hub.code.get_file_bundle(root, path=target))
         if m == "service":
-            return hub.code.get_service_bundle(root, path=target, limit=limit)
+            return _grant(hub.code.get_service_bundle(root, path=target, limit=limit))
         if m == "component":
-            return hub.code.get_component_bundle(root, path=target, limit=limit)
+            return _grant(hub.code.get_component_bundle(root, path=target, limit=limit))
         if m == "query":
-            return hub.code.get_query_bundle(root, path=target, limit=limit)
+            return _grant(hub.code.get_query_bundle(root, path=target, limit=limit))
         if m == "subsystem":
-            return hub.code.get_subsystem_bundle(root, concept=target, limit=limit)
+            return _grant(
+                hub.code.get_subsystem_bundle(root, concept=target, limit=limit)
+            )
         if m == "dependency":
-            return hub.code.get_dependency_bundle(root, path=target, limit=limit)
+            return _grant(
+                hub.code.get_dependency_bundle(root, path=target, limit=limit)
+            )
         if m == "partial":
-            return hub.code.get_partial_bundle(root, symbol=target, limit=limit)
+            return _grant(hub.code.get_partial_bundle(root, symbol=target, limit=limit))
         if m == "symbol":
-            return hub.code.get_symbol_bundle(root, symbol=target, limit=limit)
+            return _grant(hub.code.get_symbol_bundle(root, symbol=target, limit=limit))
         if m == "style":
             # Accept comma/space separated class names
             if isinstance(target, str):
-                class_names = [s.strip() for s in re.split(r"[,\s]+", target) if s.strip()]
+                class_names = [
+                    s.strip() for s in re.split(r"[,\s]+", target) if s.strip()
+                ]
             else:
                 class_names = target
-            return hub.code.get_style_bundle(root, class_names=class_names, limit=limit)
+            return _grant(
+                hub.code.get_style_bundle(root, class_names=class_names, limit=limit)
+            )
         if m == "session":
             if not session_id:
                 return {"error": "session_id is required for session mode"}
-            return hub.code.get_session_code_bundle(root, session_id=session_id)
+            return _grant(hub.code.get_session_code_bundle(root, session_id=session_id))
         if m == "context":
             if not session_id:
                 return {"error": "session_id is required for context mode"}
-            return hub.code.get_context_bundle(root, session_id=session_id, limit=limit)
+            return _grant(
+                hub.code.get_context_bundle(root, session_id=session_id, limit=limit)
+            )
         if m == "preset":
             # target format: "preset_name:value" e.g. "csharp-partial:FormPdfService"
             parts = target.split(":", 1)
             preset = parts[0].strip()
             value = parts[1].strip() if len(parts) > 1 else ""
-            return hub.code.get_preset_bundle(root, preset=preset, value=value, limit=limit)
+            return _grant(
+                hub.code.get_preset_bundle(
+                    root, preset=preset, value=value, limit=limit
+                )
+            )
         if m == "tree":
-            return hub.code.get_component_tree(root, path=target, limit=limit)
-        return {"error": f"Unknown mode: {mode}", "available_modes": list(create_server._BUNDLE_MODES.keys())}
+            return _grant(hub.code.get_component_tree(root, path=target, limit=limit))
+        return {
+            "error": f"Unknown mode: {mode}",
+            "available_modes": list(create_server._BUNDLE_MODES.keys()),
+        }
 
     @server.tool()
     @timed_tool
@@ -1407,28 +2411,76 @@ def create_server() -> Any:
         """
         root = Path(project_root)
         m = mode.strip().lower()
+
+        def _grant(
+            result: dict[str, Any] | list[dict[str, Any]],
+        ) -> dict[str, Any] | list[dict[str, Any]]:
+            if isinstance(result, list):
+                if result:
+                    _grant_indexed_read_gate(hub, root, "schema_query")
+                return result
+            if any(
+                result.get(key)
+                for key in ("entities", "fields", "matches", "properties")
+            ):
+                _grant_indexed_read_gate(hub, root, "schema_query")
+            return result
+
         if m == "entities":
-            return hub.schema.find_schema_entities(root, query=query or None, limit=limit)
+            return _grant(
+                hub.schema.find_schema_entities(root, query=query or None, limit=limit)
+            )
         if m == "entity":
-            return hub.schema.get_schema_entity(root, entity_name=query)
+            return _grant(hub.schema.get_schema_entity(root, entity_name=query))
         if m == "batch_entity":
-            names = [part.strip() for part in re.split(r"[\n,]+", query) if part.strip()]
-            return hub.schema.get_schema_entities_batch(root, entity_names=names)
+            names = [
+                part.strip() for part in re.split(r"[\n,]+", query) if part.strip()
+            ]
+            return _grant(
+                hub.schema.get_schema_entities_batch(root, entity_names=names)
+            )
         if m == "field":
-            return hub.schema.find_schema_field(root, field_name=query, limit=limit)
+            return _grant(
+                hub.schema.find_schema_field(root, field_name=query, limit=limit)
+            )
         if m == "constructor":
-            return hub.schema.get_constructor_params(root, entity_name=query, include_related=include_related)
+            return _grant(
+                hub.schema.get_constructor_params(
+                    root, entity_name=query, include_related=include_related
+                )
+            )
         if m == "properties":
-            return hub.schema.get_entity_properties(root, entity_name=query)
+            return _grant(hub.schema.get_entity_properties(root, entity_name=query))
         if m == "trace_flow":
-            return hub.schema.trace_entity_flow(root, entity_name=query, limit=limit)
+            return _grant(
+                hub.schema.trace_entity_flow(root, entity_name=query, limit=limit)
+            )
         if m == "trace_path":
             # Accept "Source→Target" or "Source -> Target" or "Source,Target"
             parts = re.split(r"[→\->,]+", query, maxsplit=1)
             if len(parts) < 2:
-                return {"error": "trace_path requires 'Source→Target' format", "query": query}
-            return hub.schema.trace_relationship_path(root, source_entity=parts[0].strip(), target_entity=parts[1].strip(), limit=limit)
-        return {"error": f"Unknown mode: {mode}", "available_modes": ["entities", "entity", "field", "trace_flow", "trace_path"]}
+                return {
+                    "error": "trace_path requires 'Source→Target' format",
+                    "query": query,
+                }
+            return _grant(
+                hub.schema.trace_relationship_path(
+                    root,
+                    source_entity=parts[0].strip(),
+                    target_entity=parts[1].strip(),
+                    limit=limit,
+                )
+            )
+        return {
+            "error": f"Unknown mode: {mode}",
+            "available_modes": [
+                "entities",
+                "entity",
+                "field",
+                "trace_flow",
+                "trace_path",
+            ],
+        }
 
     # ═══════════════════════════════════════════════════════════════════════
     # Legacy Tools (deprecated — use unified tools above)
@@ -1472,7 +2524,12 @@ def create_server() -> Any:
 
     @server.tool()
     @timed_sync
-    def project_init(project_root: str, init_git: bool = True, create_remote: bool = False, timeout: int | None = None) -> dict[str, Any]:
+    def project_init(
+        project_root: str,
+        init_git: bool = True,
+        create_remote: bool = False,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
         """Initialize AIDOCS structure on a new project — creates .MEMORY/, AGENTS.md/CLAUDE.md, and templates.
 
         Creates the full AIDOCS directory structure directly (no shell scripts).
@@ -1483,7 +2540,9 @@ def create_server() -> Any:
             init_git: If True (default), initialize a git repo if none exists.
             create_remote: If True, create a private GitHub repo using `gh` CLI. Default: False (opt-in).
         """
-        return runtime.project_init(Path(project_root), init_git=init_git, create_remote=create_remote)
+        return runtime.project_init(
+            Path(project_root), init_git=init_git, create_remote=create_remote
+        )
 
     @server.tool()
     def project_ensure_mcp_config(project_root: str) -> dict[str, Any]:
@@ -1516,17 +2575,29 @@ def create_server() -> Any:
 
     @server.tool()
     @timed_sync
-    def project_sync_indexes(project_root: str, include_tests: bool = False, timeout: int | None = None) -> dict[str, Any]:
+    def project_sync_indexes(
+        project_root: str, include_tests: bool = False, timeout: int | None = None
+    ) -> dict[str, Any]:
         """Refresh all derived indexes for a project in one call."""
         root = Path(project_root)
         capability_count = hub.capabilities.sync_capabilities(root, _registered_tools())
         workflow_sync = hub.workflow.compile_project_rules(root)
-        procedure_count = hub.procedures.sync_procedures(root, hub.workflow.read_compiled(root))
-        link_count = hub.procedure_links.sync_links(root, _all_procedures(root), _all_capabilities(root))
+        procedure_count = hub.procedures.sync_procedures(
+            root, hub.workflow.read_compiled(root)
+        )
+        link_count = hub.procedure_links.sync_links(
+            root, _all_procedures(root), _all_capabilities(root)
+        )
+        code_processed = hub.code.sync_code_files(root, include_tests=include_tests)
+        code_status = hub.code.code_status(root)
         return {
             "memory": hub.index.sync_all(root),
             "capabilities": {"capability_definitions": capability_count},
-            "code_manifest": {"code_files": hub.code.sync_code_files(root, include_tests=include_tests)},
+            "code_manifest": {
+                "processed_code_files": code_processed,
+                "code_files": code_status.get("code_files"),
+                "parsed_code_files": code_status.get("parsed_code_files"),
+            },
             "schema": hub.schema.sync_schema(root),
             "workflow": workflow_sync,
             "procedures": {"procedure_definitions": procedure_count},
@@ -1575,7 +2646,9 @@ def create_server() -> Any:
         return descriptor_semantics_summary()
 
     @server.tool()
-    def index_language_descriptor_match_get(project_root: str, relative_path: str) -> dict[str, Any]:
+    def index_language_descriptor_match_get(
+        project_root: str, relative_path: str
+    ) -> dict[str, Any]:
         """Show which descriptor would classify a given project-relative path."""
         return descriptor_match_summary(Path(project_root), relative_path)
 
@@ -1585,9 +2658,13 @@ def create_server() -> Any:
         return hub.capabilities.capability_status(Path(project_root))
 
     @server.tool()
-    def capability_definitions_get(project_root: str, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    def capability_definitions_get(
+        project_root: str, query: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
         """Return indexed MCP capability definitions, optionally filtered by query."""
-        return hub.capabilities.find_capabilities(Path(project_root), query=query, limit=limit)
+        return hub.capabilities.find_capabilities(
+            Path(project_root), query=query, limit=limit
+        )
 
     @server.tool()
     def procedure_index_status(project_root: str) -> dict[str, Any]:
@@ -1595,9 +2672,13 @@ def create_server() -> Any:
         return hub.procedures.procedure_status(Path(project_root))
 
     @server.tool()
-    def procedure_definitions_get(project_root: str, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    def procedure_definitions_get(
+        project_root: str, query: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
         """Return indexed procedure definitions, optionally filtered by query."""
-        return hub.procedures.find_procedures(Path(project_root), query=query, limit=limit)
+        return hub.procedures.find_procedures(
+            Path(project_root), query=query, limit=limit
+        )
 
     @server.tool()
     def procedure_capability_link_status(project_root: str) -> dict[str, Any]:
@@ -1612,7 +2693,12 @@ def create_server() -> Any:
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Return indexed procedure-to-capability links, optionally filtered by procedure or unresolved status."""
-        return hub.procedure_links.list_links(Path(project_root), procedure_id=procedure_id, unresolved_only=unresolved_only, limit=limit)
+        return hub.procedure_links.list_links(
+            Path(project_root),
+            procedure_id=procedure_id,
+            unresolved_only=unresolved_only,
+            limit=limit,
+        )
 
     @server.tool()
     def execution_index_status(project_root: str) -> dict[str, Any]:
@@ -1620,9 +2706,13 @@ def create_server() -> Any:
         return hub.execution.execution_status(Path(project_root))
 
     @server.tool()
-    def execution_runs_get(project_root: str, session_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    def execution_runs_get(
+        project_root: str, session_id: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
         """Return indexed execution runs, optionally filtered by session."""
-        return hub.execution.list_runs(Path(project_root), session_id=session_id, limit=limit)
+        return hub.execution.list_runs(
+            Path(project_root), session_id=session_id, limit=limit
+        )
 
     @server.tool()
     def execution_events_get(
@@ -1632,7 +2722,9 @@ def create_server() -> Any:
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Return indexed execution events, optionally filtered by query/session."""
-        return hub.execution.list_events(Path(project_root), query=query, session_id=session_id, limit=limit)
+        return hub.execution.list_events(
+            Path(project_root), query=query, session_id=session_id, limit=limit
+        )
 
     @server.tool()
     def execution_run_record(
@@ -1710,23 +2802,39 @@ def create_server() -> Any:
     ) -> list[dict[str, Any]]:
         """Query: 'What actually ran last time?' — returns recent execution events matching filters."""
         return hub.execution.query_last_execution(
-            Path(project_root), action_kind=action_kind, capability_name=capability_name, session_id=session_id, limit=limit,
+            Path(project_root),
+            action_kind=action_kind,
+            capability_name=capability_name,
+            session_id=session_id,
+            limit=limit,
         )
 
     @server.tool()
-    def execution_query_summary(project_root: str, session_id: str | None = None) -> dict[str, Any]:
+    def execution_query_summary(
+        project_root: str, session_id: str | None = None
+    ) -> dict[str, Any]:
         """Query: 'What happened in this session?' — returns aggregate execution summary with ad-hoc vs procedure-linked breakdown."""
-        return hub.execution.query_execution_summary(Path(project_root), session_id=session_id)
+        return hub.execution.query_execution_summary(
+            Path(project_root), session_id=session_id
+        )
 
     @server.tool()
-    def execution_query_compliance(project_root: str, session_id: str | None = None, limit: int = 20) -> dict[str, Any]:
+    def execution_query_compliance(
+        project_root: str, session_id: str | None = None, limit: int = 20
+    ) -> dict[str, Any]:
         """Query: 'Did execution follow the intended procedure?' — compares procedure-linked runs vs ad-hoc runs."""
-        return hub.execution.query_procedure_compliance(Path(project_root), session_id=session_id, limit=limit)
+        return hub.execution.query_procedure_compliance(
+            Path(project_root), session_id=session_id, limit=limit
+        )
 
     @server.tool()
-    def execution_prune(project_root: str, max_age_days: int = 30, max_events: int = 10000) -> dict[str, Any]:
+    def execution_prune(
+        project_root: str, max_age_days: int = 30, max_events: int = 10000
+    ) -> dict[str, Any]:
         """Prune old execution events by age and count. Runs automatically on project_sync_indexes."""
-        return hub.execution.prune_old_events(Path(project_root), max_age_days=max_age_days, max_events=max_events)
+        return hub.execution.prune_old_events(
+            Path(project_root), max_age_days=max_age_days, max_events=max_events
+        )
 
     @server.tool()
     def action_surface_compare(
@@ -1736,7 +2844,9 @@ def create_server() -> Any:
         limit: int = 20,
     ) -> dict[str, Any]:
         """Compare what should happen, what can happen, and what did happen for a query."""
-        return hub.action_surface.compare(Path(project_root), query=query, session_id=session_id, limit=limit)
+        return hub.action_surface.compare(
+            Path(project_root), query=query, session_id=session_id, limit=limit
+        )
 
     @server.tool()
     def action_surface_assess(
@@ -1746,7 +2856,9 @@ def create_server() -> Any:
         limit: int = 20,
     ) -> dict[str, Any]:
         """Return an operator-facing assessment of the action surface for a query."""
-        return hub.action_surface.assess(Path(project_root), query=query, session_id=session_id, limit=limit)
+        return hub.action_surface.assess(
+            Path(project_root), query=query, session_id=session_id, limit=limit
+        )
 
     @server.tool()
     def action_surface_status_bundle(
@@ -1756,7 +2868,9 @@ def create_server() -> Any:
         limit: int = 20,
     ) -> dict[str, Any]:
         """Return an operator-facing multi-query status bundle over action surfaces."""
-        return hub.action_surface.status_bundle(Path(project_root), queries=queries, session_id=session_id, limit=limit)
+        return hub.action_surface.status_bundle(
+            Path(project_root), queries=queries, session_id=session_id, limit=limit
+        )
 
     @server.tool()
     def action_surface_session_bundle(
@@ -1766,7 +2880,12 @@ def create_server() -> Any:
         max_queries: int = 12,
     ) -> dict[str, Any]:
         """Return a session-driven operator-facing action-surface status bundle."""
-        return hub.action_surface.session_status_bundle(Path(project_root), session_id=session_id, limit=limit, max_queries=max_queries)
+        return hub.action_surface.session_status_bundle(
+            Path(project_root),
+            session_id=session_id,
+            limit=limit,
+            max_queries=max_queries,
+        )
 
     @server.tool()
     def action_surface_current_session_bundle(
@@ -1775,25 +2894,31 @@ def create_server() -> Any:
         max_queries: int = 12,
     ) -> dict[str, Any]:
         """Return a session-driven operator-facing action-surface bundle for the current managed or sole active session."""
-        return hub.action_surface.current_session_bundle(Path(project_root), limit=limit, max_queries=max_queries)
+        return hub.action_surface.current_session_bundle(
+            Path(project_root), limit=limit, max_queries=max_queries
+        )
 
     @server.tool()
     def workflow_actions_compile(project_root: str) -> dict[str, Any]:
-        """Compile human-readable workflow rules into structured workflow actions."""
+        """Compile human-readable workflow rules into the runtime workflow artifact."""
         return hub.workflow.compile_project_rules(Path(project_root))
 
     @server.tool()
     def workflow_actions_get(project_root: str) -> dict[str, Any] | None:
-        """Read the compiled workflow action config for a project if present."""
+        """Read the compiled runtime workflow artifact for a project if present."""
         return hub.workflow.read_compiled(Path(project_root))
 
     @server.tool()
-    def workflow_triggers_for_action(project_root: str, action_kind: str) -> dict[str, Any]:
+    def workflow_triggers_for_action(
+        project_root: str, action_kind: str
+    ) -> dict[str, Any]:
         """Find workflow triggers that would fire after an action_kind completes."""
         triggers = hub.workflow.triggers_for_action_kind(action_kind)
         pending: list[dict[str, Any]] = []
         for trigger in triggers:
-            pending.extend(hub.workflow.pending_actions_for_trigger(Path(project_root), trigger))
+            pending.extend(
+                hub.workflow.pending_actions_for_trigger(Path(project_root), trigger)
+            )
         return {
             "action_kind": action_kind,
             "triggers": triggers,
@@ -1811,12 +2936,18 @@ def create_server() -> Any:
         return hub.project_status.evaluate(Path(project_root))
 
     @server.tool()
-    def project_status_area_bundle(project_root: str, area_id: str, limit: int = 20) -> dict[str, Any]:
+    def project_status_area_bundle(
+        project_root: str, area_id: str, limit: int = 20
+    ) -> dict[str, Any]:
         """Return status details plus a subsystem bundle for one declared project-status area."""
-        return hub.project_status.get_area_bundle(Path(project_root), area_id=area_id, limit=limit)
+        return hub.project_status.get_area_bundle(
+            Path(project_root), area_id=area_id, limit=limit
+        )
 
     @server.tool()
-    def related_project_code_search(project_root: str, name: str, query: str, limit: int = 10) -> list[dict[str, Any]]:
+    def related_project_code_search(
+        project_root: str, name: str, query: str, limit: int = 10
+    ) -> list[dict[str, Any]]:
         """Search code in a configured related project using the same generic code index."""
         related_root = _resolve_related_root(project_root, name)
         hub.code.sync_code_manifest(related_root, include_tests=False)
@@ -1834,10 +2965,14 @@ def create_server() -> Any:
         """Build a symbol bundle from a configured related project."""
         related_root = _resolve_related_root(project_root, name)
         hub.code.sync_code_manifest(related_root, include_tests=False)
-        return hub.code.get_symbol_bundle(related_root, symbol=symbol, path=path, kind=kind, limit=limit)
+        return hub.code.get_symbol_bundle(
+            related_root, symbol=symbol, path=path, kind=kind, limit=limit
+        )
 
     @server.tool()
-    def related_project_subsystem_bundle(project_root: str, name: str, concept: str, limit: int = 20) -> dict[str, Any]:
+    def related_project_subsystem_bundle(
+        project_root: str, name: str, concept: str, limit: int = 20
+    ) -> dict[str, Any]:
         """Build a broad subsystem bundle from a configured related project."""
         related_root = _resolve_related_root(project_root, name)
         hub.code.sync_code_manifest(related_root, include_tests=False)
@@ -1845,7 +2980,9 @@ def create_server() -> Any:
         return hub.code.get_subsystem_bundle(related_root, concept=concept, limit=limit)
 
     @server.tool()
-    def related_project_compare_concept(project_root: str, name: str, concept: str, limit: int = 20) -> dict[str, Any]:
+    def related_project_compare_concept(
+        project_root: str, name: str, concept: str, limit: int = 20
+    ) -> dict[str, Any]:
         """Compare a concept between the current project and a configured related project."""
         root = Path(project_root)
         related_root = _resolve_related_root(project_root, name)
@@ -1860,8 +2997,12 @@ def create_server() -> Any:
                 "name": name,
                 "path": str(related_root),
             },
-            "current": hub.code.get_subsystem_bundle(root, concept=concept, limit=limit),
-            "related": hub.code.get_subsystem_bundle(related_root, concept=concept, limit=limit),
+            "current": hub.code.get_subsystem_bundle(
+                root, concept=concept, limit=limit
+            ),
+            "related": hub.code.get_subsystem_bundle(
+                related_root, concept=concept, limit=limit
+            ),
         }
 
     @server.tool()
@@ -1870,9 +3011,13 @@ def create_server() -> Any:
         return hub.legacy.inspect_legacy(Path(project_root))
 
     @server.tool()
-    def legacy_build_session_proposal(project_root: str, session_id: str | None = None) -> dict[str, Any]:
+    def legacy_build_session_proposal(
+        project_root: str, session_id: str | None = None
+    ) -> dict[str, Any]:
         """Build a non-destructive session proposal from legacy NOW/plans state."""
-        return hub.legacy.build_session_proposal(Path(project_root), session_id=session_id)
+        return hub.legacy.build_session_proposal(
+            Path(project_root), session_id=session_id
+        )
 
     # ═══════════════════════════════════════════════════════════════════════
     # Database Query Tool
@@ -1900,7 +3045,10 @@ def create_server() -> Any:
         stripped = sql.strip().lstrip("(").strip()
         first_word = stripped.split()[0].upper() if stripped.split() else ""
         if first_word not in ("SELECT", "WITH", "EXPLAIN"):
-            return {"error": f"Only SELECT/WITH/EXPLAIN queries allowed, got: {first_word}", "rows": []}
+            return {
+                "error": f"Only SELECT/WITH/EXPLAIN queries allowed, got: {first_word}",
+                "rows": [],
+            }
 
         # Resolve connection params
         root = Path(project_root)
@@ -1916,29 +3064,43 @@ def create_server() -> Any:
                 kv = part.strip().split("=", 1)
                 if len(kv) == 2:
                     key, val = kv[0].strip().lower(), kv[1].strip()
-                    if key == "host": host = val
-                    elif key in ("database", "db"): database = val
-                    elif key in ("username", "user id", "user"): username = val
-                    elif key == "password": password = val
-                    elif key == "port": port = val
+                    if key == "host":
+                        host = val
+                    elif key in ("database", "db"):
+                        database = val
+                    elif key in ("username", "user id", "user"):
+                        username = val
+                    elif key == "password":
+                        password = val
+                    elif key == "port":
+                        port = val
         else:
             # Try to read from appsettings.json
             for settings_file in ["appsettings.Development.json", "appsettings.json"]:
                 candidates = list(root.rglob(settings_file))
                 for candidate in candidates:
                     try:
-                        settings = json_mod.loads(candidate.read_text(encoding="utf-8", errors="ignore"))
-                        conn_str = (settings.get("ConnectionStrings") or {}).get("DefaultConnection")
+                        settings = json_mod.loads(
+                            candidate.read_text(encoding="utf-8", errors="ignore")
+                        )
+                        conn_str = (settings.get("ConnectionStrings") or {}).get(
+                            "DefaultConnection"
+                        )
                         if conn_str:
                             for part in conn_str.split(";"):
                                 kv = part.strip().split("=", 1)
                                 if len(kv) == 2:
                                     key, val = kv[0].strip().lower(), kv[1].strip()
-                                    if key == "host": host = val
-                                    elif key in ("database", "db"): database = val
-                                    elif key in ("username", "user id", "user"): username = val
-                                    elif key == "password": password = val
-                                    elif key == "port": port = val
+                                    if key == "host":
+                                        host = val
+                                    elif key in ("database", "db"):
+                                        database = val
+                                    elif key in ("username", "user id", "user"):
+                                        username = val
+                                    elif key == "password":
+                                        password = val
+                                    elif key == "port":
+                                        port = val
                             break
                     except Exception:
                         continue
@@ -1946,22 +3108,51 @@ def create_server() -> Any:
         env = {**__import__("os").environ, "PGPASSWORD": password}
         try:
             import tempfile as _tf
+
             _db_out = _db_err = None
             try:
-                with _tf.NamedTemporaryFile(mode="w", suffix=".db.out", delete=False) as f:
+                with _tf.NamedTemporaryFile(
+                    mode="w", suffix=".db.out", delete=False
+                ) as f:
                     _db_out = f.name
-                with _tf.NamedTemporaryFile(mode="w", suffix=".db.err", delete=False) as f:
+                with _tf.NamedTemporaryFile(
+                    mode="w", suffix=".db.err", delete=False
+                ) as f:
                     _db_err = f.name
                 with open(_db_out, "w") as out_fh, open(_db_err, "w") as err_fh:
                     result = subprocess.run(
-                        ["psql", "-h", host, "-p", port, "-U", username, "-d", database,
-                         "-t", "-A", "-F", "\t", "-c", sql],
-                        stdout=out_fh, stderr=err_fh, text=True, timeout=30, env=env,
+                        [
+                            "psql",
+                            "-h",
+                            host,
+                            "-p",
+                            port,
+                            "-U",
+                            username,
+                            "-d",
+                            database,
+                            "-t",
+                            "-A",
+                            "-F",
+                            "\t",
+                            "-c",
+                            sql,
+                        ],
+                        stdout=out_fh,
+                        stderr=err_fh,
+                        text=True,
+                        timeout=30,
+                        env=env,
                     )
-                stdout = Path(_db_out).read_text(encoding="utf-8", errors="ignore").strip()
-                stderr = Path(_db_err).read_text(encoding="utf-8", errors="ignore").strip()
+                stdout = (
+                    Path(_db_out).read_text(encoding="utf-8", errors="ignore").strip()
+                )
+                stderr = (
+                    Path(_db_err).read_text(encoding="utf-8", errors="ignore").strip()
+                )
             finally:
                 import os as _os
+
                 for p in (_db_out, _db_err):
                     if p:
                         try:
@@ -1974,7 +3165,10 @@ def create_server() -> Any:
             lines = [line for line in stdout.split("\n") if line.strip()]
             return {"row_count": len(lines), "rows": lines[:200]}
         except FileNotFoundError:
-            return {"error": "psql not found — install PostgreSQL client tools", "rows": []}
+            return {
+                "error": "psql not found — install PostgreSQL client tools",
+                "rows": [],
+            }
         except subprocess.TimeoutExpired:
             return {"error": "Query timed out after 30 seconds", "rows": []}
         except Exception as exc:
@@ -2008,7 +3202,9 @@ def create_server() -> Any:
                     break
 
         try:
-            merge_base = await _run_git(str(root), "merge-base", local, upstream, timeout=_GIT_TIMEOUT)
+            merge_base = await _run_git(
+                str(root), "merge-base", local, upstream, timeout=_GIT_TIMEOUT
+            )
             elapsed = round(time.perf_counter() - start, 3)
             return {
                 "ok": True,
@@ -2102,7 +3298,13 @@ def create_server() -> Any:
                 }
 
             step = "counts"
-            counts = await git("rev-list", "--left-right", "--count", f"{local}...{upstream}", timeout=_GIT_TIMEOUT)
+            counts = await git(
+                "rev-list",
+                "--left-right",
+                "--count",
+                f"{local}...{upstream}",
+                timeout=_GIT_TIMEOUT,
+            )
             mark(step)
             parts = counts.split()
             ahead = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
@@ -2122,56 +3324,111 @@ def create_server() -> Any:
             # File-level details (optional — can be slow on large repos)
             if include_files:
                 step = "local_diff"
-                local_changed = [l for l in (await git("diff", "--name-only", "--no-renames", merge_base, local, timeout=_GIT_TIMEOUT)).splitlines() if l.strip()]
+                local_changed = [
+                    l
+                    for l in (
+                        await git(
+                            "diff",
+                            "--name-only",
+                            "--no-renames",
+                            merge_base,
+                            local,
+                            timeout=_GIT_TIMEOUT,
+                        )
+                    ).splitlines()
+                    if l.strip()
+                ]
                 mark(step)
                 step = "upstream_diff"
-                upstream_changed = [l for l in (await git("diff", "--name-only", "--no-renames", merge_base, upstream, timeout=_GIT_TIMEOUT)).splitlines() if l.strip()]
+                upstream_changed = [
+                    l
+                    for l in (
+                        await git(
+                            "diff",
+                            "--name-only",
+                            "--no-renames",
+                            merge_base,
+                            upstream,
+                            timeout=_GIT_TIMEOUT,
+                        )
+                    ).splitlines()
+                    if l.strip()
+                ]
                 mark(step)
                 local_set = set(local_changed)
                 upstream_set = set(upstream_changed)
                 conflict_candidates = sorted(local_set & upstream_set)
 
-                result.update({
-                    "local_stat": f"{len(local_changed)} files changed (exact)",
-                    "upstream_stat": f"{len(upstream_changed)} files changed (exact)",
-                    "local_changed_files": len(local_changed),
-                    "upstream_changed_files": len(upstream_changed),
-                    "conflict_candidates": len(conflict_candidates),
-                    "conflict_files": conflict_candidates[:50],
-                    "local_only_files": sorted(local_set - upstream_set)[:30],
-                    "upstream_only_files": sorted(upstream_set - local_set)[:30],
-                })
+                result.update(
+                    {
+                        "local_stat": f"{len(local_changed)} files changed (exact)",
+                        "upstream_stat": f"{len(upstream_changed)} files changed (exact)",
+                        "local_changed_files": len(local_changed),
+                        "upstream_changed_files": len(upstream_changed),
+                        "conflict_candidates": len(conflict_candidates),
+                        "conflict_files": conflict_candidates[:50],
+                        "local_only_files": sorted(local_set - upstream_set)[:30],
+                        "upstream_only_files": sorted(upstream_set - local_set)[:30],
+                    }
+                )
             elif divergence > _GIT_FAST_DIVERGENCE:
                 step = "fast_path"
-                result.update({
-                    "local_stat": f"skipped fast-path due to large divergence ({divergence} commits)",
-                    "upstream_stat": f"skipped fast-path due to large divergence ({divergence} commits)",
-                    "local_changed_files_approx": None,
-                    "upstream_changed_files_approx": None,
-                    "note": (
-                        "Fast path used for a large branch gap. "
-                        "Set include_files=True for exact file lists, or narrow the comparison."
-                    ),
-                })
+                result.update(
+                    {
+                        "local_stat": f"skipped fast-path due to large divergence ({divergence} commits)",
+                        "upstream_stat": f"skipped fast-path due to large divergence ({divergence} commits)",
+                        "local_changed_files_approx": None,
+                        "upstream_changed_files_approx": None,
+                        "note": (
+                            "Fast path used for a large branch gap. "
+                            "Set include_files=True for exact file lists, or narrow the comparison."
+                        ),
+                    }
+                )
                 mark(step)
             else:
                 step = "local_shortstat"
-                local_stat = await git("diff", "--shortstat", "--no-renames", merge_base, local, timeout=_GIT_TIMEOUT)
+                local_stat = await git(
+                    "diff",
+                    "--shortstat",
+                    "--no-renames",
+                    merge_base,
+                    local,
+                    timeout=_GIT_TIMEOUT,
+                )
                 mark(step)
                 step = "upstream_shortstat"
-                upstream_stat = await git("diff", "--shortstat", "--no-renames", merge_base, upstream, timeout=_GIT_TIMEOUT)
+                upstream_stat = await git(
+                    "diff",
+                    "--shortstat",
+                    "--no-renames",
+                    merge_base,
+                    upstream,
+                    timeout=_GIT_TIMEOUT,
+                )
                 mark(step)
                 # Estimate file counts from shortstat (fast)
                 import re as _re
-                local_files = int(m.group(1)) if (m := _re.search(r"(\d+) files? changed", local_stat)) else 0
-                upstream_files = int(m.group(1)) if (m := _re.search(r"(\d+) files? changed", upstream_stat)) else 0
-                result.update({
-                    "local_stat": local_stat or "no changes",
-                    "upstream_stat": upstream_stat or "no changes",
-                    "local_changed_files_approx": local_files,
-                    "upstream_changed_files_approx": upstream_files,
-                    "note": "Set include_files=True for file lists and conflict prediction (slower)",
-                })
+
+                local_files = (
+                    int(m.group(1))
+                    if (m := _re.search(r"(\d+) files? changed", local_stat))
+                    else 0
+                )
+                upstream_files = (
+                    int(m.group(1))
+                    if (m := _re.search(r"(\d+) files? changed", upstream_stat))
+                    else 0
+                )
+                result.update(
+                    {
+                        "local_stat": local_stat or "no changes",
+                        "upstream_stat": upstream_stat or "no changes",
+                        "local_changed_files_approx": local_files,
+                        "upstream_changed_files_approx": upstream_files,
+                        "note": "Set include_files=True for file lists and conflict prediction (slower)",
+                    }
+                )
 
             result["summary"] = (
                 f"{behind} commits behind, {ahead} ahead. "
@@ -2206,6 +3463,7 @@ def create_server() -> Any:
             path_filter: Only show changes in this path (e.g., "packages/opencode/src/session/").
         """
         import subprocess
+
         root = Path(project_root)
         if not (root / ".git").exists():
             for child in root.iterdir():
@@ -2220,7 +3478,12 @@ def create_server() -> Any:
             merge_base = await git("merge-base", "HEAD", upstream)
 
             # Get commits with a clear separator format for reliable parsing
-            log_args = ["log", f"--format=COMMIT:%h %s", "--name-only", f"{merge_base}..{upstream}"]
+            log_args = [
+                "log",
+                f"--format=COMMIT:%h %s",
+                "--name-only",
+                f"{merge_base}..{upstream}",
+            ]
             if path_filter:
                 log_args.extend(["--", path_filter])
             log_args.append(f"-{limit}")
@@ -2237,7 +3500,11 @@ def create_server() -> Any:
                         commits.append(current)
                     rest = stripped[7:]
                     parts = rest.split(" ", 1)
-                    current = {"hash": parts[0], "message": parts[1] if len(parts) > 1 else "", "files": []}
+                    current = {
+                        "hash": parts[0],
+                        "message": parts[1] if len(parts) > 1 else "",
+                        "files": [],
+                    }
                 elif current:
                     current["files"].append(stripped)
             if current:
@@ -2254,7 +3521,9 @@ def create_server() -> Any:
                 "merge_base": merge_base,
                 "commit_count": len(commits),
                 "commits": commits[:limit],
-                "changes_by_directory": dict(sorted(dir_changes.items(), key=lambda x: -x[1])[:20]),
+                "changes_by_directory": dict(
+                    sorted(dir_changes.items(), key=lambda x: -x[1])[:20]
+                ),
             }
         except Exception as exc:
             return {"error": str(exc)}
@@ -2276,6 +3545,7 @@ def create_server() -> Any:
             upstream: Upstream ref.
         """
         import subprocess
+
         root = Path(project_root)
         if not (root / ".git").exists():
             for child in root.iterdir():
@@ -2293,26 +3563,51 @@ def create_server() -> Any:
             upstream_diff = await git("diff", merge_base, upstream, "--", file_path)
 
             # Count changes
-            local_adds = sum(1 for l in local_diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
-            local_dels = sum(1 for l in local_diff.splitlines() if l.startswith("-") and not l.startswith("---"))
-            upstream_adds = sum(1 for l in upstream_diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
-            upstream_dels = sum(1 for l in upstream_diff.splitlines() if l.startswith("-") and not l.startswith("---"))
+            local_adds = sum(
+                1
+                for l in local_diff.splitlines()
+                if l.startswith("+") and not l.startswith("+++")
+            )
+            local_dels = sum(
+                1
+                for l in local_diff.splitlines()
+                if l.startswith("-") and not l.startswith("---")
+            )
+            upstream_adds = sum(
+                1
+                for l in upstream_diff.splitlines()
+                if l.startswith("+") and not l.startswith("+++")
+            )
+            upstream_dels = sum(
+                1
+                for l in upstream_diff.splitlines()
+                if l.startswith("-") and not l.startswith("---")
+            )
 
             # Upstream commits that touched this file
-            upstream_commits = await git("log", "--oneline", f"{merge_base}..{upstream}", "--", file_path)
+            upstream_commits = await git(
+                "log", "--oneline", f"{merge_base}..{upstream}", "--", file_path
+            )
 
             return {
                 "file": file_path,
                 "merge_base": merge_base,
                 "local_changes": {"additions": local_adds, "deletions": local_dels},
-                "upstream_changes": {"additions": upstream_adds, "deletions": upstream_dels},
+                "upstream_changes": {
+                    "additions": upstream_adds,
+                    "deletions": upstream_dels,
+                },
                 "upstream_commits": upstream_commits.splitlines()[:20],
                 "local_diff": local_diff[:3000] if local_diff else "(no local changes)",
-                "upstream_diff": upstream_diff[:3000] if upstream_diff else "(no upstream changes)",
+                "upstream_diff": upstream_diff[:3000]
+                if upstream_diff
+                else "(no upstream changes)",
                 "recommendation": (
-                    "KEEP LOCAL" if not upstream_diff else
-                    "TAKE UPSTREAM" if not local_diff else
-                    "MANUAL MERGE REQUIRED — both sides changed this file"
+                    "KEEP LOCAL"
+                    if not upstream_diff
+                    else "TAKE UPSTREAM"
+                    if not local_diff
+                    else "MANUAL MERGE REQUIRED — both sides changed this file"
                 ),
             }
         except Exception as exc:
@@ -2354,14 +3649,22 @@ def create_server() -> Any:
             return await _run_git(str(root), *args, timeout=timeout)
 
         async def git_lines(*args: str, timeout: int = _GIT_TIMEOUT) -> list[str]:
-            return [l for l in (await git(*args, timeout=timeout)).splitlines() if l.strip()]
+            return [
+                l for l in (await git(*args, timeout=timeout)).splitlines() if l.strip()
+            ]
 
         try:
             step = "merge_base"
             merge_base = await git("merge-base", local, upstream, timeout=_GIT_TIMEOUT)
             mark(step)
             step = "counts"
-            counts = await git("rev-list", "--left-right", "--count", f"{local}...{upstream}", timeout=_GIT_TIMEOUT)
+            counts = await git(
+                "rev-list",
+                "--left-right",
+                "--count",
+                f"{local}...{upstream}",
+                timeout=_GIT_TIMEOUT,
+            )
             mark(step)
             parts = counts.split()
             ahead = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
@@ -2371,10 +3674,30 @@ def create_server() -> Any:
             if divergence > _GIT_SAMPLE_DIVERGENCE:
                 sample = max(limit * 8, 200)
                 step = "local_log"
-                local_changed = set(await git_lines("log", "--format=", "--name-only", "--no-renames", f"-{sample}", f"{merge_base}..{local}", timeout=_GIT_TIMEOUT))
+                local_changed = set(
+                    await git_lines(
+                        "log",
+                        "--format=",
+                        "--name-only",
+                        "--no-renames",
+                        f"-{sample}",
+                        f"{merge_base}..{local}",
+                        timeout=_GIT_TIMEOUT,
+                    )
+                )
                 mark(step)
                 step = "upstream_log"
-                upstream_changed = set(await git_lines("log", "--format=", "--name-only", "--no-renames", f"-{sample}", f"{merge_base}..{upstream}", timeout=_GIT_TIMEOUT))
+                upstream_changed = set(
+                    await git_lines(
+                        "log",
+                        "--format=",
+                        "--name-only",
+                        "--no-renames",
+                        f"-{sample}",
+                        f"{merge_base}..{upstream}",
+                        timeout=_GIT_TIMEOUT,
+                    )
+                )
                 mark(step)
                 keep_local = sorted(local_changed - upstream_changed)
                 take_upstream = sorted(upstream_changed - local_changed)
@@ -2399,10 +3722,28 @@ def create_server() -> Any:
                 }
 
             step = "local_diff"
-            local_changed = set(await git_lines("diff", "--name-only", "--no-renames", merge_base, local, timeout=_GIT_TIMEOUT))
+            local_changed = set(
+                await git_lines(
+                    "diff",
+                    "--name-only",
+                    "--no-renames",
+                    merge_base,
+                    local,
+                    timeout=_GIT_TIMEOUT,
+                )
+            )
             mark(step)
             step = "upstream_diff"
-            upstream_changed = set(await git_lines("diff", "--name-only", "--no-renames", merge_base, upstream, timeout=_GIT_TIMEOUT))
+            upstream_changed = set(
+                await git_lines(
+                    "diff",
+                    "--name-only",
+                    "--no-renames",
+                    merge_base,
+                    upstream,
+                    timeout=_GIT_TIMEOUT,
+                )
+            )
             mark(step)
 
             keep_local: list[str] = []  # only we changed
@@ -2446,12 +3787,17 @@ def create_server() -> Any:
 
 
 def main() -> None:
+    import argparse
     import atexit
     import os
+
+    parser = argparse.ArgumentParser(description="Run the AIDOCS MCP server.")
+    parser.parse_known_args()
 
     # Shut down thread pool on exit; handle SIGTERM/SIGHUP for graceful stop (Windows lacks SIGHUP)
     def _cleanup():
         _tool_executor.shutdown(wait=False, cancel_futures=True)
+
     atexit.register(_cleanup)
 
     # On Unix, handle SIGHUP/SIGTERM for graceful shutdown

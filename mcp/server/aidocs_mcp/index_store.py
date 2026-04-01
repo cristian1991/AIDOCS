@@ -59,7 +59,7 @@ class IndexStore:
             self._ensure_column(conn, "memory_files", "title", "TEXT")
             self._ensure_column(conn, "memory_files", "content_text", "TEXT NOT NULL DEFAULT ''")
 
-    def status(self, project_root: Path) -> dict[str, int | str]:
+    def status(self, project_root: Path) -> dict[str, object]:
         self.init_db(project_root)
         with self.connect(project_root) as conn:
             session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
@@ -70,6 +70,7 @@ class IndexStore:
             "sessions": int(session_count),
             "memory_files": int(memory_count),
             "memory_links": int(link_count),
+            "freshness": self._memory_freshness(project_root),
         }
 
     def sync_sessions(self, project_root: Path) -> int:
@@ -237,3 +238,53 @@ class IndexStore:
         existing = {row[1] for row in rows}
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+    def _memory_freshness(self, project_root: Path) -> dict[str, object]:
+        memory_root = project_root / ".MEMORY"
+        tracked_files: dict[str, tuple[str, int]] = {}
+        if memory_root.is_dir():
+            for path in sorted(memory_root.rglob("*")):
+                if not path.is_file() or path.suffix.lower() not in {".md", ".aidocs"}:
+                    continue
+                rel = path.relative_to(memory_root).as_posix()
+                if rel.startswith("archive/"):
+                    continue
+                tracked_files[rel] = (hashlib.sha256(path.read_bytes()).hexdigest(), int(path.stat().st_mtime_ns))
+
+        indexed_rows: dict[str, sqlite3.Row] = {}
+        with self.connect(project_root) as conn:
+            for row in conn.execute("SELECT path, checksum FROM memory_files ORDER BY path"):
+                indexed_rows[str(row["path"])] = row
+
+        indexed_path_set = set(indexed_rows)
+        tracked_path_set = set(tracked_files)
+        missing_paths = sorted(tracked_path_set - indexed_path_set)
+        extra_paths = sorted(indexed_path_set - tracked_path_set)
+        drifted_paths = sorted(
+            path
+            for path in tracked_path_set & indexed_path_set
+            if str(indexed_rows[path]["checksum"] or "") != tracked_files[path][0]
+        )
+        reasons: list[str] = []
+        if missing_paths or extra_paths:
+            reasons.append("path_drift")
+        if drifted_paths:
+            reasons.append("content_drift")
+        if tracked_files and not indexed_rows:
+            reasons.append("missing_index_state")
+            state = "missing"
+        elif reasons:
+            state = "stale"
+        else:
+            state = "ready"
+        latest_source_mtime_ns = max((item[1] for item in tracked_files.values()), default=None)
+        return {
+            "state": state,
+            "reasons": reasons,
+            "tracked_paths": len(tracked_files),
+            "indexed_paths": len(indexed_rows),
+            "drifted_paths": sorted(dict.fromkeys(missing_paths + drifted_paths + extra_paths)),
+            "missing_paths": missing_paths,
+            "extra_paths": extra_paths,
+            "latest_source_mtime_ns": latest_source_mtime_ns,
+        }

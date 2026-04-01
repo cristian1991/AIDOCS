@@ -1,6 +1,8 @@
 from pathlib import Path
 
+import aidocs_mcp.config as config
 from aidocs_mcp.claude_hook import ClaudeHookHandler
+from aidocs_mcp.runtime_service import RuntimeService
 
 
 def _write_templates(root: Path) -> None:
@@ -42,6 +44,110 @@ def _make_handler(tmp_path: Path) -> tuple[ClaudeHookHandler, Path]:
     _seed_project(project_root)
     return handler, project_root
 
+
+def _register_superpowers_provider(runtime: RuntimeService, project_root: Path, provider_root: Path) -> None:
+    provider_root.mkdir(parents=True, exist_ok=True)
+    (provider_root / "provider.json").write_text(
+        '{"provider_id": "superpowers_external", "version": "5.1.0"}\n',
+        encoding="utf-8",
+    )
+    skills = {
+        "brainstorming": "Imported brainstorming skill.",
+        "writing-plans": "Imported planning skill.",
+    }
+    for skill_name, description in skills.items():
+        (provider_root / "skills" / skill_name).mkdir(parents=True, exist_ok=True)
+        (provider_root / "skills" / skill_name / "SKILL.md").write_text(
+            "---\n"
+            f"name: {skill_name}\n"
+            f"description: {description}\n"
+            "tags: external, provider\n"
+            "---\n",
+            encoding="utf-8",
+        )
+    runtime.hub.skills.register_external_provider(
+        project_root,
+        provider_name="superpowers_external",
+        path=str(provider_root),
+    )
+
+
+
+def test_session_start_guides_initialization_for_plain_project(tmp_path: Path) -> None:
+    handler = ClaudeHookHandler()
+    project_root = tmp_path / "plain-project"
+    project_root.mkdir(parents=True, exist_ok=True)
+
+    result = handler.handle(
+        {
+            "hook_event_name": "SessionStart",
+            "cwd": str(project_root),
+        }
+    )
+
+    assert result is not None
+    payload = result["hookSpecificOutput"]
+    assert payload["hookEventName"] == "SessionStart"
+    assert "/aidocs" in payload["additionalContext"]
+    assert "initialize" in payload["additionalContext"].lower()
+
+
+def test_session_start_guides_session_creation_when_no_sessions(tmp_path: Path) -> None:
+    handler, project_root = _make_handler(tmp_path)
+    handler.runtime.project_init(project_root, init_git=False, create_remote=False)
+
+
+    result = handler.handle(
+        {
+            "hook_event_name": "SessionStart",
+            "cwd": str(project_root),
+        }
+    )
+
+    assert result is not None
+    payload = result["hookSpecificOutput"]
+    assert payload["hookEventName"] == "SessionStart"
+    assert "create a session" in payload["additionalContext"].lower()
+
+
+def test_session_start_requires_user_choice_when_multiple_sessions_exist(tmp_path: Path) -> None:
+    handler, project_root = _make_handler(tmp_path)
+    handler.runtime.project_init(project_root, init_git=False, create_remote=False)
+    handler.runtime.hub.sessions.create_session(project_root, "2026-03-24-a", "A", "Agent", "Goal A")
+    handler.runtime.hub.sessions.create_session(project_root, "2026-03-24-b", "B", "Agent", "Goal B")
+
+    result = handler.handle(
+        {
+            "hook_event_name": "SessionStart",
+            "cwd": str(project_root),
+        }
+    )
+
+    assert result is not None
+    payload = result["hookSpecificOutput"]
+    assert payload["hookEventName"] == "SessionStart"
+    assert "ask the user" in payload["additionalContext"].lower()
+    assert "which session" in payload["additionalContext"].lower()
+
+
+def test_session_start_guides_resync_when_indexes_are_stale(tmp_path: Path) -> None:
+    handler, project_root = _make_handler(tmp_path)
+    handler.runtime.project_init(project_root, init_git=False, create_remote=False)
+    session = handler.runtime.hub.sessions.create_session(project_root, "2026-03-24-c", "C", "Agent", "Goal C")
+    handler.runtime.hub.managed_mode.set_mode(project_root, session.session_id)
+
+    result = handler.handle(
+        {
+            "hook_event_name": "SessionStart",
+            "cwd": str(project_root),
+        }
+    )
+
+    assert result is not None
+    payload = result["hookSpecificOutput"]
+    assert payload["hookEventName"] == "SessionStart"
+    assert "stale" in payload["additionalContext"].lower()
+    assert "/aidocs" in payload["additionalContext"]
 
 def test_user_prompt_submit_blocks_when_project_is_unmanaged(tmp_path: Path) -> None:
     handler, project_root = _make_handler(tmp_path)
@@ -97,6 +203,185 @@ def test_user_prompt_submit_adds_context_when_project_is_managed(tmp_path: Path)
     assert "`understand`" in payload["additionalContext"]
 
 
+def test_user_prompt_submit_surfaces_imported_skill_state_from_runtime_route(tmp_path: Path) -> None:
+    handler, project_root = _make_handler(tmp_path)
+    session = handler.runtime.hub.sessions.create_session(project_root, "2026-03-24-a", "A", "Agent", "Goal A")
+    _register_superpowers_provider(handler.runtime, project_root, tmp_path / "superpowers-external")
+    handler.runtime.hub.skills.set_selected_skills(project_root, session.session_id, ["superpowers_external/brainstorming"])
+    handler.runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
+    handler.runtime.hub.managed_mode.set_mode(project_root, session_id=session.session_id)
+
+    result = handler.handle(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(project_root),
+            "prompt": "brainstorm app ideas for the startup flow and tell me which imported skills AIDOCS wants active before I start changing code",
+        }
+    )
+
+    assert result is not None
+    payload = result["hookSpecificOutput"]
+    assert payload["hookEventName"] == "UserPromptSubmit"
+    assert "Imported skills" in payload["additionalContext"]
+    assert "superpowers_external/brainstorming" in payload["additionalContext"]
+
+
+def test_user_prompt_submit_uses_live_prompt_activation_from_runtime_host_state(tmp_path: Path) -> None:
+    handler, project_root = _make_handler(tmp_path)
+    session = handler.runtime.hub.sessions.create_session(project_root, "2026-03-24-live", "A", "Agent", "Goal A")
+    _register_superpowers_provider(handler.runtime, project_root, tmp_path / "superpowers-live")
+    handler.runtime.hub.skills.set_selected_skills(project_root, session.session_id, ["superpowers_external/brainstorming"])
+    handler.runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
+    handler.runtime.hub.managed_mode.set_mode(project_root, session_id=session.session_id)
+
+    result = handler.handle(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(project_root),
+            "prompt": "write the plan for the startup flow before I change code",
+        }
+    )
+
+    assert result is not None
+    payload = result["hookSpecificOutput"]
+    assert payload["hookEventName"] == "UserPromptSubmit"
+    assert "Imported skills" in payload["additionalContext"]
+    assert "superpowers_external/brainstorming" in payload["additionalContext"]
+    assert "writing-plans" in payload["additionalContext"]
+    assert "provider_content_aidocs_runtime" in payload["additionalContext"]
+    assert "aidocs_native_override" in payload["additionalContext"]
+
+
+def test_pre_tool_use_blocks_quoted_protected_config_path_in_bash_command(tmp_path: Path) -> None:
+    handler, project_root = _make_handler(tmp_path)
+    handler.runtime.hub.sessions.create_session(project_root, "2026-03-28-quoted-config", "A", "Agent", "Goal")
+    handler.runtime.hub.managed_mode.set_mode(project_root, session_id="2026-03-28-quoted-config")
+
+    result = handler.handle(
+        {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(project_root),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'cp "aidocs.toml" backup.toml'},
+        }
+    )
+
+    assert result == {
+        "decision": "block",
+        "reason": "BLOCKED: Shell command targets protected AIDOCS infrastructure (aidocs.toml).",
+    }
+
+
+def test_pre_tool_use_blocks_quoted_protected_infrastructure_path_in_bash_command(
+    monkeypatch, tmp_path: Path
+) -> None:
+    handler, project_root = _make_handler(tmp_path)
+    handler.runtime.hub.sessions.create_session(project_root, "2026-03-28-quoted-infra", "A", "Agent", "Goal")
+    handler.runtime.hub.managed_mode.set_mode(project_root, session_id="2026-03-28-quoted-infra")
+    monkeypatch.setattr(config, "DEV_MODE", False)
+
+    result = handler.handle(
+        {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(project_root),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'cp "core/plugins/aidocs.js" /tmp/aidocs.js'},
+        }
+    )
+
+    assert result == {
+        "decision": "block",
+        "reason": "BLOCKED: Shell command targets protected AIDOCS infrastructure (core/plugins/aidocs).",
+    }
+
+
+def test_pre_tool_use_blocks_powershell_copy_item_to_protected_config(tmp_path: Path) -> None:
+    handler, project_root = _make_handler(tmp_path)
+    handler.runtime.hub.sessions.create_session(project_root, "2026-03-28-ps-copy-config", "A", "Agent", "Goal")
+    handler.runtime.hub.managed_mode.set_mode(project_root, session_id="2026-03-28-ps-copy-config")
+
+    result = handler.handle(
+        {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(project_root),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'Copy-Item "aidocs.toml" "backup.toml"'},
+        }
+    )
+
+    assert result == {
+        "decision": "block",
+        "reason": "BLOCKED: Shell command targets protected AIDOCS infrastructure (aidocs.toml).",
+    }
+
+
+def test_pre_tool_use_blocks_powershell_remove_item_for_backslash_infrastructure_path(
+    monkeypatch, tmp_path: Path
+) -> None:
+    handler, project_root = _make_handler(tmp_path)
+    handler.runtime.hub.sessions.create_session(project_root, "2026-03-28-ps-remove-infra", "A", "Agent", "Goal")
+    handler.runtime.hub.managed_mode.set_mode(project_root, session_id="2026-03-28-ps-remove-infra")
+    monkeypatch.setattr(config, "DEV_MODE", False)
+
+    result = handler.handle(
+        {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(project_root),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'Remove-Item "aidocs_mcp\\claude_hook.py"'},
+        }
+    )
+
+    assert result == {
+        "decision": "block",
+        "reason": "BLOCKED: Shell command targets protected AIDOCS infrastructure (aidocs_mcp).",
+    }
+
+
+def test_pre_tool_use_blocks_powershell_out_file_for_backslash_infrastructure_path(
+    monkeypatch, tmp_path: Path
+) -> None:
+    handler, project_root = _make_handler(tmp_path)
+    handler.runtime.hub.sessions.create_session(project_root, "2026-03-28-ps-outfile-infra", "A", "Agent", "Goal")
+    handler.runtime.hub.managed_mode.set_mode(project_root, session_id="2026-03-28-ps-outfile-infra")
+    monkeypatch.setattr(config, "DEV_MODE", False)
+
+    result = handler.handle(
+        {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(project_root),
+            "tool_name": "Bash",
+            "tool_input": {"command": '"content" | Out-File "core\\plugins\\aidocs.js"'},
+        }
+    )
+
+    assert result == {
+        "decision": "block",
+        "reason": "BLOCKED: Shell command targets protected AIDOCS infrastructure (core/plugins/aidocs).",
+    }
+
+
+def test_session_start_surfaces_imported_skill_state_for_selected_session(tmp_path: Path) -> None:
+    handler, project_root = _make_handler(tmp_path)
+    session = handler.runtime.hub.sessions.create_session(project_root, "2026-03-24-a", "A", "Agent", "Goal A")
+    _register_superpowers_provider(handler.runtime, project_root, tmp_path / "superpowers-startup")
+    handler.runtime.hub.skills.set_selected_skills(project_root, session.session_id, ["superpowers_external/brainstorming"])
+    handler.runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
+
+    result = handler.handle(
+        {
+            "hook_event_name": "SessionStart",
+            "cwd": str(project_root),
+        }
+    )
+
+    assert result is not None
+    payload = result["hookSpecificOutput"]
+    assert payload["hookEventName"] == "SessionStart"
+    assert "Imported skills" in payload["additionalContext"]
+    assert "superpowers_external/brainstorming" in payload["additionalContext"]
+
+
 def test_pre_tool_use_adds_context_when_project_is_managed(tmp_path: Path) -> None:
     handler, project_root = _make_handler(tmp_path)
     (project_root / ".MEMORY" / "rules").mkdir(parents=True, exist_ok=True)
@@ -125,8 +410,11 @@ def test_pre_tool_use_adds_context_when_project_is_managed(tmp_path: Path) -> No
     assert result is not None
     payload = result["hookSpecificOutput"]
     assert payload["hookEventName"] == "PreToolUse"
-    # Read tool should get a nudge toward code_get_outline / code_get_file_bundle
-    assert "code_get_outline" in payload["additionalContext"] or "code_get_file_bundle" in payload["additionalContext"]
+    # Read tool should get a nudge toward the new generic AIDOCS retrieval surface.
+    assert "aidocs_code_bundle" in payload["additionalContext"]
+    assert 'mode="file"' in payload["additionalContext"]
+    assert "code_get_outline" not in payload["additionalContext"]
+    assert "code_get_file_bundle" not in payload["additionalContext"]
 
 
 def test_non_aidocs_project_returns_no_hook_output(tmp_path: Path) -> None:
@@ -175,7 +463,10 @@ def test_short_prompt_with_action_keyword_gets_directives(tmp_path: Path) -> Non
         "prompt": "fix the login bug",
     })
     assert result is not None
-    assert "additionalContext" in result.get("hookSpecificOutput", {})
+    context = result["hookSpecificOutput"]["additionalContext"]
+    assert "aidocs_code_get_lines" in context
+    assert "aidocs_code_edit_lines" in context
+    assert "code_get_outline" not in context
 
 
 # ── Comment enforcement tests ────────────────────────────────────────

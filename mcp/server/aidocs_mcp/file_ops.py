@@ -1,9 +1,9 @@
-"""File operations service — line-based reading and editing with safety checks.
+"""Line-based file operations with strong guardrails.
 
 Three operations:
-    get_lines    — Read specific lines from any file (fast, no index needed)
-    edit_lines   — Replace a line range with new content, with optional content verification
-    batch_edit   — Apply multiple edits atomically across one or more files
+    get_lines  - Read specific lines from any file (fast, no index needed)
+    edit_lines - Replace a line range with new content, with optional content verification
+    batch_edit - Apply multiple edits atomically across one or more files
 
 All operations are line-based (1-indexed) and file-type agnostic.
 """
@@ -12,6 +12,22 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+try:
+    import tomllib  # Python 3.11+
+except ImportError:
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ImportError:
+        tomllib = None  # type: ignore[assignment]
+
+from .config_schema import (
+    ConfigEditMode,
+    SETTINGS_CATALOG,
+    is_setting_agent_editable,
+    self_edit_available_in_profile,
+    validate_setting_value,
+)
 
 
 @dataclass(slots=True)
@@ -103,15 +119,6 @@ def _validate_project_root(project_root: Path, *, write: bool = False) -> None:
                 f"File operations are restricted to project directories."
             )
 
-    # Block WRITING to the MCP server itself unless dev_mode is enabled (reads always allowed)
-    if write and (lower_str == _SELF_DIR or _SELF_DIR.startswith(lower_str + "/")):
-        from .config import DEV_MODE
-        if not DEV_MODE:
-            raise ValueError(
-                f"Refusing to edit the AIDOCS MCP server directory. "
-                f"Self-editing requires dev_mode=true in aidocs.toml [dev] section."
-            )
-
     # Must be an existing directory
     if not resolved.is_dir():
         raise ValueError(f"Project root does not exist: {resolved}")
@@ -135,7 +142,13 @@ def _validate_project_root(project_root: Path, *, write: bool = False) -> None:
         )
 
 
-def _resolve_path(project_root: Path, relative_path: str, *, write: bool = False) -> Path:
+def _resolve_path(
+    project_root: Path,
+    relative_path: str,
+    *,
+    write: bool = False,
+    config_edit_mode: ConfigEditMode | None = None,
+) -> Path:
     """Resolve and validate a file path within the project root.
 
     Args:
@@ -166,19 +179,26 @@ def _resolve_path(project_root: Path, relative_path: str, *, write: bool = False
     # Security: prevent WRITING to MCP server source unless dev_mode is on (reads always allowed)
     if write:
         abs_lower = str(abs_path).replace("\\", "/").lower()
-        # Config files are NEVER editable by agents — absolute boundary
-        config_names = {"aidocs.toml", "aidocs-plugin.json"}
-        if abs_path.name.lower() in config_names:
+        if abs_path.name.lower() == "aidocs-plugin.json":
             raise ValueError(
                 f"Config files are never editable by agents: {relative_path}. "
                 f"Edit manually or via the installer."
             )
-        if abs_lower.startswith(_SELF_DIR):
-            from .config import DEV_MODE
-            if not DEV_MODE:
+        if abs_path.name.lower() == "aidocs.toml":
+            canonical_project_config = (project_root.resolve() / "aidocs.toml").resolve()
+            if abs_path != canonical_project_config:
                 raise ValueError(
-                    f"Refusing to edit AIDOCS MCP server source: {relative_path}. "
-                    f"Set dev_mode=true in aidocs.toml [dev] to enable."
+                    f"Only the project-root aidocs.toml may be agent-edited: {relative_path}."
+                )
+            if config_edit_mode != "explicit_user_permitted":
+                raise ValueError(
+                    "aidocs.toml edits require config_edit_mode='explicit_user_permitted'."
+                )
+        if abs_lower.startswith(_SELF_DIR):
+            if not self_edit_available_in_profile("release"):
+                raise ValueError(
+                    f"Refusing to edit AIDOCS MCP server source in release profile: {relative_path}. "
+                    f"Self-edit is not available in release behavior."
                 )
 
     return abs_path
@@ -206,6 +226,93 @@ def _read_file_lines(abs_path: Path) -> list[str]:
 
     text = abs_path.read_text(encoding="utf-8", errors="replace")
     return text.splitlines()
+
+
+def _file_ends_with_newline(abs_path: Path) -> bool:
+    """Return whether the file currently ends with a newline byte."""
+    data = abs_path.read_bytes()
+    return data.endswith(b"\n") if data else False
+
+
+def _write_lines(abs_path: Path, lines: list[str], *, final_newline: bool) -> None:
+    text = "\n".join(lines)
+    if final_newline and lines:
+        text += "\n"
+    abs_path.write_text(text, encoding="utf-8")
+
+
+def _canonical_relative_path(project_root: Path, abs_path: Path) -> str:
+    return abs_path.relative_to(project_root.resolve()).as_posix()
+
+
+def _render_lines(lines: list[str], *, final_newline: bool) -> str:
+    text = "\n".join(lines)
+    if final_newline and lines:
+        return text + "\n"
+    return text
+
+
+def _flatten_config_paths(value: object, prefix: str) -> set[str]:
+    if isinstance(value, dict):
+        paths: set[str] = set()
+        for key, nested in value.items():
+            nested_prefix = f"{prefix}.{key}" if prefix else str(key)
+            paths.update(_flatten_config_paths(nested, nested_prefix))
+        return paths
+    return {prefix} if prefix else set()
+
+
+def _diff_config_paths(before: object, after: object, prefix: str = "") -> set[str]:
+    if isinstance(before, dict) and isinstance(after, dict):
+        paths: set[str] = set()
+        for key in sorted(set(before) | set(after)):
+            next_prefix = f"{prefix}.{key}" if prefix else str(key)
+            paths.update(_diff_config_paths(before.get(key), after.get(key), next_prefix))
+        return paths
+    if isinstance(before, dict) or isinstance(after, dict):
+        return _flatten_config_paths(before, prefix) | _flatten_config_paths(after, prefix)
+    return {prefix} if before != after and prefix else set()
+
+
+def _load_toml_text(text: str, *, path: str) -> dict[str, object]:
+    if tomllib is None:
+        raise ValueError("TOML parsing is unavailable in this runtime.")
+    try:
+        loaded = tomllib.loads(text or "") if text.strip() else {}
+    except Exception as exc:
+        raise ValueError(f"Invalid TOML for {path}: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ValueError(f"Invalid TOML root for {path}: expected a table at the document root.")
+    return loaded
+
+
+def _validate_config_edit(
+    abs_path: Path,
+    *,
+    current_text: str,
+    updated_text: str,
+    config_edit_mode: ConfigEditMode | None,
+) -> None:
+    if abs_path.name.lower() != "aidocs.toml":
+        return
+
+    current_config = _load_toml_text(current_text, path=str(abs_path))
+    updated_config = _load_toml_text(updated_text, path=str(abs_path))
+
+    for setting_path in sorted(_diff_config_paths(current_config, updated_config)):
+        metadata = SETTINGS_CATALOG.get(setting_path)
+        if metadata is None:
+            raise ValueError(f"Config setting is not agent-editable: {setting_path}.")
+        if metadata["security_sensitive"]:
+            raise ValueError(f"Security-sensitive config cannot be agent-edited: {setting_path}.")
+        if not is_setting_agent_editable(setting_path, scope="project", edit_mode=config_edit_mode):
+            raise ValueError(f"Config setting requires controlled edit permission: {setting_path}.")
+        current_value: object = updated_config
+        for part in setting_path.split("."):
+            if not isinstance(current_value, dict) or part not in current_value:
+                raise ValueError(f"Config setting is not agent-editable: {setting_path}.")
+            current_value = current_value[part]
+        validate_setting_value(setting_path, current_value)
 
 
 # ── Public API ──
@@ -277,6 +384,74 @@ def get_lines(
     return result
 
 
+def create_file(
+    project_root: Path,
+    path: str,
+    content: str,
+    *,
+    config_edit_mode: ConfigEditMode | None = None,
+) -> dict[str, object]:
+    """Create a new file with exact content.
+
+    This is intentionally separate from edit_lines so callers can express
+    first-write intent directly without insert-mode gymnastics.
+    """
+    try:
+        _validate_project_root(project_root, write=True)
+        abs_path = _resolve_path(project_root, path, write=True, config_edit_mode=config_edit_mode)
+        _check_sensitive(path)
+    except ValueError as exc:
+        return {
+            "success": False,
+            "path": path,
+            "created": False,
+            "bytes_written": 0,
+            "lines_written": 0,
+            "error": str(exc),
+        }
+
+    if abs_path.exists():
+        return {
+            "success": False,
+            "path": path,
+            "created": False,
+            "bytes_written": 0,
+            "lines_written": 0,
+            "error": f"File already exists: {path}",
+        }
+
+    try:
+        _validate_config_edit(
+            abs_path,
+            current_text="",
+            updated_text=content,
+            config_edit_mode=config_edit_mode,
+        )
+    except ValueError as exc:
+        return {
+            "success": False,
+            "path": path,
+            "created": False,
+            "bytes_written": 0,
+            "lines_written": 0,
+            "error": str(exc),
+        }
+
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    abs_path.write_text(content, encoding="utf-8")
+    canonical_path = _canonical_relative_path(project_root, abs_path)
+
+    return {
+        "success": True,
+        "path": canonical_path,
+        "canonical_path": canonical_path,
+        "created": True,
+        "bytes_written": len(content.encode("utf-8")),
+        "lines_written": len(content.splitlines()),
+        "error": None,
+    }
+
+
 def edit_lines(
     project_root: Path,
     path: str,
@@ -286,6 +461,8 @@ def edit_lines(
     *,
     expect: str | None = None,
     dry_run: bool = False,
+    mode: str = "auto",
+    config_edit_mode: ConfigEditMode | None = None,
 ) -> dict[str, object]:
     """Replace a range of lines with new content.
 
@@ -305,6 +482,7 @@ def edit_lines(
         expect: If provided, the current content of lines start..end must match this exactly (trimmed).
                 If it doesn't match, the edit is rejected with a diff.
         dry_run: If True, return what would change without writing the file.
+        mode: `auto`, `insert`, or `replace`.
 
     Returns:
         {
@@ -324,11 +502,16 @@ def edit_lines(
         _validate_project_root(project_root, write=True)
     except ValueError as exc:
         return _edit_error(path, start_line, end_line, str(exc))
-    abs_path = _resolve_path(project_root, path, write=True)
+    try:
+        abs_path = _resolve_path(project_root, path, write=True, config_edit_mode=config_edit_mode)
+    except ValueError as exc:
+        return _edit_error(path, start_line, end_line, str(exc))
+    canonical_path = _canonical_relative_path(project_root, abs_path)
     try:
         _check_sensitive(path)
     except ValueError as exc:
         return _edit_error(path, start_line, end_line, str(exc))
+    original_final_newline = _file_ends_with_newline(abs_path)
     all_lines = _read_file_lines(abs_path)
     total = len(all_lines)
 
@@ -338,8 +521,14 @@ def edit_lines(
     if start_line > total + 1:
         return _edit_error(path, start_line, end_line, f"start_line {start_line} exceeds file length ({total} lines)")
 
+    mode_value = mode.strip().lower()
+    if mode_value not in {"auto", "insert", "replace"}:
+        return _edit_error(path, start_line, end_line, f"Unknown mode: {mode}")
+
     # Handle insert mode (end_line < start_line means "insert before start_line")
-    is_insert = end_line < start_line
+    is_insert = mode_value == "insert" or (mode_value == "auto" and end_line < start_line)
+    if mode_value == "replace" and end_line < start_line:
+        return _edit_error(path, start_line, end_line, "replace mode requires end_line >= start_line")
     if is_insert:
         old_lines: list[str] = []
         insert_at = start_line - 1  # 0-indexed position to insert before
@@ -370,10 +559,31 @@ def edit_lines(
                 "error": f"Content mismatch — expected:\n{expected_trimmed}\n\nactual:\n{actual_trimmed}",
             }
 
+    if is_insert:
+        result_lines = all_lines[:insert_at] + new_lines + all_lines[insert_at:]
+    else:
+        result_lines = all_lines[: start_line - 1] + new_lines + all_lines[end_line:]
+
+    touches_file_end = (is_insert and insert_at == total) or (not is_insert and end_line >= total)
+    final_newline = original_final_newline
+    if touches_file_end and new_content.endswith("\n"):
+        final_newline = True
+
+    try:
+        _validate_config_edit(
+            abs_path,
+            current_text=_render_lines(all_lines, final_newline=original_final_newline),
+            updated_text=_render_lines(result_lines, final_newline=final_newline),
+            config_edit_mode=config_edit_mode,
+        )
+    except ValueError as exc:
+        return _edit_error(path, start_line, end_line, str(exc))
+
     if dry_run:
         return {
             "success": True,
-            "path": path,
+            "path": canonical_path,
+            "canonical_path": canonical_path,
             "start_line": start_line,
             "end_line": end_line,
             "old_content": old_content,
@@ -384,18 +594,13 @@ def edit_lines(
             "error": None,
         }
 
-    # Apply the edit
-    if is_insert:
-        result_lines = all_lines[:insert_at] + new_lines + all_lines[insert_at:]
-    else:
-        result_lines = all_lines[: start_line - 1] + new_lines + all_lines[end_line:]
-
     # Write back
-    abs_path.write_text("\n".join(result_lines) + "\n", encoding="utf-8")
+    _write_lines(abs_path, result_lines, final_newline=final_newline)
 
     return {
         "success": True,
-        "path": path,
+        "path": canonical_path,
+        "canonical_path": canonical_path,
         "start_line": start_line,
         "end_line": end_line,
         "old_content": old_content,
@@ -413,6 +618,7 @@ def batch_edit(
     *,
     dry_run: bool = False,
     atomic: bool = True,
+    config_edit_mode: ConfigEditMode | None = None,
 ) -> dict[str, object]:
     """Apply multiple line edits atomically.
 
@@ -420,7 +626,7 @@ def batch_edit(
     If any edit would fail, NONE are applied. This prevents partial corruption.
 
     Each edit in the list has the same fields as edit_lines:
-        { "path": str, "start_line": int, "end_line": int, "new_content": str, "expect": str | None }
+        { "path": str, "start_line": int, "end_line": int, "new_content": str, "expect": str | None, "mode": str | None }
 
     Args:
         project_root: Project root directory.
@@ -472,6 +678,8 @@ def batch_edit(
 
     # Phase 1: Read all files and validate all edits
     file_cache: dict[str, list[str]] = {}
+    file_paths: dict[str, Path] = {}
+    file_final_newlines: dict[str, bool] = {}
     validations: list[dict[str, object]] = []
 
     for edit in edits:
@@ -481,22 +689,34 @@ def batch_edit(
         new_content = str(edit.get("new_content", ""))
         expect = edit.get("expect")
         expect_str = str(expect) if expect is not None else None
+        mode = str(edit.get("mode", "auto")).strip().lower()
 
         try:
-            abs_path = _resolve_path(project_root, path, write=True)
+            abs_path = _resolve_path(project_root, path, write=True, config_edit_mode=config_edit_mode)
             _check_sensitive(path)
+            if abs_path.name.lower() == "aidocs.toml":
+                raise ValueError("Use edit_lines for aidocs.toml so config policy can be validated safely.")
+            canonical_path = _canonical_relative_path(project_root, abs_path)
 
-            if path not in file_cache:
-                file_cache[path] = _read_file_lines(abs_path)
+            if canonical_path not in file_cache:
+                file_cache[canonical_path] = _read_file_lines(abs_path)
+                file_paths[canonical_path] = abs_path
+                file_final_newlines[canonical_path] = _file_ends_with_newline(abs_path)
 
-            all_lines = file_cache[path]
+            all_lines = file_cache[canonical_path]
             total = len(all_lines)
 
             if start < 1 or start > total + 1:
                 validations.append(_edit_error(path, start, end, f"Invalid start_line {start} (file has {total} lines)"))
                 continue
 
-            is_insert = end < start
+            if mode not in {"auto", "insert", "replace"}:
+                validations.append(_edit_error(path, start, end, f"Unknown mode: {mode}"))
+                continue
+            is_insert = mode == "insert" or (mode == "auto" and end < start)
+            if mode == "replace" and end < start:
+                validations.append(_edit_error(path, start, end, "replace mode requires end_line >= start_line"))
+                continue
             if is_insert:
                 old_lines: list[str] = []
             else:
@@ -525,6 +745,7 @@ def batch_edit(
             validations.append({
                 "success": True,
                 "path": path,
+                "canonical_path": canonical_path,
                 "start_line": start,
                 "end_line": end,
                 "old_content": old_content,
@@ -567,15 +788,17 @@ def batch_edit(
     for i, (edit, validation) in enumerate(zip(edits, validations)):
         if not validation["success"]:
             continue
-        path = str(edit.get("path", ""))
-        if path not in edits_by_file:
-            edits_by_file[path] = []
-        edits_by_file[path].append((i, edit))
+        canonical_path = str(validation.get("canonical_path", edit.get("path", "")))
+        if canonical_path not in edits_by_file:
+            edits_by_file[canonical_path] = []
+        edits_by_file[canonical_path].append((i, edit))
 
     # Apply edits per file, processing from bottom to top to preserve line numbers
-    for path, file_edits in edits_by_file.items():
-        abs_path = _resolve_path(project_root, path)
-        all_lines = file_cache[path]
+    for canonical_path, file_edits in edits_by_file.items():
+        abs_path = file_paths[canonical_path]
+        all_lines = file_cache[canonical_path]
+        total = len(all_lines)
+        final_newline = file_final_newlines[canonical_path]
 
         # Sort by start_line descending (bottom-up)
         file_edits.sort(key=lambda x: -int(x[1].get("start_line", 0)))
@@ -585,17 +808,22 @@ def batch_edit(
             end = int(edit.get("end_line", 0))
             new_content = str(edit.get("new_content", ""))
             new_lines = new_content.split("\n") if new_content.strip() else []
+            mode = str(edit.get("mode", "auto")).strip().lower()
 
-            is_insert = end < start
+            is_insert = mode == "insert" or (mode == "auto" and end < start)
             if is_insert:
                 insert_at = start - 1
                 all_lines = all_lines[:insert_at] + new_lines + all_lines[insert_at:]
+                if insert_at == total and new_content.endswith("\n"):
+                    final_newline = True
             else:
                 clamped_end = min(end, len(all_lines))
                 all_lines = all_lines[: start - 1] + new_lines + all_lines[clamped_end:]
+                if end >= total and new_content.endswith("\n"):
+                    final_newline = True
 
         # Write the modified file
-        abs_path.write_text("\n".join(all_lines) + "\n", encoding="utf-8")
+        _write_lines(abs_path, all_lines, final_newline=final_newline)
 
     applied = len(validations) - len(failures)
     return {

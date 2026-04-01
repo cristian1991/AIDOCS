@@ -204,6 +204,91 @@ def test_handoff_steps_roundtrip_with_statuses(tmp_path: Path) -> None:
     assert steps[1]["text"] == "Verify fix"
 
 
+def test_handoff_steps_render_legacy_timestamp_less_steps_deterministically(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    store = SessionStore(templates_root=templates)
+    project_root = tmp_path / "project"
+
+    store.create_session(project_root, "2026-03-25-legacy", "Legacy Session", "user", "Preserve legacy steps")
+    handoff_path = store.handoff_file(project_root, "2026-03-25-legacy")
+    handoff_text = handoff_path.read_text(encoding="utf-8")
+    handoff_path.write_text(
+        handoff_text.replace("## Steps\n-\n", "## Steps\n- [x] s1: Legacy completed step\n"),
+        encoding="utf-8",
+    )
+
+    steps = store.read_handoff_steps(project_root, "2026-03-25-legacy")
+
+    assert steps[0]["status"] == "completed"
+    assert store._render_handoff_steps(steps) == ["- [x] s1: Legacy completed step"]
+    assert store._render_handoff_steps(steps) == ["- [x] s1: Legacy completed step"]
+
+
+def test_normalize_session_artifacts_does_not_run_implicitly_on_read(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    store = SessionStore(templates_root=templates)
+    project_root = tmp_path / "project"
+
+    store.create_session(project_root, "2026-03-30-read-regression", "Read Regression", "user", "Keep reads pure")
+    handoff_path = store.handoff_file(project_root, "2026-03-30-read-regression")
+    handoff_path.write_text(
+        handoff_path.read_text(encoding="utf-8").replace(
+            "## Steps\n-\n",
+            "## Steps\n- [done] s1: Legacy done step\n",
+        ),
+        encoding="utf-8",
+    )
+    store.update_plan(
+        project_root,
+        "2026-03-30-read-regression",
+        {"Steps": ["- The agent should preserve this prose during explicit normalization."]},
+    )
+
+    before_handoff = handoff_path.read_text(encoding="utf-8")
+    before_plan = store.plan_file(project_root, "2026-03-30-read-regression").read_text(encoding="utf-8")
+
+    steps = store.read_handoff_steps(project_root, "2026-03-30-read-regression")
+    plan = store.read_plan(project_root, "2026-03-30-read-regression")
+
+    assert steps[0]["status"] == "completed"
+    assert steps[0]["text"] == "Legacy done step"
+    assert [line for line in plan.sections["Steps"] if line.strip()] == [
+        "- The agent should preserve this prose during explicit normalization."
+    ]
+    assert handoff_path.read_text(encoding="utf-8") == before_handoff
+    assert store.plan_file(project_root, "2026-03-30-read-regression").read_text(encoding="utf-8") == before_plan
+
+
+def test_normalize_handoff_steps_preserves_existing_freshness(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    _write_templates(templates)
+    store = SessionStore(templates_root=templates)
+    project_root = tmp_path / "project"
+
+    store.create_session(project_root, "2026-03-30-freshness", "Freshness", "user", "Keep handoff freshness stable")
+    handoff_path = store.handoff_file(project_root, "2026-03-30-freshness")
+    handoff_path.write_text(
+        handoff_path.read_text(encoding="utf-8").replace(
+            "## Steps\n-\n\n## Related Sessions",
+            "## Steps\n- [done] s1: Legacy done step\n\n## Related Sessions",
+        ).replace(
+            "## Freshness\n- Created ",
+            "## Freshness\n- Updated 2025-01-01 00:00 manually\n- Created ",
+        ),
+        encoding="utf-8",
+    )
+
+    result = store.normalize_handoff_steps(project_root, "2026-03-30-freshness")
+    refreshed_text = handoff_path.read_text(encoding="utf-8")
+
+    assert result["status"] == "normalized"
+    assert result["changed"] == [{"from": "- [done] s1: Legacy done step", "to": "- [x] s1: Legacy done step"}]
+    assert "- Updated 2025-01-01 00:00 manually" in refreshed_text
+    assert "automatically" not in refreshed_text
+
+
 def test_handoff_adopts_temp_file_and_preserves_existing_sections(tmp_path: Path) -> None:
     templates = tmp_path / "templates"
     _write_templates(templates)

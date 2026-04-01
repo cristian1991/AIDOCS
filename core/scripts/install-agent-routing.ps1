@@ -44,7 +44,11 @@ if (Test-Path $versionFile) {
 $opencodeDir = Join-Path $env:USERPROFILE ".config\opencode"
 $opencodeCommandsDir = Join-Path $opencodeDir "commands"
 $opencodePluginsDir = Join-Path $opencodeDir "plugins"
-$opencodeSettingsPath = Join-Path $opencodeDir "opencode.json"
+$opencodeSettingsPath = if (Test-Path (Join-Path $opencodeDir "opencode.jsonc")) {
+  Join-Path $opencodeDir "opencode.jsonc"
+} else {
+  Join-Path $opencodeDir "opencode.json"
+}
 $claudeDir = Join-Path $env:USERPROFILE ".claude"
 $claudeCommandsDir = Join-Path $claudeDir "commands"
 $claudeSettingsPath = Join-Path $claudeDir "settings.json"
@@ -269,6 +273,17 @@ if ((-not $claudeSettings.PSObject.Properties['hooks']) -or $null -eq $claudeSet
 }
 
 $claudeHookCommand = "& '$claudeHookScript'"
+$sessionStartHookGroup = [pscustomobject]@{
+  hooks = @(
+    [pscustomobject]@{
+      type = "command"
+      shell = "powershell"
+      command = $claudeHookCommand
+      timeout = 30
+      statusMessage = "AIDOCS startup routing"
+    }
+  )
+}
 $userPromptHookGroup = [pscustomobject]@{
   hooks = @(
     [pscustomobject]@{
@@ -293,9 +308,11 @@ $preToolHookGroup = [pscustomobject]@{
   )
 }
 
+$sessionStartGroups = Remove-AidocsHookGroups (Normalize-HookGroups $claudeSettings.hooks.SessionStart)
 $userPromptGroups = Remove-AidocsHookGroups (Normalize-HookGroups $claudeSettings.hooks.UserPromptSubmit)
 $preToolGroups = Remove-AidocsHookGroups (Normalize-HookGroups $claudeSettings.hooks.PreToolUse)
 
+$claudeSettings.hooks | Add-Member -Force -NotePropertyName SessionStart -NotePropertyValue @($sessionStartGroups + $sessionStartHookGroup)
 $claudeSettings.hooks | Add-Member -Force -NotePropertyName UserPromptSubmit -NotePropertyValue @($userPromptGroups + $userPromptHookGroup)
 $claudeSettings.hooks | Add-Member -Force -NotePropertyName PreToolUse -NotePropertyValue @($preToolGroups + $preToolHookGroup)
 

@@ -5,7 +5,6 @@ import logging
 import sys
 from pathlib import Path
 
-from .intent_guard import check_intent, scan_for_injection
 from .runtime_service import RuntimeService
 from .service_hub import AidocsServiceHub
 
@@ -20,11 +19,6 @@ def _resolve_templates_root() -> Path:
 def _resolve_script_root() -> Path:
     repo_root = Path(__file__).resolve().parents[3]
     return repo_root / "core" / "scripts"
-
-
-# Prompt storage shared across handler instances in the same process.
-# Does NOT persist across separate subprocess invocations (each hook event spawns a new process).
-_last_user_prompt: dict[str, str] = {}
 
 
 class ClaudeHookHandler:
@@ -46,6 +40,15 @@ class ClaudeHookHandler:
                 if project_root is not None:
                     self._record_hook_event(project_root, event_name=event_name, payload=payload)
                 return self._handle_aidocs_command(payload)
+
+        if event_name == "SessionStart":
+            project_root = self._resolve_cwd_root(payload)
+            if project_root is None:
+                return None
+            result = self._handle_session_start(project_root)
+            if (project_root / ".MEMORY").is_dir():
+                self._record_hook_event(project_root, event_name=event_name, payload=payload)
+            return result
 
         project_root = self._resolve_project_root(payload)
         if project_root is None:
@@ -85,6 +88,58 @@ class ClaudeHookHandler:
             }
         }
 
+    def _handle_session_start(self, project_root: Path) -> dict[str, object]:
+        host_state = self.runtime.host_state(project_root)
+        session_state = host_state.get("session_state") if isinstance(host_state.get("session_state"), dict) else {}
+        session_id = str(session_state.get("session_id") or "").strip()
+        current_state = str(session_state.get("state") or "ready")
+
+        if current_state == "not_initialized":
+            context = (
+                "AIDOCS startup check: this project is not initialized yet. "
+                "Run `/aidocs` to initialize and bootstrap AIDOCS before normal work."
+            )
+        elif current_state == "not_bootstrapped":
+            context = (
+                "AIDOCS startup check: project structure is incomplete or not fully bootstrapped. "
+                "Run `/aidocs` to repair bootstrap state before normal work."
+            )
+        elif current_state == "no_session":
+            context = (
+                "AIDOCS startup check: the project is initialized, but no session exists yet. "
+                "Use `/aidocs`; create a session before normal work."
+            )
+        elif current_state == "multiple_sessions":
+            context = (
+                "AIDOCS startup check: multiple plausible sessions exist. "
+                "Ask the user which session to connect to before normal work, then use `/aidocs` as needed to bind managed mode."
+            )
+        elif current_state == "stale_indexes":
+            target = f" Session `{session_id}` is the current candidate." if session_id else ""
+            context = (
+                "AIDOCS startup check: indexes are stale and should be re-synced before normal work."
+                f"{target} Run `/aidocs` to refresh bootstrap/index state."
+            )
+        else:
+            target = f" Continue with session `{session_id}`." if session_id else ""
+            context = (
+                "AIDOCS startup check: startup state is ready."
+                f"{target} Prefer indexed AIDOCS retrieval before broad repository reads."
+            )
+        skill_state = host_state.get("skill_state") if isinstance(host_state.get("skill_state"), dict) else {}
+        session_snapshot = skill_state.get("session_snapshot") if isinstance(skill_state.get("session_snapshot"), dict) else {}
+        active_skills = session_snapshot.get("active_skills") if isinstance(session_snapshot.get("active_skills"), list) else []
+        if active_skills:
+            context = context + " Imported skills: " + ", ".join(f"`{item}`" for item in active_skills if str(item).strip()) + "."
+
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": context,
+            }
+        }
+
+
     # Prompts this short are conversational — don't inject tool directives
     _CONVERSATIONAL_MAX_LEN = 60
 
@@ -93,16 +148,13 @@ class ClaudeHookHandler:
         if not prompt:
             return None
 
-        # Store prompt for intent checking in subsequent PreToolUse events
-        _last_user_prompt[str(project_root.resolve())] = prompt
-
         # Short/conversational prompts — don't inject directives, let the agent respond naturally
         if len(prompt) < self._CONVERSATIONAL_MAX_LEN and not any(kw in prompt.lower() for kw in ("fix", "edit", "add", "create", "delete", "remove", "update", "change", "implement", "refactor", "debug", "trace", "find", "search", "investigate")):
             return None
 
-        # Lightweight path: classify + route only (no orchestration/sync).
-        classification = self.runtime.classify_prompt_action(prompt)
-        action_kind = str(classification.get("action_kind") or "understand")
+        host_state = self.runtime.host_state(project_root, prompt_text=prompt)
+        prompt_state = host_state.get("prompt_state") if isinstance(host_state.get("prompt_state"), dict) else {}
+        action_kind = str(prompt_state.get("action_kind") or "understand")
         route = self.runtime.aidocs_route_prompt(
             project_root,
             user_request=prompt,
@@ -126,6 +178,7 @@ class ClaudeHookHandler:
             action_kind=action_kind,
             route=route,
             project_root=project_root,
+            host_state=host_state,
         )
         if not additional_context:
             return None
@@ -161,10 +214,6 @@ class ClaudeHookHandler:
         if protection:
             return protection
 
-        # Intent guard disabled: each hook event spawns a separate process, so
-        # _last_user_prompt is empty in PreToolUse calls. Re-enable when prompt
-        # state is shared via file or MCP-server-side storage.
-
         # ── MCP alternative nudge (only for raw tools) ──
         mcp_nudge = self._suggest_mcp_alternative(tool_name, tool_input)
 
@@ -188,19 +237,19 @@ class ClaudeHookHandler:
 
     _MCP_ALTERNATIVES: dict[str, list[tuple[str, str]]] = {
         "grep": [
-            ("code_search_symbols", "Find symbols by name, kind, or role"),
-            ("code_find_references", "Find all usages of a symbol across the codebase"),
-            ("schema_find_field", "Find a DB field/column across all entities"),
-            ("code_get_style_bundle", "Find CSS rules matching class names"),
+            ('aidocs_code_find(query, mode="symbols")', "Find symbols by name, kind, or role"),
+            ('aidocs_code_find(query, mode="references")', "Find all usages of a symbol across the codebase"),
+            ('aidocs_schema_query(query, mode="field")', "Find a DB field/column across all entities"),
+            ('aidocs_code_trace(query, mode="css_class")', "Find CSS rules matching class names"),
         ],
         "read": [
-            ("code_get_outline", "Understand file structure without reading the whole file"),
-            ("code_get_symbol_snippet", "Read just one symbol's code at a known location"),
-            ("code_get_file_bundle", "Get file outline + deps + schema hints in one call"),
+            ('aidocs_code_bundle(path, mode="file")', "Understand file structure without reading the whole file"),
+            ("aidocs_code_get_symbol_snippet", "Read just one symbol's code at a known location"),
+            ('aidocs_code_find(query, mode="symbols")', "Locate the exact symbol before reading code"),
         ],
         "glob": [
-            ("code_search", "Find files by path/summary keywords"),
-            ("code_find_partial_group", "Find all partial class files for a C# type"),
+            ("aidocs_code_search", "Find files by path/summary keywords"),
+            ('aidocs_code_find(query, mode="partial_group")', "Find all partial class files for a C# type"),
         ],
     }
 
@@ -260,20 +309,38 @@ class ClaudeHookHandler:
             command = str(tool_input.get("command") or "")
             # Strip heredoc/multiline content — only check the actual command, not embedded text
             cmd_check = command.split("<<")[0] if "<<" in command else command
-            # Also strip quoted strings to avoid false positives on documentation text
-            import re as _re
-            cmd_check = _re.sub(r'"[^"]*"', '', _re.sub(r"'[^']*'", '', cmd_check)).lower()
+            cmd_check = cmd_check.lower()
+            cmd_check_normalized = cmd_check.replace("\\", "/")
             # Detect shell writes targeting protected files/dirs
-            protected_targets = list(self._PROTECTED_CONFIG) + ["aidocs_mcp/", "core/plugins/aidocs"]
-            write_indicators = [">", "tee ", "cp ", "mv ", "sed -i", "rm ", "del ", "move "]
-            for target in protected_targets:
-                if target in cmd_check:
-                    if any(w in cmd_check for w in write_indicators):
+            protected_targets = [
+                ("aidocs.toml", "aidocs.toml"),
+                ("aidocs-plugin.json", "aidocs-plugin.json"),
+                ("aidocs_mcp/", "aidocs_mcp"),
+                ("core/plugins/aidocs", "core/plugins/aidocs"),
+            ]
+            write_indicators = [
+                ">",
+                "tee ",
+                "cp ",
+                "mv ",
+                "sed -i",
+                "rm ",
+                "del ",
+                "move ",
+                "copy-item ",
+                "move-item ",
+                "remove-item ",
+                "set-content ",
+                "out-file",
+            ]
+            for target, label in protected_targets:
+                if target in cmd_check_normalized:
+                    if any(w in cmd_check_normalized for w in write_indicators):
                         from .config import DEV_MODE
-                        if target in self._PROTECTED_CONFIG or not DEV_MODE:
+                        if label in self._PROTECTED_CONFIG or not DEV_MODE:
                             return {
                                 "decision": "block",
-                                "reason": f"BLOCKED: Shell command targets protected AIDOCS infrastructure ({target}).",
+                                "reason": f"BLOCKED: Shell command targets protected AIDOCS infrastructure ({label}).",
                             }
 
         return None
@@ -298,13 +365,13 @@ class ClaudeHookHandler:
             if pattern:
                 # Detect common grep patterns that have MCP equivalents
                 if any(kw in pattern.lower() for kw in ("class ", "interface ", "def ", "function ", "enum ")):
-                    parts.append("`code_search_symbols` — search indexed outlines by name/kind/role.")
+                    parts.append('`aidocs_code_find(query, mode="symbols")` — search indexed outlines by name/kind/role.')
                 elif any(kw in pattern.lower() for kw in (".css", "class=", "className")):
-                    parts.append("`code_get_style_bundle` — find CSS rules matching class names.")
+                    parts.append('`aidocs_code_trace(query, mode="css_class")` — find CSS rules matching class names.')
                 elif "." in pattern and not pattern.startswith("."):
-                    parts.append("`code_find_references` — find all usages of a symbol.")
+                    parts.append('`aidocs_code_find(query, mode="references")` — find all usages of a symbol.')
                 else:
-                    parts.append("`code_search_symbols` for symbol search, `code_find_references` for usage tracing.")
+                    parts.append('`aidocs_code_find(query, mode="symbols")` for symbol search, `aidocs_code_find(query, mode="references")` for usage tracing.')
             else:
                 parts.append(", ".join(f"`{name}` ({desc})" for name, desc in alternatives[:2]))
 
@@ -313,15 +380,15 @@ class ClaudeHookHandler:
             offset = tool_input.get("offset")
             if path and not offset:
                 # Reading a whole file — suggest outline first
-                parts.append("`code_get_outline` to understand structure, `code_get_file_bundle` for full context.")
+                parts.append('`aidocs_code_bundle(path, mode="file")` to understand structure, then `aidocs_code_get_symbol_snippet` for exact code.')
             elif path and offset:
                 # Reading a specific section — suggest snippet
-                parts.append("Use `code_find(mode=\"symbols\")` first if the exact symbol is not known, then `code_get_symbol_snippet` for the exact symbol.")
+                parts.append('Use `aidocs_code_find(query, mode="symbols")` first if the exact symbol is not known, then `aidocs_code_get_symbol_snippet` for the exact symbol.')
             else:
-                parts.append("`code_find(mode=\"symbols\")` to locate the exact symbol first, then `code_get_symbol_snippet` to read only that symbol.")
+                parts.append('`aidocs_code_find(query, mode="symbols")` to locate the exact symbol first, then `aidocs_code_get_symbol_snippet` to read only that symbol.')
 
         elif lower == "glob":
-            parts.append("`code_search` for indexed file search by keywords.")
+            parts.append("`aidocs_code_search` for indexed file search by keywords.")
 
         else:
             parts.append(", ".join(f"`{name}` ({desc})" for name, desc in alternatives[:2]))
@@ -357,12 +424,17 @@ class ClaudeHookHandler:
             logger.debug("Failed to record hook event: %s", exc)
             return None
 
-    def _resolve_project_root(self, payload: dict[str, object]) -> Path | None:
+    def _resolve_cwd_root(self, payload: dict[str, object]) -> Path | None:
         cwd = payload.get("cwd")
         if not isinstance(cwd, str) or not cwd.strip():
             return None
+        return Path(cwd).resolve()
 
-        project_root = Path(cwd).resolve()
+    def _resolve_project_root(self, payload: dict[str, object]) -> Path | None:
+        project_root = self._resolve_cwd_root(payload)
+        if project_root is None:
+            return None
+
         memory_root = project_root / ".MEMORY"
         if not memory_root.is_dir():
             self._log_resolution_failure(project_root, "missing .MEMORY directory")
@@ -400,9 +472,12 @@ class ClaudeHookHandler:
         action_kind: str,
         route: dict[str, object],
         project_root: Path,
+        host_state: dict[str, object] | None = None,
     ) -> str:
         """Build context from classification + route only (no orchestration data)."""
-        session_id = str(route.get("session_id") or "").strip()
+        prompt_payload = host_state if isinstance(host_state, dict) else {}
+        session_state = prompt_payload.get("session_state") if isinstance(prompt_payload.get("session_state"), dict) else {}
+        session_id = str(session_state.get("session_id") or route.get("session_id") or "").strip()
         recommended = route.get("recommended_mcp_flow") if isinstance(route.get("recommended_mcp_flow"), list) else []
         recommended_text = ", ".join(str(item) for item in recommended if str(item).strip())
 
@@ -411,6 +486,25 @@ class ClaudeHookHandler:
         ]
         if session_id:
             parts.append(f"Session: `{session_id}`.")
+
+        skill_state = prompt_payload.get("skill_state") if isinstance(prompt_payload.get("skill_state"), dict) else {}
+        prompt_activation = skill_state.get("prompt_activation") if isinstance(skill_state.get("prompt_activation"), dict) else {}
+        active_skills = prompt_activation.get("active_skills") if isinstance(prompt_activation.get("active_skills"), list) else []
+        prompt_state = prompt_payload.get("prompt_state") if isinstance(prompt_payload.get("prompt_state"), dict) else {}
+        if not active_skills:
+            imported = route.get("imported_skill_state") if isinstance(route.get("imported_skill_state"), dict) else None
+            active_skills = imported.get("active_skills") if isinstance(imported, dict) and isinstance(imported.get("active_skills"), list) else []
+        if active_skills:
+            parts.append("Imported skills: " + ", ".join(f"`{item}`" for item in active_skills if str(item).strip()) + ".")
+        override_modes = prompt_state.get("override_modes") if isinstance(prompt_state.get("override_modes"), dict) else {}
+        if override_modes:
+            rendered_modes = ", ".join(
+                f"`{skill_id}={mode}`"
+                for skill_id, mode in override_modes.items()
+                if str(skill_id).strip() and str(mode).strip()
+            )
+            if rendered_modes:
+                parts.append(f"Imported skill modes: {rendered_modes}.")
 
         action_directive = self._action_directive(action_kind)
         if action_directive:
@@ -469,50 +563,50 @@ class ClaudeHookHandler:
 
     _ACTION_DIRECTIVES: dict[str, str] = {
         "write_memory": (
-            "Use `memory_capture` with `target_hint` (workflow/coding-standards/security/project-state/user-profile). "
+            "Use `aidocs_memory_capture` with `target_hint` (workflow/coding-standards/security/project-state/user-profile). "
             "Do NOT write memory files manually."
         ),
-        "task_begin": "Use `task_begin` to register the task before starting work.",
-        "task_complete": "Use `task_complete` to finalize the task.",
-        "task_update": "Use `task_update` to record progress on the current task.",
+        "task_begin": "Use `aidocs_task_begin` to register the task before starting work.",
+        "task_complete": "Use `aidocs_task_complete` to finalize the task.",
+        "task_update": "Use `aidocs_task_update` to record progress on the current task.",
         "trace": (
-            '`code_find(query, mode="references")` → `code_trace(query, mode="field_flow")` → '
-            '`code_trace(query, mode="css_class")`. '
-            'DB: `schema_query(query, mode="trace_path")`. API→UI: `code_trace(query, mode="api_to_ui")`.'
+            '`aidocs_code_find(query, mode="references")` → `aidocs_code_trace(query, mode="field_flow")` → '
+            '`aidocs_code_trace(query, mode="css_class")`. '
+            'DB: `aidocs_schema_query(query, mode="trace_path")`. API→UI: `aidocs_code_trace(query, mode="api_to_ui")`.'
         ),
         "understand": (
-            "`code_get_outline` (structure) → `code_find(query, mode=\"symbols\")` (find symbol) → "
-            "`code_get_symbol_snippet` (read it). "
-            "Precision: `code_get_method_signature`, `code_get_constructor_params`, `code_get_enum_values`, `code_get_service_api`. "
-            'Broad: `code_bundle(concept, mode="subsystem")`. DB: `schema_query(name, mode="entity|properties|batch_entity")`.'
+            '`aidocs_code_bundle(path, mode="file")` (structure) → `aidocs_code_find(query, mode="symbols")` (find symbol) → '
+            '`aidocs_code_get_symbol_snippet` (read it). '
+            'Precision: `aidocs_code_get_method_signature`, `aidocs_code_get_constructor_params`, `aidocs_code_get_enum_values`, `aidocs_code_get_service_api`. '
+            'Broad: `aidocs_code_bundle(concept, mode="subsystem")`. DB: `aidocs_schema_query(name, mode="entity")`.'
         ),
         "code_bundle": (
-            '`code_bundle(path, mode="context", session_id=...)` (session-guided) or '
-            '`code_bundle(path, mode="file")` (single file).'
+            '`aidocs_code_bundle(path, mode="context", session_id=...)` (session-guided) or '
+            '`aidocs_code_bundle(path, mode="file")` (single file).'
         ),
         "edit": (
-            '`task_begin` → `code_get_lines` (read target) → `code_edit_lines` (single edit) or `code_batch_edit` (multiple edits in one call) → `task_complete`. '
-            'Do NOT mix edit methods — use `code_edit_lines`/`code_batch_edit` for all edits, not raw Edit or apply_patch. '
-            'Before editing: `code_get_method_signature` / `code_get_constructor_params` / `code_get_enum_values` to confirm exact signatures. '
-            'CSS: `code_trace(class, mode="css_class")`. DB: `schema_query(entity, mode="entity|properties|batch_entity")`.'
+            '`aidocs_task_begin` → `aidocs_code_get_lines` (read target) → `aidocs_code_edit_lines` (single edit) or `aidocs_code_batch_edit` (multiple edits in one call) → `aidocs_task_complete`. '
+            'Do NOT mix edit methods — use `aidocs_code_edit_lines`/`aidocs_code_batch_edit` for all edits, not raw Edit or apply_patch. '
+            'Before editing: `aidocs_code_get_method_signature` / `aidocs_code_get_constructor_params` / `aidocs_code_get_enum_values` to confirm exact signatures. '
+            'CSS: `aidocs_code_trace(class, mode="css_class")`. DB: `aidocs_schema_query(entity, mode="entity")`.'
         ),
         "test_heavy": (
             'If test/support code matters, re-run retrieval with test-inclusive indexing where the tool supports it. '
-            'Then prefer: `code_get_service_api` → `code_get_method_signatures` → `code_get_constructor_params_batch` → `code_get_enum_values` → `code_get_entity_properties`. '
+            'Then prefer: `aidocs_code_get_service_api` → `aidocs_code_get_method_signatures` → `aidocs_code_get_constructor_params_batch` → `aidocs_code_get_enum_values` → `aidocs_code_get_entity_properties`. '
             'Do not guess property names, constructor params, enum members, or service surfaces when the precision chain can confirm them first.'
         ),
         "inspect": (
-            "`code_get_outline` → `code_get_dependencies` / `code_find_dependents` → "
-            "`code_get_modules` (project boundaries). Read only after narrowing."
+            '`aidocs_code_bundle(path, mode="file")` → `aidocs_code_get_dependencies` / '
+            '`aidocs_code_find(query, mode="references")` → `aidocs_code_get_modules` (project boundaries). Read only after narrowing.'
         ),
         "read_error": (
-            '`code_find(symbol, mode="symbols")` (find it) → `code_find(symbol, mode="references")` (trace) → '
-            '`code_get_symbol_snippet` (read method). DB: add `schema_query(entity, mode="entity")`.'
+            '`aidocs_code_find(symbol, mode="symbols")` (find it) → `aidocs_code_find(symbol, mode="references")` (trace) → '
+            '`aidocs_code_get_symbol_snippet` (read method). DB: add `aidocs_schema_query(entity, mode="entity")`.'
         ),
         "investigate": (
-            "`code_investigate(concept, depth=..., focus=...)` for a guided navigation plan. "
-            'Or: `code_bundle(concept, mode="subsystem")` → narrow with '
-            '`code_find(concept, mode="mutations|validation|policy")`.'
+            "`aidocs_code_investigate(concept, depth=..., focus=...)` for a guided navigation plan. "
+            'Or: `aidocs_code_bundle(concept, mode="subsystem")` → narrow with '
+            '`aidocs_code_find(concept, mode="mutations")`, `aidocs_code_find(concept, mode="validation")`, or `aidocs_code_find(concept, mode="policy")`.'
         ),
     }
 

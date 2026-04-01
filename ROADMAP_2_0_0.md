@@ -1,4 +1,4 @@
-# AIDOCS Roadmap (v2.0.0)
+# AIDOCS Roadmap (v1.9.0 -> v2.0.0)
 
 This is the consolidated roadmap for AIDOCS after the 1.2.x product-hardening cycle and the first collaboration-continuity foundations.
 
@@ -13,11 +13,39 @@ It combines the unfinished or still-unreached goals from:
 
 Make AIDOCS excellent at real agent work on real projects:
 
+- deterministic single-project workflow control
 - stronger deep retrieval
 - stronger collaboration continuity
-- user-extensible indexing
+- curated bundled skills with AIDOCS-owned orchestration
 - honest benchmarks
 - safer contribution and release operations
+
+## Release Split
+
+### v1.9.0 Theme
+
+Make AIDOCS excellent as a deterministic, GUI-backed, single-project workflow system.
+
+Primary pillars:
+
+- config standardization
+- GUI/control plane
+- conductor hardening
+- bundled skill-provider integration
+- host/plugin simplification
+- tool-space reorganization
+- discoverability and operator UX
+
+### v2.0.0 Theme
+
+Only after the single-project system is solid should AIDOCS expand into cross-host / cross-agent / cross-project coordination.
+
+Primary pillars:
+
+- cross-agent communication protocol
+- cross-host communication / harness possibilities
+- richer orchestration semantics on top of the 1.9.0 control plane
+- federated or cross-project conductor behavior if a deterministic design proves viable
 
 ## Current State
 
@@ -40,6 +68,37 @@ Still incomplete or not yet at end-goal level:
 - hosted docs rollout
 - a small number of broad discovery/trace modes that still need ongoing refinement in large projects
 
+## Pre-2.0 Hardening Goals (v1.9.0)
+
+### Goal A: Deterministic Workflow Authority
+- AIDOCS, not external workflow plugins, is the workflow authority.
+- Session/roadmap/plan/feedback/conductor state are runtime-owned and inspectable.
+
+### Goal B: Bundled Skill Provider
+- AIDOCS ships with a curated bundled skill provider derived from superpowers-compatible skill content.
+- Most skill content is reused, but orchestration-critical workflow behavior is AIDOCS-native.
+
+### Goal C: Conductor Hardening
+- Lanes are not treated as permanently done after lane-local tests.
+- Full-suite-aware conductor can reopen owning lanes automatically.
+- Lane ownership persists across reopen cycles.
+- Failure attribution and cross-lane signaling become stronger and more deterministic.
+
+### Goal D: GUI/Control Plane
+- AIDOCS ships a real operator-facing GUI/control plane before cross-agent protocol work.
+- Config/state are normalized so the GUI edits stable schema rather than hidden runtime assumptions.
+- Agents may edit normal config only under controlled conditions; security settings remain non-editable.
+
+### Goal F: Safe Release/Dev Separation
+- Self-edit / MCP-core self-modification capabilities do not ship in release builds.
+- If self-edit exists at all, it lives only in development-oriented branches/builds.
+- Public PR work should target the development branch rather than `main` / `master`.
+
+### Goal E: Tool/Host UX Cleanup
+- Host integrations are thinner and more runtime-driven.
+- Tool surface is reorganized into a cleaner primary/debug taxonomy.
+- Discoverability is materially improved.
+
 ## v2.0.0 End Goals
 
 ### End Goal 1: Production-Grade Deep Retrieval
@@ -51,6 +110,7 @@ Still incomplete or not yet at end-goal level:
 - Sessions support living collaboration state, not just notes.
 - Handoffs, plans, journals, and resume bundles work together as a coherent continuity layer.
 - Successor agents can resume work from changed/open/reset state instead of rereading everything.
+- Cross-agent and cross-host communication become deterministic enough to support real multi-agent / multi-project coordination.
 
 ### End Goal 3: User-Extensible Indexing
 - Users can safely extend indexing behavior without modifying core code.
@@ -71,13 +131,15 @@ Still incomplete or not yet at end-goal level:
 
 | Priority | Area | Goal |
 |---|---|---|
-| P0 | deep retrieval quality | make the core MCP/code/schema toolchain consistently excellent for real work |
-| P0 | collaboration continuity | complete the next collaboration layer after the 1.2.x foundations |
-| P1 | user-extensible indexing | let users extend indexing safely and declaratively |
-| P1 | task lifecycle and operator summaries | make state/reporting more complete without relying on agent memory |
+| P0 | conductor hardening | make single-project conductor execution trustworthy through full-suite-aware reopening and ownership |
+| P0 | bundled skill/runtime integration | ship curated skills with AIDOCS-owned orchestration |
+| P0 | config + GUI foundation | normalize policy/state for a real 1.9.0 control plane |
+| P1 | tool/host discoverability | cleaner tool surface and better operator UX |
+| P1 | deep retrieval quality | keep the core MCP/code/schema toolchain consistently excellent for real work |
+| P1 | collaboration continuity | complete the next collaboration layer after the 1.2.x foundations |
+| P2 | user-extensible indexing | let users extend indexing safely and declaratively |
 | P2 | benchmark maturity | evolve benchmark infrastructure into a real product-quality validation system |
-| P2 | docs-site implementation | move from docs IA readiness to actual hosted docs rollout |
-| P3 | future host/session adapters | defer true host-session import or richer host-native continuity to later work |
+| P3 | cross-host / cross-agent protocol | defer the harder federated coordination model to 2.0.0 |
 
 ## Workstreams
 
@@ -110,6 +172,7 @@ The first continuity layer exists, but it is still only a foundation.
 
 ### Continue / finish
 - richer step-state handoff semantics
+- [>] feedback-state workflow for roadmap and plan lifecycle
 - stronger incremental consumption of changed/open/reset work
 - better cross-project linking and related-session context
 - operator-facing collaboration summaries

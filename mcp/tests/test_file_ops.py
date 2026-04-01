@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import aidocs_mcp.file_ops as file_ops
 from aidocs_mcp.file_ops import get_lines, edit_lines, batch_edit
 
 
@@ -104,14 +105,176 @@ class TestSecurityGuardrails:
         assert result["success"] is False
         assert "system directory" in result["error"]
 
-    def test_self_edit_blocked(self) -> None:
-        """MCP server cannot edit its own source."""
+    def test_self_edit_blocked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """MCP server cannot edit its own source unless dev mode is explicitly enabled."""
+        import aidocs_mcp.config as config
         from aidocs_mcp.file_ops import _SELF_DIR
+
+        monkeypatch.setattr(config, "DEV_MODE", False)
         mcp_root = Path(_SELF_DIR).parent.parent.parent  # Go up to project root
         if mcp_root.is_dir() and (mcp_root / ".git").exists():
             result = edit_lines(mcp_root, "mcp/server/aidocs_mcp/file_ops.py", 1, 1, "# hacked")
             assert result["success"] is False
             assert "self-edit" in result["error"].lower() or "AIDOCS" in result["error"]
+
+    def test_normal_config_can_be_edited_with_explicit_user_permitted_mode(self, project: Path) -> None:
+        (project / "aidocs.toml").write_text(
+            "[agent]\n"
+            'directive_style = "short"\n',
+            encoding="utf-8",
+        )
+
+        result = edit_lines(
+            project,
+            "aidocs.toml",
+            2,
+            2,
+            'directive_style = "detailed"',
+            config_edit_mode="explicit_user_permitted",
+        )
+
+        assert result["success"] is True
+        assert 'directive_style = "detailed"' in (project / "aidocs.toml").read_text(encoding="utf-8")
+
+    def test_security_config_is_never_agent_editable(self, project: Path) -> None:
+        (project / "aidocs.toml").write_text(
+            "[dev]\n"
+            "dev_mode = false\n",
+            encoding="utf-8",
+        )
+
+        result = edit_lines(
+            project,
+            "aidocs.toml",
+            2,
+            2,
+            "dev_mode = true",
+            config_edit_mode="explicit_user_permitted",
+        )
+
+        assert result["success"] is False
+        assert "security" in result["error"].lower() or "editable" in result["error"].lower()
+
+    def test_invalid_enum_config_value_is_rejected(self, project: Path) -> None:
+        (project / "aidocs.toml").write_text(
+            "[agent]\n"
+            'directive_style = "short"\n',
+            encoding="utf-8",
+        )
+
+        result = edit_lines(
+            project,
+            "aidocs.toml",
+            2,
+            2,
+            'directive_style = "verbose"',
+            config_edit_mode="explicit_user_permitted",
+        )
+
+        assert result["success"] is False
+        assert "must be one of" in result["error"].lower() or "invalid" in result["error"].lower()
+
+    def test_invalid_type_config_value_is_rejected(self, project: Path) -> None:
+        (project / "aidocs.toml").write_text(
+            "[agent]\n"
+            "inject_rules_on_bootstrap = true\n",
+            encoding="utf-8",
+        )
+
+        result = edit_lines(
+            project,
+            "aidocs.toml",
+            2,
+            2,
+            'inject_rules_on_bootstrap = "sometimes"',
+            config_edit_mode="explicit_user_permitted",
+        )
+
+        assert result["success"] is False
+        assert "boolean" in result["error"].lower() or "type" in result["error"].lower()
+
+    def test_language_config_values_en_and_es_are_accepted(self, project: Path) -> None:
+        (project / "aidocs.toml").write_text(
+            "[languages]\n"
+            'enabled = "all"\n'
+            "[index]\n"
+            'enabled_languages = "all"\n',
+            encoding="utf-8",
+        )
+
+        result_languages = edit_lines(
+            project,
+            "aidocs.toml",
+            2,
+            2,
+            'enabled = "en"',
+            config_edit_mode="explicit_user_permitted",
+        )
+        result_index = edit_lines(
+            project,
+            "aidocs.toml",
+            4,
+            4,
+            'enabled_languages = "es"',
+            config_edit_mode="explicit_user_permitted",
+        )
+
+        assert result_languages["success"] is True
+        assert result_index["success"] is True
+
+    def test_language_config_value_rejects_non_string_type(self, project: Path) -> None:
+        (project / "aidocs.toml").write_text(
+            "[languages]\n"
+            'enabled = "all"\n',
+            encoding="utf-8",
+        )
+
+        result = edit_lines(
+            project,
+            "aidocs.toml",
+            2,
+            2,
+            "enabled = true",
+            config_edit_mode="explicit_user_permitted",
+        )
+
+        assert result["success"] is False
+        assert "string" in result["error"].lower() or "type" in result["error"].lower()
+
+    def test_release_profile_blocks_self_edit_even_when_dev_mode_is_true(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import aidocs_mcp.config as config
+
+        repo_root = tmp_path / "repo"
+        protected_dir = repo_root / "mcp" / "server" / "aidocs_mcp"
+        protected_dir.mkdir(parents=True)
+        (repo_root / ".git").mkdir()
+        target = protected_dir / "file_ops.py"
+        target.write_text("line1\nline2\n", encoding="utf-8")
+
+        monkeypatch.setattr(file_ops, "_SELF_DIR", str(protected_dir).replace("\\", "/").lower())
+        monkeypatch.setattr(config, "DEV_MODE", True)
+
+        result = edit_lines(repo_root, "mcp/server/aidocs_mcp/file_ops.py", 1, 1, "UPDATED")
+
+        assert result["success"] is False
+        assert "release" in result["error"].lower() or "self-edit" in result["error"].lower()
+
+    def test_non_security_repo_file_can_be_edited_from_repo_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        repo_root = tmp_path / "repo"
+        protected_dir = repo_root / "mcp" / "server" / "aidocs_mcp"
+        docs_dir = repo_root / "docs"
+        protected_dir.mkdir(parents=True)
+        docs_dir.mkdir(parents=True)
+        (repo_root / ".git").mkdir()
+        target = docs_dir / "notes.txt"
+        target.write_text("old\n", encoding="utf-8")
+
+        monkeypatch.setattr(file_ops, "_SELF_DIR", str(protected_dir).replace("\\", "/").lower())
+
+        result = edit_lines(repo_root, "docs/notes.txt", 1, 1, "new")
+
+        assert result["success"] is True
+        assert target.read_text(encoding="utf-8") == "new\n"
 
     def test_nonexistent_project_root_blocked(self) -> None:
         result = edit_lines(Path("/nonexistent/fake/project"), "foo.txt", 1, 1, "x")
@@ -138,6 +301,14 @@ class TestSecurityGuardrails:
         ])
         # Atomic mode should reject because sensitive check fails during apply
         assert result["success"] is False or result["failed"] > 0
+
+    def test_create_file_respects_sensitive_path_guardrails(self, project: Path) -> None:
+        assert hasattr(file_ops, "create_file")
+
+        result = file_ops.create_file(project, ".env", "SECRET=123\n")
+
+        assert result["success"] is False
+        assert "sensitive" in result["error"].lower()
 
 
 # ── edit_lines ──
@@ -172,6 +343,18 @@ class TestEditLines:
         lines = (project / "hello.txt").read_text(encoding="utf-8").splitlines()
         assert lines[2] == "INSERTED"
         assert lines[3] == "line3"
+
+    def test_explicit_insert_mode(self, project: Path) -> None:
+        result = edit_lines(project, "hello.txt", start_line=3, end_line=3, new_content="INSERTED", mode="insert")
+        assert result["success"] is True
+        lines = (project / "hello.txt").read_text(encoding="utf-8").splitlines()
+        assert lines[2] == "INSERTED"
+        assert lines[3] == "line3"
+
+    def test_explicit_replace_mode_rejects_insert_shape(self, project: Path) -> None:
+        result = edit_lines(project, "hello.txt", start_line=3, end_line=2, new_content="INSERTED", mode="replace")
+        assert result["success"] is False
+        assert "replace mode" in result["error"]
 
     def test_expect_match_succeeds(self, project: Path) -> None:
         result = edit_lines(
@@ -240,6 +423,30 @@ class TestEditLines:
         result = edit_lines(project, "hello.txt", start_line=100, end_line=100, new_content="x")
         assert result["success"] is False
 
+    def test_preserves_missing_final_newline(self, project: Path) -> None:
+        path = project / "no_newline.txt"
+        path.write_text("alpha\nbeta", encoding="utf-8")
+
+        result = edit_lines(project, "no_newline.txt", start_line=2, end_line=2, new_content="BETA")
+
+        assert result["success"] is True
+        assert path.read_text(encoding="utf-8") == "alpha\nBETA"
+
+
+class TestCreateFile:
+    def test_create_file_writes_new_content_and_returns_metadata(self, project: Path) -> None:
+        assert hasattr(file_ops, "create_file")
+
+        result = file_ops.create_file(project, "notes.txt", "alpha\nbeta\n")
+
+        assert result["success"] is True
+        assert result["path"] == "notes.txt"
+        assert result["created"] is True
+        assert result["bytes_written"] == len("alpha\nbeta\n".encode("utf-8"))
+        assert result["lines_written"] == 2
+        assert result["error"] is None
+        assert (project / "notes.txt").read_text(encoding="utf-8") == "alpha\nbeta\n"
+
 
 # ── batch_edit ──
 
@@ -257,6 +464,15 @@ class TestBatchEdit:
         assert (project / "hello.txt").read_text(encoding="utf-8").splitlines()[0] == "FIRST"
         assert (project / "src" / "app.js").read_text(encoding="utf-8").splitlines()[1] == "const y = 99;"
 
+    def test_batch_edit_respects_explicit_insert_mode(self, project: Path) -> None:
+        result = batch_edit(project, [
+            {"path": "hello.txt", "start_line": 2, "end_line": 2, "new_content": "INSERTED", "mode": "insert"},
+        ])
+        assert result["success"] is True
+        lines = (project / "hello.txt").read_text(encoding="utf-8").splitlines()
+        assert lines[1] == "INSERTED"
+        assert lines[2] == "line2"
+
     def test_same_file_multiple_edits(self, project: Path) -> None:
         # Edit line 5, then line 2 — should work because bottom-up processing
         result = batch_edit(project, [
@@ -267,6 +483,19 @@ class TestBatchEdit:
         lines = (project / "hello.txt").read_text(encoding="utf-8").splitlines()
         assert lines[1] == "SECOND"
         assert lines[4] == "LAST"
+
+    def test_same_file_path_forms_are_normalized_and_preserve_final_newline_state(self, project: Path) -> None:
+        path = project / "src" / "mixed.js"
+        path.write_text("const a = 1;\nconst b = 2;", encoding="utf-8")
+
+        result = batch_edit(project, [
+            {"path": "src/mixed.js", "start_line": 2, "end_line": 2, "new_content": "const b = 20;"},
+            {"path": "src\\mixed.js", "start_line": 1, "end_line": 1, "new_content": "const a = 10;"},
+        ])
+
+        assert result["success"] is True
+        assert result["applied"] == 2
+        assert path.read_text(encoding="utf-8") == "const a = 10;\nconst b = 20;"
 
     def test_atomic_rejects_all_on_failure(self, project: Path) -> None:
         result = batch_edit(project, [

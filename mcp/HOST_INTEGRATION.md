@@ -188,6 +188,19 @@ Current boundary:
   - prefer command metadata over raw prompt heuristics
   - avoid claiming that runtime-driven prompt routing is already enforced when it is not
 
+
+## Additional Host Notes
+
+### Cursor
+- First-pass AIDOCS support is startup-only via `sessionStart`.
+- Treat Cursor startup routing as a compact session-selection/bootstrap prompt layer until broader hook parity is explicitly verified.
+
+### Codex
+- Codex hooks are experimental as of March 2026.
+- Windows hook support is disabled.
+- `PreToolUse` and `PostToolUse` are Bash-only today, so AIDOCS should treat `SessionStart` and `UserPromptSubmit` as the primary Codex integration path.
+- Codex packaging should prefer repository-root-resolved commands for hook scripts so startup works when launched from subdirectories.
+
 ## Action Classification
 
 ### Advisory model

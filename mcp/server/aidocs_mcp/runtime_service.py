@@ -10,9 +10,52 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from . import __version__
+from .config import ConfigResolver, _parse_bool
+from .plan_conductor import PlanConductor
 from .service_hub import AidocsServiceHub
-
+from .skill_provider import BUNDLED_PROVIDER_ID
+from .skill_override_store import SkillOverrideStore
+from .types import SkillTriggerDecision, SkillTriggerState
 logger = logging.getLogger("aidocs.runtime")
+
+_BUNDLED_OVERRIDE_PROVIDER_ID = "superpowers_external"
+
+_PLAN_CHECKBOX_STATES = {
+    "[ ]": "open",
+    "[~]": "in_progress",
+    "[>]": "awaiting_feedback",
+    "[!]": "blocked",
+    "[x]": "completed",
+    "[X]": "completed",
+}
+
+_SKILL_TRIGGER_RULES: dict[str, dict[str, set[str]]] = {
+    "brainstorming": {
+        "intent": {"brainstorming", "creative", "creative-task", "ideation", "planning"},
+        "workflow": {"planning", "design", "discovery"},
+    },
+    "writing-plans": {
+        "intent": {"planning", "plan", "roadmap", "spec"},
+        "workflow": {"planning", "design", "discovery"},
+    },
+    "executing-plans": {
+        "intent": {"implementation", "implement", "execution", "executing-plans"},
+        "workflow": {"implementation", "execution"},
+    },
+    "subagent-driven-development": {
+        "intent": {"parallel", "subagent", "subagents", "independent-tasks"},
+        "workflow": {"implementation", "parallel"},
+    },
+    "systematic-debugging": {
+        "intent": {"debugging", "debug", "bug", "bug-work", "bugfix", "fix"},
+        "workflow": {"debugging", "bugfix", "incident"},
+    },
+    "verification-before-completion": {
+        "intent": {"verification", "verify", "completion", "verification-before-completion"},
+        "workflow": {"verification", "completion", "release"},
+    },
+}
 
 
 def _run_git_sync(cwd: str, *args: str, timeout: int = 10) -> str:
@@ -73,7 +116,10 @@ def _resolve_action_tokens_dir() -> Path:
 _ACTION_TOKENS_DIR = _resolve_action_tokens_dir()
 
 
-def _load_action_tokens(directory: Path | None = None) -> list[tuple[str, tuple[str, ...]]]:
+def _load_action_tokens(
+    directory: Path | None = None,
+    enabled_languages: str = "all",
+) -> list[tuple[str, tuple[str, ...]]]:
     """Load action token mappings from all YAML files in the action_tokens directory.
 
     Returns an ordered list of (action_kind, tokens) tuples suitable for
@@ -85,9 +131,8 @@ def _load_action_tokens(directory: Path | None = None) -> list[tuple[str, tuple[
         logger.warning("action_tokens directory not found: %s", root)
         return []
 
-    # Filter by configured languages
-    from .config import LANGUAGES_ENABLED
-    enabled = LANGUAGES_ENABLED.lower().strip()
+    # Filter by scoped language config.
+    enabled = str(enabled_languages or "all").lower().strip()
     if enabled != "all":
         enabled_set = {lang.strip() for lang in enabled.split(",") if lang.strip()}
     else:
@@ -133,12 +178,663 @@ class RuntimeService:
 
     def __init__(self, hub: AidocsServiceHub) -> None:
         self.hub = hub
-        self._action_token_mapping: list[tuple[str, tuple[str, ...]]] | None = None
+        self._action_token_mapping: dict[tuple[str | None, str | None], list[tuple[str, tuple[str, ...]]]] = {}
+        self._config_resolver = ConfigResolver()
+        self._skill_overrides = SkillOverrideStore()
 
-    def _get_action_tokens(self) -> list[tuple[str, tuple[str, ...]]]:
-        if self._action_token_mapping is None:
-            self._action_token_mapping = _load_action_tokens()
-        return self._action_token_mapping
+    def effective_config(self, project_root: Path, session_id: str | None = None) -> dict[str, object]:
+        return self._config_resolver.effective_config(project_root=project_root, session_id=session_id)
+
+    def _get_action_tokens(
+        self,
+        project_root: Path | None = None,
+        session_id: str | None = None,
+    ) -> list[tuple[str, tuple[str, ...]]]:
+        cache_key = (
+            str(project_root.resolve()) if project_root is not None else None,
+            session_id.strip() if isinstance(session_id, str) and session_id.strip() else None,
+        )
+        mapping = self._action_token_mapping.get(cache_key)
+        if mapping is None:
+            effective_config = self._config_resolver.effective_config(project_root=project_root, session_id=session_id)
+            languages = effective_config.get("languages") if isinstance(effective_config.get("languages"), dict) else {}
+            enabled_languages = str(languages.get("enabled", "all") or "all")
+            mapping = _load_action_tokens(enabled_languages=enabled_languages)
+            self._action_token_mapping[cache_key] = mapping
+        return mapping
+
+    def _legacy_external_skill_state_path(self, project_root: Path) -> Path:
+        return project_root / ".MEMORY" / "config" / "external-skill-state.json"
+
+    def _host_skill_state_path(self, project_root: Path, session_id: str) -> Path:
+        return project_root / ".MEMORY" / ".runtime" / "sessions" / session_id / "host-skill-state.json"
+
+    def _legacy_session_host_skill_state_path(self, project_root: Path, session_id: str) -> Path:
+        return project_root / ".MEMORY" / "sessions" / session_id / "host-skill-state.json"
+
+    def _delete_legacy_external_skill_state(self, project_root: Path) -> None:
+        legacy_path = self._legacy_external_skill_state_path(project_root)
+        if legacy_path.is_file():
+            try:
+                legacy_path.unlink()
+            except OSError:
+                logger.debug("Failed to remove legacy external skill state at %s", legacy_path)
+
+    def _delete_legacy_session_host_skill_state(self, project_root: Path, session_id: str) -> None:
+        legacy_path = self._legacy_session_host_skill_state_path(project_root, session_id)
+        if legacy_path.is_file():
+            try:
+                legacy_path.unlink()
+            except OSError:
+                logger.debug("Failed to remove legacy session host skill state at %s", legacy_path)
+
+    def _aggregate_provider_state(self, provider_states: dict[str, str]) -> str | None:
+        if not provider_states:
+            return None
+        ordered = [
+            "missing",
+            "disabled",
+            "detected_incompatible",
+            "incompatible_but_user_override",
+            "compatible",
+        ]
+        values = set(provider_states.values())
+        for candidate in ordered:
+            if candidate in values:
+                return candidate
+        return next(iter(sorted(values)), None)
+
+    def _imported_skill_state(
+        self,
+        project_root: Path,
+        session_id: str,
+        *,
+        selected_state: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        selected = selected_state if isinstance(selected_state, dict) else self.hub.skills.get_selected_skills(project_root, session_id)
+        selected_skills = [str(item) for item in selected.get("selected_skills", [])]
+        invalid_selected_skills = [str(item) for item in selected.get("invalid_selected_skills", [])]
+        available_skills = {str(item.get("skill_id") or ""): item for item in self.hub.skills.list_skills(project_root)}
+        providers = {item.provider_id: item for item in self.hub.skills.list_external_providers(project_root)}
+
+        imported_selected: list[str] = []
+        active_skills: list[str] = []
+        provider_states: dict[str, str] = {}
+
+        for skill_id in [*selected_skills, *invalid_selected_skills]:
+            skill = available_skills.get(skill_id)
+            if isinstance(skill, dict) and str(skill.get("source") or "") == "bundled_provider":
+                provider_id = str(skill.get("provider") or "")
+                if not provider_id:
+                    continue
+                imported_selected.append(skill_id)
+                provider_state = str(skill.get("provider_state") or "compatible")
+                provider_states[provider_id] = provider_state
+                if provider_state in {"compatible", "incompatible_but_user_override"} and skill.get("selectable", True):
+                    active_skills.append(skill_id)
+                continue
+            if "/" not in skill_id:
+                continue
+            provider_id, _skill_name = skill_id.split("/", 1)
+            provider = providers.get(provider_id)
+            is_external = bool(provider) or (isinstance(skill, dict) and self._skill_is_external_provider(skill))
+            if not is_external:
+                continue
+
+            imported_selected.append(skill_id)
+            if provider is None or not provider.root_path.is_dir():
+                provider_states[provider_id] = "missing"
+                continue
+            if not isinstance(skill, dict):
+                provider_states[provider_id] = "missing"
+                continue
+
+            provider_state = str(skill.get("provider_state") or provider.compatibility_state or "compatible")
+            provider_states[provider_id] = provider_state
+            if provider_state in {"compatible", "incompatible_but_user_override"} and skill.get("selectable", True):
+                active_skills.append(skill_id)
+
+        return {
+            "session_id": session_id,
+            "selected_skills": imported_selected,
+            "active_skills": active_skills,
+            "provider_states": provider_states,
+            "provider_state": self._aggregate_provider_state(provider_states),
+        }
+
+    def _resolve_skill_trigger_state(
+        self,
+        project_root: Path,
+        session_id: str,
+        intent: str,
+        workflow_state: str | None = None,
+    ) -> dict[str, object]:
+        selected = self.hub.skills.get_selected_skills(project_root, session_id)
+        selected_skills = [str(item) for item in selected.get("selected_skills", [])]
+        available_skills = {str(item.get("skill_id")): item for item in self.hub.skills.list_skills(project_root)}
+        intent_token = self._normalize_skill_trigger_token(intent)
+        workflow_token = self._normalize_skill_trigger_token(workflow_state)
+
+        triggered: list[SkillTriggerDecision] = []
+        seen_skill_ids: set[str] = set()
+        for index, skill_id in enumerate(selected_skills):
+            skill = available_skills.get(skill_id)
+            if not isinstance(skill, dict) or not self._skill_is_runtime_compatible(skill):
+                continue
+            decision = self._build_skill_trigger_decision(
+                skill,
+                available_skills,
+                selected_rank=max(0, len(selected_skills) - index) * 100,
+                intent_token=intent_token,
+                workflow_token=workflow_token,
+            )
+            if decision is not None:
+                triggered.append(decision)
+                seen_skill_ids.add(decision.skill_id)
+
+        for skill_id, skill in available_skills.items():
+            if skill_id in seen_skill_ids or skill_id in selected_skills:
+                continue
+            if not isinstance(skill, dict) or not self._skill_is_external_provider(skill) or not self._skill_is_runtime_compatible(skill):
+                continue
+            decision = self._build_skill_trigger_decision(
+                skill,
+                available_skills,
+                selected_rank=0,
+                intent_token=intent_token,
+                workflow_token=workflow_token,
+            )
+            if decision is not None:
+                triggered.append(decision)
+
+        triggered.sort(key=lambda item: (-item.rank, item.skill_id))
+        state = SkillTriggerState(
+            session_id=session_id,
+            intent=intent,
+            workflow_state=workflow_state,
+            selected_skills=selected_skills,
+            active_skills=[item.skill_id for item in triggered],
+            triggered=triggered,
+        )
+        payload = state.to_dict()
+        imported_skill_state = self._imported_skill_state(project_root, session_id, selected_state=selected)
+        if intent == "startup" or workflow_state == "session_start":
+            active_imported_skills = self._resolve_startup_host_active_skills(
+                [str(item) for item in imported_skill_state.get("active_skills", [])],
+                available_skills,
+            )
+        else:
+            active_imported_skills = list(payload["active_skills"])
+        payload["provider_state"] = imported_skill_state.get("provider_state")
+        payload["provider_states"] = imported_skill_state.get("provider_states")
+        payload["imported_skill_state"] = {
+            **imported_skill_state,
+            "active_skills": active_imported_skills,
+            "source": "skill_trigger_state",
+            "intent": intent,
+            "workflow_state": workflow_state,
+            "triggered": payload["triggered"],
+        }
+        mode_metadata = self._build_imported_skill_mode_metadata(
+            selected_skills=[str(item) for item in imported_skill_state.get("selected_skills", [])],
+            active_skills=active_imported_skills,
+            triggered=[item for item in payload["triggered"] if isinstance(item, dict)],
+            provider_states=imported_skill_state.get("provider_states") if isinstance(imported_skill_state.get("provider_states"), dict) else None,
+        )
+        if mode_metadata is not None:
+            payload["imported_skill_state"]["mode_metadata"] = mode_metadata
+        return payload
+
+    def _persist_host_skill_state(
+        self,
+        project_root: Path,
+        session_id: str,
+        *,
+        intent: str,
+        workflow_state: str | None = None,
+    ) -> dict[str, object]:
+        payload = self._resolve_skill_trigger_state(project_root, session_id, intent=intent, workflow_state=workflow_state)
+        path = self._host_skill_state_path(project_root, session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot = {
+            **payload["imported_skill_state"],
+            "path": str(path),
+        }
+        path.write_text(json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
+        self._delete_legacy_external_skill_state(project_root)
+        self._delete_legacy_session_host_skill_state(project_root, session_id)
+        return snapshot
+
+    def _read_host_skill_state(self, project_root: Path, session_id: str) -> dict[str, object]:
+        path = self._host_skill_state_path(project_root, session_id)
+        if path.is_file():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = {}
+            if isinstance(payload, dict):
+                payload.setdefault("source", "skill_trigger_state")
+                payload.setdefault("session_id", session_id)
+                payload.setdefault("active_skills", [])
+                payload.setdefault("selected_skills", [])
+                payload.setdefault("provider_states", {})
+                payload.setdefault("provider_state", None)
+                payload.setdefault("triggered", [])
+                payload.setdefault("path", str(path))
+                changed = False
+                normalized_selected = self.hub.skills.normalize_selected_skill_ids(
+                    [str(item) for item in payload.get("selected_skills", []) if str(item).strip()]
+                )
+                if normalized_selected != list(payload.get("selected_skills", [])):
+                    payload["selected_skills"] = normalized_selected
+                    changed = True
+                normalized_active = self.hub.skills.normalize_selected_skill_ids(
+                    [str(item) for item in payload.get("active_skills", []) if str(item).strip()]
+                )
+                if normalized_active != list(payload.get("active_skills", [])):
+                    payload["active_skills"] = normalized_active
+                    changed = True
+                normalized_triggered: list[dict[str, object]] = []
+                for item in payload.get("triggered", []):
+                    if not isinstance(item, dict):
+                        continue
+                    normalized_item = dict(item)
+                    normalized_skill_ids = self.hub.skills.normalize_selected_skill_ids([str(item.get("skill_id") or "")])
+                    normalized_selected_ids = self.hub.skills.normalize_selected_skill_ids([str(item.get("selected_skill_id") or "")])
+                    normalized_skill_id = normalized_skill_ids[0] if normalized_skill_ids else ""
+                    normalized_selected_skill_id = normalized_selected_ids[0] if normalized_selected_ids else ""
+                    if normalized_skill_id and normalized_skill_id != str(item.get("skill_id") or ""):
+                        normalized_item["skill_id"] = normalized_skill_id
+                        changed = True
+                    if normalized_selected_skill_id and normalized_selected_skill_id != str(item.get("selected_skill_id") or ""):
+                        normalized_item["selected_skill_id"] = normalized_selected_skill_id
+                        changed = True
+                    normalized_triggered.append(normalized_item)
+                if normalized_triggered != list(payload.get("triggered", [])):
+                    payload["triggered"] = normalized_triggered
+                    changed = True
+                if changed:
+                    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+                return payload
+        return {
+            "source": "skill_trigger_state",
+            "session_id": session_id,
+            "intent": None,
+            "workflow_state": None,
+            "selected_skills": [],
+            "active_skills": [],
+            "provider_states": {},
+            "provider_state": None,
+            "triggered": [],
+            "path": str(path),
+        }
+
+    def _refresh_host_skill_state_for_session(self, project_root: Path, session_id: str) -> dict[str, object]:
+        existing = self._read_host_skill_state(project_root, session_id)
+        intent = str(existing.get("intent") or "startup")
+        workflow_state = existing.get("workflow_state")
+        return self._persist_host_skill_state(project_root, session_id, intent=intent, workflow_state=str(workflow_state) if workflow_state else None)
+
+    def _refresh_all_host_skill_states(self, project_root: Path) -> None:
+        for session in self.hub.sessions.list_sessions(project_root):
+            self._refresh_host_skill_state_for_session(project_root, session.session_id)
+
+    def skill_provider_status(self, project_root: Path, provider_id: str) -> dict[str, object]:
+        provider = self.hub.skills.get_external_provider(project_root, provider_id)
+        return {
+            "provider_id": provider.provider_id,
+            "provider_state": provider.compatibility_state,
+            "aidocs_version": __version__,
+            "provider_version": provider.version,
+            "compatible_versions": list(provider.compatible_versions),
+            "compatible_version_range": provider.compatible_version_range,
+            "choices": list(provider.choices),
+            "user_choice": provider.user_choice,
+        }
+
+    def set_skill_provider_override(self, project_root: Path, provider_id: str, choice: str | None) -> dict[str, object]:
+        provider = self.hub.skills.set_external_provider_override(project_root, provider_id, choice)
+        self._refresh_all_host_skill_states(project_root)
+        return {
+            "provider_id": provider.provider_id,
+            "provider_state": provider.compatibility_state,
+            "override": provider.user_choice,
+            "choices": list(provider.choices),
+        }
+
+    def set_session_skills(self, project_root: Path, session_id: str, selected_skills: list[str]) -> dict[str, object]:
+        result = self.hub.skills.try_set_selected_skills(project_root, session_id, selected_skills)
+        if result.get("ok"):
+            snapshot = self._refresh_host_skill_state_for_session(project_root, session_id)
+            result["imported_skill_state"] = snapshot
+        return result
+
+    def _normalize_skill_trigger_token(self, value: str | None) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+        return normalized or None
+
+    def _skill_trigger_text_matches(self, value: str | None, expected: set[str]) -> bool:
+        if not isinstance(value, str) or not value.strip():
+            return False
+        normalized = self._normalize_skill_trigger_token(value)
+        if not normalized:
+            return False
+        pieces = set(normalized.split("-")) | {normalized}
+        for item in expected:
+            if item == normalized or item in pieces:
+                return True
+            if item.endswith("ing") and item[:-3] in pieces:
+                return True
+            if normalized.startswith(item) or item.startswith(normalized):
+                return True
+        return False
+
+    def _infer_skill_trigger_intent(self, user_request: str, action_kind: str | None = None) -> str:
+        request = user_request.strip()
+        normalized = self._normalize_skill_trigger_token(request) or "understand"
+        if self._skill_trigger_text_matches(request, _SKILL_TRIGGER_RULES["brainstorming"]["intent"]):
+            return "brainstorming"
+        if self._skill_trigger_text_matches(request, _SKILL_TRIGGER_RULES["systematic-debugging"]["intent"]):
+            return "debugging"
+        if self._skill_trigger_text_matches(request, _SKILL_TRIGGER_RULES["writing-plans"]["intent"]):
+            return "planning"
+        if self._skill_trigger_text_matches(request, _SKILL_TRIGGER_RULES["verification-before-completion"]["intent"]):
+            return "verification"
+        return self._normalize_skill_trigger_token(action_kind) or normalized
+
+    def _skill_trigger_rule(self, skill: dict[str, object]) -> dict[str, set[str]]:
+        skill_name = self._normalize_skill_trigger_token(str(skill.get("name") or ""))
+        terminal_skill_id = self._normalize_skill_trigger_token(str(skill.get("skill_id") or "").split("/")[-1])
+        rule = _SKILL_TRIGGER_RULES.get(skill_name or "") or _SKILL_TRIGGER_RULES.get(terminal_skill_id or "")
+        if rule is not None:
+            return rule
+
+        tags = {
+            token
+            for token in (self._normalize_skill_trigger_token(str(item)) for item in skill.get("tags", []))
+            if token
+        }
+        names = {token for token in (skill_name, terminal_skill_id) if token}
+        return {"intent": tags | names, "workflow": tags | names}
+
+    def _skill_is_runtime_compatible(self, skill: dict[str, object]) -> bool:
+        provider_state = str(skill.get("provider_state") or "")
+        if provider_state and provider_state not in {"compatible", "incompatible_but_user_override"}:
+            return False
+        return bool(skill.get("selectable", True))
+
+    def _skill_is_external_provider(self, skill: dict[str, object]) -> bool:
+        return str(skill.get("source") or "") in {"external_provider", "bundled_provider"}
+
+    def _override_policy_provider_id(self, *, provider: str, source: str) -> str:
+        if source == "bundled_provider" and provider == BUNDLED_PROVIDER_ID:
+            return _BUNDLED_OVERRIDE_PROVIDER_ID
+        return provider
+
+    def _selected_skill_override_identity(
+        self,
+        selected_skill_id: str,
+        provider_states: dict[str, object] | None = None,
+    ) -> tuple[str, str] | None:
+        if "/" in selected_skill_id:
+            return tuple(selected_skill_id.split("/", 1))
+        if isinstance(provider_states, dict) and BUNDLED_PROVIDER_ID in provider_states:
+            return _BUNDLED_OVERRIDE_PROVIDER_ID, selected_skill_id
+        return None
+
+    def _selected_skill_trigger_identity(
+        self,
+        selected_skill_id: str,
+        *,
+        provider_states: dict[str, object] | None = None,
+    ) -> tuple[str, str, str] | None:
+        override_target = self._selected_skill_override_identity(
+            selected_skill_id,
+            provider_states=provider_states,
+        )
+        if override_target is None:
+            return None
+        policy_provider_id, selected_name = override_target
+        source_provider_id = selected_skill_id.split("/", 1)[0] if "/" in selected_skill_id else BUNDLED_PROVIDER_ID
+        decision = self._skill_overrides.resolve(policy_provider_id, selected_name)
+        resolved_skill_id = selected_skill_id
+        provider = source_provider_id
+        runtime_provider = source_provider_id
+        if decision.mode == "aidocs_native_override":
+            resolved_skill_id = str(decision.skill_id or selected_name)
+            provider = "aidocs"
+            runtime_provider = "aidocs"
+        elif decision.mode == "provider_content_aidocs_runtime":
+            runtime_provider = "aidocs"
+        return resolved_skill_id, provider, runtime_provider
+
+    def _match_selected_skill_id_for_trigger(
+        self,
+        *,
+        selected_skills: list[str],
+        skill_id: str,
+        provider: str,
+        runtime_provider: str,
+        provider_states: dict[str, object] | None = None,
+    ) -> str | None:
+        if skill_id in selected_skills:
+            return skill_id
+        matches = [
+            selected_skill_id
+            for selected_skill_id in selected_skills
+            if self._selected_skill_trigger_identity(
+                selected_skill_id,
+                provider_states=provider_states,
+            )
+            == (skill_id, provider, runtime_provider)
+        ]
+        return sorted(matches)[0] if matches else None
+
+    def _resolve_trigger_skill(
+        self,
+        skill: dict[str, object],
+        available_skills: dict[str, dict[str, object]],
+    ) -> tuple[dict[str, object], str, str, str, str] | None:
+        provider = str(skill.get("provider") or "aidocs")
+        source = str(skill.get("source") or "")
+        skill_id = str(skill.get("skill_id") or "")
+        override_mode = "provider_native"
+        runtime_provider = provider
+        trigger_skill = skill
+
+        if self._skill_is_external_provider(skill):
+            override = self._skill_overrides.resolve(
+                self._override_policy_provider_id(provider=provider, source=source),
+                skill_id.split("/")[-1],
+            )
+            override_mode = override.mode
+            if override.mode == "aidocs_native_override":
+                built_in = available_skills.get(override.skill_id)
+                if isinstance(built_in, dict) and not self._skill_is_external_provider(built_in):
+                    trigger_skill = built_in
+                    provider = str(built_in.get("provider") or "aidocs")
+                else:
+                    trigger_skill = {
+                        **skill,
+                        "skill_id": override.skill_id,
+                        "name": override.skill_id,
+                        "provider": "aidocs",
+                        "source": "built_in",
+                    }
+                    provider = "aidocs"
+                skill_id = override.skill_id
+                runtime_provider = provider
+            elif override.mode == "provider_content_aidocs_runtime":
+                runtime_provider = "aidocs"
+
+        return trigger_skill, skill_id, provider, runtime_provider, override_mode
+
+    def _resolve_startup_host_active_skills(
+        self,
+        active_skill_ids: list[str],
+        available_skills: dict[str, dict[str, object]],
+    ) -> list[str]:
+        resolved: list[str] = []
+        seen: set[str] = set()
+        for skill_id in active_skill_ids:
+            skill = available_skills.get(skill_id)
+            if not isinstance(skill, dict):
+                continue
+            trigger = self._resolve_trigger_skill(skill, available_skills)
+            if trigger is None:
+                continue
+            resolved_skill_id = trigger[1]
+            if resolved_skill_id in seen:
+                continue
+            seen.add(resolved_skill_id)
+            resolved.append(resolved_skill_id)
+        return resolved
+
+    def _build_imported_skill_mode_metadata(
+        self,
+        *,
+        selected_skills: list[str],
+        active_skills: list[str],
+        triggered: list[dict[str, object]],
+        provider_states: dict[str, object] | None = None,
+    ) -> dict[str, object] | None:
+        active_skill_modes: dict[str, str] = {}
+        selected_skill_modes: dict[str, str] = {}
+        decisions: list[dict[str, object]] = []
+
+        for item in triggered:
+            if not isinstance(item, dict):
+                continue
+            skill_id = str(item.get("skill_id") or "").strip()
+            override_mode = str(item.get("override_mode") or "").strip()
+            provider = str(item.get("provider") or "").strip()
+            runtime_provider = str(item.get("runtime_provider") or provider).strip() or provider
+            if not skill_id or not override_mode:
+                continue
+            active_skill_modes[skill_id] = override_mode
+            selected_skill_id = self._match_selected_skill_id_for_trigger(
+                selected_skills=selected_skills,
+                skill_id=skill_id,
+                provider=provider,
+                runtime_provider=runtime_provider,
+                provider_states=provider_states,
+            )
+            if selected_skill_id:
+                selected_skill_modes[selected_skill_id] = override_mode
+            decisions.append(
+                {
+                    "skill_id": skill_id,
+                    "selected_skill_id": selected_skill_id,
+                    "override_mode": override_mode,
+                    "provider": item.get("provider"),
+                    "runtime_provider": item.get("runtime_provider"),
+                }
+            )
+
+        for selected_skill_id in selected_skills:
+            if selected_skill_id in selected_skill_modes:
+                continue
+            override_target = self._selected_skill_override_identity(
+                selected_skill_id,
+                provider_states=provider_states,
+            )
+            if override_target is None:
+                continue
+            provider_id, selected_name = override_target
+            decision = self._skill_overrides.resolve(provider_id, selected_name)
+            override_mode = str(decision.mode or "").strip()
+            if not override_mode:
+                continue
+            resolved_skill_id = selected_skill_id
+            provider = provider_id
+            runtime_provider = provider_id
+            if override_mode == "aidocs_native_override":
+                resolved_skill_id = str(decision.skill_id or selected_name)
+                provider = "aidocs"
+                runtime_provider = "aidocs"
+            elif override_mode == "provider_content_aidocs_runtime":
+                runtime_provider = "aidocs"
+            if resolved_skill_id not in active_skills and selected_skill_id not in active_skills:
+                continue
+            selected_skill_modes[selected_skill_id] = override_mode
+            active_skill_modes[resolved_skill_id] = override_mode
+            decisions.append(
+                {
+                    "skill_id": resolved_skill_id,
+                    "selected_skill_id": selected_skill_id,
+                    "override_mode": override_mode,
+                    "provider": provider,
+                    "runtime_provider": runtime_provider,
+                }
+            )
+
+        if not active_skill_modes and not selected_skill_modes:
+            return None
+        return {
+            "active_skill_modes": active_skill_modes,
+            "selected_skill_modes": selected_skill_modes,
+            "decisions": decisions,
+        }
+
+    def _build_skill_trigger_decision(
+        self,
+        skill: dict[str, object],
+        available_skills: dict[str, dict[str, object]],
+        *,
+        selected_rank: int,
+        intent_token: str | None,
+        workflow_token: str | None,
+    ) -> SkillTriggerDecision | None:
+        resolved = self._resolve_trigger_skill(skill, available_skills)
+        if resolved is None:
+            return None
+        trigger_skill, resolved_skill_id, provider, runtime_provider, override_mode = resolved
+        rule = self._skill_trigger_rule(trigger_skill)
+        reasons: list[str] = []
+        rank = selected_rank
+        if intent_token and self._skill_trigger_text_matches(intent_token, rule.get("intent", set())):
+            reasons.append(f"intent:{intent_token}")
+            rank += 20
+        if workflow_token and self._skill_trigger_text_matches(workflow_token, rule.get("workflow", set())):
+            reasons.append(f"workflow:{workflow_token}")
+            rank += 10
+        if not reasons:
+            return None
+        prefix = "session-selected" if selected_rank > 0 else "auto"
+        return SkillTriggerDecision(
+            skill_id=resolved_skill_id,
+            provider=provider,
+            runtime_provider=runtime_provider,
+            override_mode=override_mode,
+            why=prefix + "+" + "+".join(reasons),
+            rank=rank,
+        )
+
+    def skill_trigger_state(
+        self,
+        project_root: Path,
+        session_id: str,
+        intent: str,
+        workflow_state: str | None = None,
+    ) -> dict[str, object]:
+        payload = self._resolve_skill_trigger_state(project_root, session_id, intent=intent, workflow_state=workflow_state)
+        if payload.get("triggered"):
+            logger.info(
+                "Skill trigger state resolved for session %s: %s",
+                session_id,
+                payload.get("triggered"),
+            )
+        self._persist_host_skill_state(project_root, session_id, intent=intent, workflow_state=workflow_state)
+        payload["skills_overview"] = self._build_skills_overview(
+            session_id=session_id,
+            selected_skills={"selected_skills": list(payload.get("selected_skills", []))},
+            active_skills=list(payload.get("active_skills", [])),
+            imported_skill_state=payload.get("imported_skill_state") if isinstance(payload.get("imported_skill_state"), dict) else None,
+            skill_trigger_state=payload,
+        )
+        return payload
 
     def ensure_claude_mcp_config(self, project_root: Path) -> dict[str, object]:
         """Ensure the target project has a .mcp.json with the aidocs MCP server entry.
@@ -353,6 +1049,367 @@ class RuntimeService:
             missing.append("AGENTS.md or CLAUDE.md")
         return missing
 
+
+    def _copy_missing_tree(
+        self,
+        source_root: Path,
+        dest_root: Path,
+        label_prefix: str,
+        created: list[str],
+        skipped: list[str],
+    ) -> None:
+        if not source_root.is_dir():
+            return
+        source_files = [path for path in source_root.rglob("*") if path.is_file()]
+        for src_file in source_files:
+            rel = src_file.relative_to(source_root)
+            dest = dest_root / rel
+            label = f"{label_prefix}/{rel.as_posix()}"
+            if dest.exists():
+                skipped.append(label)
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(src_file), str(dest))
+            created.append(label)
+
+    def _copy_missing_file(
+        self,
+        source_file: Path,
+        dest_file: Path,
+        label: str,
+        created: list[str],
+        skipped: list[str],
+    ) -> None:
+        if not source_file.is_file():
+            return
+        if dest_file.exists():
+            skipped.append(label)
+            return
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(source_file), str(dest_file))
+        created.append(label)
+
+
+    def _latest_mtime_ns(self, paths: list[Path]) -> int | None:
+        mtimes: list[int] = []
+        for path in paths:
+            try:
+                if path.is_file():
+                    mtimes.append(path.stat().st_mtime_ns)
+                elif path.is_dir():
+                    for child in path.rglob("*"):
+                        if child.is_file():
+                            mtimes.append(child.stat().st_mtime_ns)
+            except FileNotFoundError:
+                continue
+        return max(mtimes) if mtimes else None
+
+    def _index_freshness_status(self, project_root: Path) -> tuple[str, dict[str, object]]:
+        memory_db = self.hub.index.db_path(project_root)
+        code_db = self.hub.code.db_path(project_root)
+        memory_status = self.hub.index.status(project_root)
+        code_status = self.hub.code.code_status(project_root)
+        memory_freshness = memory_status.get("freshness") if isinstance(memory_status.get("freshness"), dict) else {}
+        code_freshness = code_status.get("freshness") if isinstance(code_status.get("freshness"), dict) else {}
+
+        missing = [
+            label
+            for label, path, freshness in (
+                ("memory", memory_db, memory_freshness),
+                ("code", code_db, code_freshness),
+            )
+            if not path.is_file() or freshness.get("state") == "missing"
+        ]
+        if missing:
+            return "missing", {
+                "missing_indexes": missing,
+                "memory_freshness": memory_freshness,
+                "code_freshness": code_freshness,
+            }
+
+        stale_reasons: list[str] = []
+        if memory_freshness.get("state") == "stale":
+            stale_reasons.extend(
+                f"memory:{reason}" for reason in memory_freshness.get("reasons", []) if isinstance(reason, str) and reason.strip()
+            )
+        if code_freshness.get("state") == "stale":
+            stale_reasons.extend(
+                f"code:{reason}" for reason in code_freshness.get("reasons", []) if isinstance(reason, str) and reason.strip()
+            )
+        if stale_reasons:
+            return "stale", {
+                "reasons": stale_reasons,
+                "memory_freshness": memory_freshness,
+                "code_freshness": code_freshness,
+            }
+        return "ready", {
+            "reasons": [],
+            "memory_freshness": memory_freshness,
+            "code_freshness": code_freshness,
+        }
+
+    def session_start_state(self, project_root: Path, session_id: str | None = None) -> dict[str, object]:
+        agents = project_root / "AGENTS.md"
+        claude = project_root / "CLAUDE.md"
+        memory_root = project_root / ".MEMORY"
+        initialized = memory_root.is_dir() and (agents.is_file() or claude.is_file())
+        if not initialized:
+            return {
+                "state": "not_initialized",
+                "next_step": "project_init",
+                "session_id": None,
+                "index_status": "missing",
+            }
+
+        structure_gaps = self.project_structure_gaps(project_root)
+        if structure_gaps:
+            return {
+                "state": "not_bootstrapped",
+                "next_step": "project_bootstrap_or_resume",
+                "session_id": None,
+                "index_status": "missing",
+                "structure_gaps": structure_gaps,
+            }
+
+        sessions = self.hub.sessions.list_sessions(project_root)
+        session_summaries = [
+            {
+                "session_id": item.session_id,
+                "title": item.title,
+                "status": item.status,
+                "owner": item.owner,
+                "goal": item.goal,
+                "last_updated": item.last_updated,
+            }
+            for item in sessions
+        ]
+        if not sessions:
+            return {
+                "state": "no_session",
+                "next_step": "create_session",
+                "session_id": None,
+                "index_status": "missing",
+            }
+
+        resolved_session_id = session_id.strip() if isinstance(session_id, str) and session_id.strip() else None
+        if resolved_session_id is None:
+            active = [item for item in sessions if item.status == "active"]
+            if len(active) == 1:
+                resolved_session_id = active[0].session_id
+            elif len(sessions) == 1:
+                resolved_session_id = sessions[0].session_id
+            else:
+                return {
+                    "state": "multiple_sessions",
+                    "next_step": "select_session",
+                    "session_id": None,
+                    "index_status": "unknown",
+                    "sessions": session_summaries,
+                }
+        elif not any(item.session_id == resolved_session_id for item in sessions):
+            return {
+                "state": "session_not_found",
+                "next_step": "select_session",
+                "session_id": None,
+                "requested_session_id": resolved_session_id,
+                "index_status": "unknown",
+                "sessions": session_summaries,
+            }
+
+        imported_skill_state = self._persist_host_skill_state(project_root, resolved_session_id, intent="startup", workflow_state="session_start")
+
+        index_status, index_details = self._index_freshness_status(project_root)
+        if index_status != "ready":
+            result = {
+                "state": "stale_indexes",
+                "next_step": "project_bootstrap_or_resume",
+                "session_id": resolved_session_id,
+                "index_status": index_status,
+                **index_details,
+            }
+            if imported_skill_state.get("selected_skills") or imported_skill_state.get("provider_states"):
+                result["imported_skill_state"] = imported_skill_state
+                result["active_skills"] = list(imported_skill_state.get("active_skills", []))
+                result["provider_state"] = imported_skill_state.get("provider_state")
+            return result
+
+        result = {
+            "state": "ready",
+            "next_step": "session_resume_bundle",
+            "session_id": resolved_session_id,
+            "index_status": index_status,
+            **index_details,
+        }
+        if imported_skill_state.get("selected_skills") or imported_skill_state.get("provider_states"):
+            result["imported_skill_state"] = imported_skill_state
+            result["active_skills"] = list(imported_skill_state.get("active_skills", []))
+            result["provider_state"] = imported_skill_state.get("provider_state")
+        return result
+
+    def host_state(
+        self,
+        project_root: Path,
+        session_id: str | None = None,
+        prompt_text: str | None = None,
+    ) -> dict[str, object]:
+        managed_mode = self.hub.managed_mode.get_mode(project_root)
+        resolved_session_id = session_id.strip() if isinstance(session_id, str) and session_id.strip() else None
+        if resolved_session_id is None and managed_mode.get("active"):
+            managed_session_id = str(managed_mode.get("session_id") or "").strip()
+            if managed_session_id:
+                resolved_session_id = managed_session_id
+
+        session_snapshot = self.session_start_state(project_root, session_id=resolved_session_id)
+        if resolved_session_id is None:
+            resolved_session_id = str((session_snapshot or {}).get("session_id") or "").strip() or None
+
+        cached_skill_state: dict[str, object] = {
+            "source": "skill_trigger_state",
+            "session_id": resolved_session_id,
+            "intent": None,
+            "workflow_state": None,
+            "selected_skills": [],
+            "active_skills": [],
+            "provider_states": {},
+            "provider_state": None,
+            "triggered": [],
+            "path": None,
+        }
+        if resolved_session_id:
+            cached_skill_state = self._read_host_skill_state(project_root, resolved_session_id)
+            if not cached_skill_state.get("selected_skills") and not cached_skill_state.get("provider_states"):
+                cached_skill_state = self._persist_host_skill_state(
+                    project_root,
+                    resolved_session_id,
+                    intent="startup",
+                    workflow_state="session_start",
+                )
+
+        cached_selected_skills = list(cached_skill_state.get("selected_skills", []))
+        cached_active_skills = list(cached_skill_state.get("active_skills", []))
+        cached_triggered = [
+            item
+            for item in (cached_skill_state.get("triggered") or [])
+            if isinstance(item, dict)
+        ]
+        cached_mode_metadata = self._build_imported_skill_mode_metadata(
+            selected_skills=cached_selected_skills,
+            active_skills=cached_active_skills,
+            triggered=cached_triggered,
+            provider_states=cached_skill_state.get("provider_states") if isinstance(cached_skill_state.get("provider_states"), dict) else None,
+        )
+
+        prompt_text_value = prompt_text.strip() if isinstance(prompt_text, str) else ""
+        prompt_action_kind = None
+        prompt_intent = None
+        live_prompt_skill_state: dict[str, object] | None = None
+        if prompt_text_value:
+            prompt_action_kind = str(
+                self.classify_prompt_action(
+                    prompt_text_value,
+                    project_root=project_root,
+                    session_id=resolved_session_id,
+                ).get("action_kind") or "understand"
+            )
+            prompt_intent = self._infer_skill_trigger_intent(prompt_text_value, action_kind=prompt_action_kind)
+            if resolved_session_id:
+                live_prompt_skill_state = self._resolve_skill_trigger_state(
+                    project_root,
+                    resolved_session_id,
+                    intent=prompt_intent,
+                    workflow_state=prompt_action_kind,
+                )
+
+        prompt_active_skills = list((live_prompt_skill_state or {}).get("active_skills", []))
+        prompt_triggered = [
+            item
+            for item in ((live_prompt_skill_state or {}).get("triggered") or [])
+            if isinstance(item, dict)
+        ]
+        prompt_mode_metadata = self._build_imported_skill_mode_metadata(
+            selected_skills=cached_selected_skills,
+            active_skills=prompt_active_skills,
+            triggered=prompt_triggered,
+            provider_states=(live_prompt_skill_state or {}).get("provider_states") if isinstance((live_prompt_skill_state or {}).get("provider_states"), dict) else None,
+        )
+        prompt_override_modes = dict((prompt_mode_metadata or {}).get("active_skill_modes") or {})
+        activation_succeeded = bool(prompt_triggered)
+
+        recommended_flow = ["runtime_preflight"]
+        if (session_snapshot or {}).get("next_step") == "session_resume_bundle" or resolved_session_id:
+            recommended_flow.append("session_start")
+        if prompt_action_kind in {"edit", "write_memory", "task_begin", "task_update", "task_complete"}:
+            recommended_flow.append("task_begin")
+        if prompt_action_kind in {"understand", "trace", "edit", "code_bundle"}:
+            recommended_flow.append("aidocs_orchestrate")
+
+        host_actions = {
+            "inject_context": ["Use AIDOCS MCP tools first."],
+            "recommended_mcp_flow": recommended_flow,
+            "show_imported_skills": bool(prompt_active_skills),
+        }
+        if prompt_active_skills:
+            host_actions["inject_context"].append(
+                "Imported skills active for this prompt: " + ", ".join(str(item) for item in prompt_active_skills if str(item).strip())
+            )
+
+        return {
+            "session_state": {
+                "managed": bool(managed_mode.get("active")),
+                "session_id": resolved_session_id,
+                "state": (session_snapshot or {}).get("state"),
+                "next_step": (session_snapshot or {}).get("next_step"),
+                "index_status": (session_snapshot or {}).get("index_status"),
+                "plan_ready": (session_snapshot or {}).get("state") == "ready",
+            },
+            "skill_state": {
+                "session_snapshot": {
+                    "source": "cached_session",
+                    "session_id": resolved_session_id,
+                    "selected_skills": cached_selected_skills,
+                    "active_skills": cached_active_skills,
+                    "provider_states": dict(cached_skill_state.get("provider_states", {})),
+                    "provider_state": cached_skill_state.get("provider_state"),
+                    "triggered": cached_triggered,
+                    "snapshot_path": cached_skill_state.get("path"),
+                    "mode_metadata": cached_mode_metadata,
+                },
+                "prompt_activation": {
+                    "source": "live_prompt" if prompt_text_value else "no_prompt",
+                    "session_id": resolved_session_id,
+                    "active_skills": prompt_active_skills,
+                    "triggered": prompt_triggered,
+                    "mode_metadata": prompt_mode_metadata,
+                    "activation_succeeded": activation_succeeded,
+                },
+            },
+            "prompt_state": {
+                "source": "live_prompt" if prompt_text_value else "no_prompt",
+                "prompt_text": prompt_text_value or None,
+                "action_kind": prompt_action_kind,
+                "intent": prompt_intent,
+                "triggered_skills": [item.get("skill_id") for item in prompt_triggered if item.get("skill_id")],
+                "active_skills": prompt_active_skills,
+                "override_modes": prompt_override_modes,
+                "mode_metadata": prompt_mode_metadata,
+                "activation_succeeded": activation_succeeded,
+            },
+            "inspection_state": {
+                "provider_states": dict(cached_skill_state.get("provider_states", {})),
+                "provider_state": cached_skill_state.get("provider_state"),
+                "session_state_source": "session_start_state",
+                "skill_state_sources": {
+                    "session_snapshot": "cached_session",
+                    "prompt_activation": "live_prompt" if prompt_text_value else "no_prompt",
+                },
+                "prompt_state_source": "live_prompt" if prompt_text_value else "no_prompt",
+                "skill_snapshot_path": cached_skill_state.get("path"),
+            },
+            "host_actions": host_actions,
+        }
+
+        return result
+
     def project_init(self, project_root: Path, init_git: bool = True, create_remote: bool = False) -> dict[str, object]:
         root = project_root
         if not root.is_dir():
@@ -362,20 +1419,13 @@ class RuntimeService:
         skipped: list[str] = []
 
         templates_root = self.hub.sessions.templates_root
-        memory_template = templates_root.parent / "templates" / "memory"
+        aidocs_bundle_root = templates_root.parent
+        memory_template = aidocs_bundle_root / "templates" / "memory"
         memory_dest = root / ".MEMORY"
+        aidocs_dest = memory_dest / ".aidocs"
 
         if memory_template.is_dir():
-            for src_file in memory_template.rglob("*"):
-                if src_file.is_file():
-                    rel = src_file.relative_to(memory_template)
-                    dest = memory_dest / rel
-                    if not dest.exists():
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(str(src_file), str(dest))
-                        created.append(f".MEMORY/{rel}")
-                    else:
-                        skipped.append(f".MEMORY/{rel}")
+            self._copy_missing_tree(memory_template, memory_dest, ".MEMORY", created, skipped)
         else:
             for d in [
                 ".MEMORY/.aidocs",
@@ -399,6 +1449,22 @@ class RuntimeService:
                 )
                 created.append(".MEMORY/INDEX.md")
 
+        for src_file in aidocs_bundle_root.glob("*.aidocs"):
+            self._copy_missing_file(
+                src_file,
+                aidocs_dest / src_file.name,
+                f".MEMORY/.aidocs/{src_file.name}",
+                created,
+                skipped,
+            )
+        self._copy_missing_tree(
+            aidocs_bundle_root / "personalities",
+            aidocs_dest / "personalities",
+            ".MEMORY/.aidocs/personalities",
+            created,
+            skipped,
+        )
+
         workflow_rules = memory_dest / "rules" / "workflow-rules.md"
         if not workflow_rules.exists():
             workflow_rules.parent.mkdir(parents=True, exist_ok=True)
@@ -415,10 +1481,10 @@ class RuntimeService:
         else:
             skipped.append(".MEMORY/rules/workflow-actions.md")
 
-        router = memory_dest / ".aidocs" / "index.aidocs"
+        router = aidocs_dest / "index.aidocs"
         if not router.exists():
             router.parent.mkdir(parents=True, exist_ok=True)
-            src_router = templates_root.parent / "index.aidocs"
+            src_router = aidocs_bundle_root / "index.aidocs"
             if src_router.is_file():
                 shutil.copy2(str(src_router), str(router))
             else:
@@ -563,6 +1629,14 @@ class RuntimeService:
         context = self.hub.sessions.read_context(project_root, session_id)
         handoff = self.hub.sessions.read_handoff(project_root, session_id)
         handoff_steps = self.hub.sessions.read_handoff_steps(project_root, session_id)
+        selected_skills = self.hub.skills.get_selected_skills(project_root, session_id)
+        imported_skill_state = self._persist_host_skill_state(project_root, session_id, intent="startup", workflow_state="session_start")
+        skill_trigger_state = self.skill_trigger_state(
+            project_root,
+            session_id,
+            intent="startup",
+            workflow_state="session_start",
+        )
         compliance = self.session_compliance_summary(project_root, session_id)
 
         if sync_indexes:
@@ -586,10 +1660,35 @@ class RuntimeService:
                 "path": str(handoff.path),
                 "sections": handoff.sections,
             },
-            "handoff_steps": handoff_steps,
-            "compliance": compliance,
+              "handoff_steps": handoff_steps,
+              "selected_skills": selected_skills,
+              "imported_skill_state": imported_skill_state,
+              "active_imported_skills": list(imported_skill_state.get("active_skills", [])),
+              "skill_trigger_state": skill_trigger_state,
+              "active_skills": list(skill_trigger_state.get("active_skills", [])),
+              "compliance": compliance,
             "sessions": session_summaries,
         }
+        response["project_overview"] = self._build_project_overview(
+            project_root,
+            repo_summary=response.get("repo_summary") if isinstance(response.get("repo_summary"), dict) else None,
+            selected_session_id=session.session_id,
+            ready=True,
+        )
+        response["session_overview"] = self._build_session_overview(
+            session_id=session.session_id,
+            session_sections=session.sections,
+            context_sections=context.sections,
+            handoff_steps=handoff_steps,
+            compliance=compliance,
+        )
+        response["skills_overview"] = self._build_skills_overview(
+            session_id=session.session_id,
+            selected_skills=selected_skills,
+            active_skills=list(skill_trigger_state.get("active_skills", [])),
+            imported_skill_state=imported_skill_state,
+            skill_trigger_state=skill_trigger_state,
+        )
 
         if include_code_bundle:
             response["code_bundle"] = self.hub.code.get_context_bundle(project_root, session_id=session_id)
@@ -615,7 +1714,11 @@ class RuntimeService:
         handoff_steps = self.hub.sessions.read_handoff_steps(project_root, session_id)
         actionable_steps = [step for step in handoff_steps if step.get("status") in {"open", "reset", "failed", "stale"}]
         recently_changed_steps = [step for step in handoff_steps if self._step_changed_recently(step)]
+        selected_skills = self.hub.skills.get_selected_skills(project_root, session_id)
+        imported_skill_state = self._imported_skill_state(project_root, session_id, selected_state=selected_skills)
+        skill_trigger_state = self._resolve_skill_trigger_state(project_root, session_id, intent="startup", workflow_state="session_resume_bundle")
         compliance = self.session_compliance_summary(project_root, session_id)
+        repo_summary = self.repo_summary(project_root)
 
         result: dict[str, object] = {
             "session": {"session_id": session.session_id, "path": str(session.path), "sections": session.sections},
@@ -626,9 +1729,33 @@ class RuntimeService:
             "actionable_handoff_steps": actionable_steps,
             "recently_changed_handoff_steps": recently_changed_steps,
             "handoff_freshness": freshness,
+            "selected_skills": selected_skills,
+            "imported_skill_state": imported_skill_state,
+            "skill_trigger_state": skill_trigger_state,
             "compliance": compliance,
             "journal": journal,
-            "repo_summary": self.repo_summary(project_root),
+            "repo_summary": repo_summary,
+            "project_overview": self._build_project_overview(project_root, repo_summary=repo_summary, selected_session_id=session.session_id),
+            "session_overview": self._build_session_overview(
+                session_id=session.session_id,
+                session_sections=session.sections,
+                context_sections=context.sections,
+                handoff_steps=handoff_steps,
+                compliance=compliance,
+            ),
+            "skills_overview": self._build_skills_overview(
+                session_id=session.session_id,
+                selected_skills=selected_skills,
+                active_skills=list(skill_trigger_state.get("active_skills", [])),
+                imported_skill_state=imported_skill_state,
+                skill_trigger_state=skill_trigger_state,
+            ),
+            "plan_overview": self._build_plan_overview(
+                session_id=session.session_id,
+                plan_path=str(plan.path),
+                plan_sections=plan.sections,
+                has_lanes=bool(getattr(plan, "lanes", None)),
+            ),
         }
         if include_code_bundle:
             result["code_bundle"] = self._refresh_session_code_bundle(
@@ -692,6 +1819,163 @@ class RuntimeService:
             warnings.append(f"{len(actionable_steps)} actionable handoff steps remain")
         summary["warnings"] = warnings
         return summary
+
+    def _build_project_overview(
+        self,
+        project_root: Path,
+        *,
+        repo_summary: dict[str, object] | None,
+        selected_session_id: str | None = None,
+        stage: str | None = None,
+        ready: bool | None = None,
+    ) -> dict[str, object]:
+        summary = repo_summary if isinstance(repo_summary, dict) else self.repo_summary(project_root)
+        return {
+            "project_name": summary.get("project_name") or project_root.name,
+            "project_root": summary.get("project_root") or str(project_root),
+            "code_file_count": int(summary.get("code_files") or 0),
+            "module_count": int(summary.get("modules") or 0),
+            "schema_entity_count": int(summary.get("schema_entities") or 0),
+            "session_count": int(summary.get("sessions") or 0),
+            "selected_session_id": selected_session_id,
+            "artifact_catalog": self._project_artifact_catalog(project_root),
+            "stage": stage,
+            "ready": ready,
+        }
+
+    def _project_artifact_catalog(self, project_root: Path) -> dict[str, dict[str, object]]:
+        return {
+            "skill_provider_registry": {
+                "path": str(self.hub.skills.external_provider_registry_path(project_root)),
+                "classification": "config",
+                "legacy_paths": [str(self.hub.skills.legacy_external_provider_registry_path(project_root))],
+            },
+            "aidocs_managed": {
+                "path": str(self.hub.managed_mode.config_path(project_root)),
+                "classification": "runtime_binding_state",
+            },
+            "workflow_actions": {
+                "path": str(self.hub.workflow.config_path(project_root)),
+                "classification": "compiled_runtime_artifact",
+            },
+        }
+
+    def _build_session_overview(
+        self,
+        *,
+        session_id: str | None,
+        session_sections: dict[str, list[str]] | None,
+        context_sections: dict[str, list[str]] | None,
+        handoff_steps: list[dict[str, object]] | None,
+        compliance: dict[str, object] | None,
+    ) -> dict[str, object]:
+        session_sections = session_sections if isinstance(session_sections, dict) else {}
+        context_sections = context_sections if isinstance(context_sections, dict) else {}
+        titles = self._clean_bullets(session_sections.get("Title", []))
+        statuses = self._clean_bullets(session_sections.get("Status", []))
+        goals = self._clean_bullets(session_sections.get("Goal", []))
+        owners = self._clean_bullets(session_sections.get("Owner", []))
+        relevant_files = self._clean_bullets(context_sections.get("Relevant Files", []))
+        actionable_handoff_step_count = len(
+            [step for step in (handoff_steps or []) if str(step.get("status") or "") in {"open", "reset", "failed", "stale"}]
+        )
+        return {
+            "session_id": session_id,
+            "title": titles[0] if titles else None,
+            "status": statuses[0] if statuses else None,
+            "goal": goals[0] if goals else None,
+            "owner": owners[0] if owners else None,
+            "relevant_file_count": len(relevant_files),
+            "actionable_handoff_step_count": actionable_handoff_step_count,
+            "logging_debt": bool((compliance or {}).get("logging_debt")),
+        }
+
+    def _build_skills_overview(
+        self,
+        *,
+        session_id: str | None,
+        selected_skills: dict[str, object] | None,
+        active_skills: list[str] | None,
+        imported_skill_state: dict[str, object] | None,
+        skill_trigger_state: dict[str, object] | None,
+    ) -> dict[str, object]:
+        selected = [str(item) for item in (selected_skills or {}).get("selected_skills", [])]
+        active = [str(item) for item in (active_skills or [])]
+        override_modes: dict[str, str] = {}
+        triggered = (skill_trigger_state or {}).get("triggered") if isinstance(skill_trigger_state, dict) else []
+        if isinstance(triggered, list):
+            for item in triggered:
+                if not isinstance(item, dict):
+                    continue
+                skill_id = str(item.get("skill_id") or "")
+                override_mode = str(item.get("override_mode") or "").strip()
+                if skill_id and override_mode:
+                    override_modes[skill_id] = override_mode
+        return {
+            "session_id": session_id,
+            "selected_skills": selected,
+            "selected_skill_count": len(selected),
+            "active_skills": active,
+            "active_skill_count": len(active),
+            "provider_state": (imported_skill_state or {}).get("provider_state"),
+            "provider_states": (imported_skill_state or {}).get("provider_states") or {},
+            "override_modes": override_modes,
+        }
+
+    def _build_default_plan_overview(
+        self,
+        *,
+        session_id: str,
+        end_goal: str | None = None,
+    ) -> dict[str, object]:
+        return {
+            "session_id": session_id,
+            "plan_path": None,
+            "progress": "0/0",
+            "completed_count": 0,
+            "incomplete_count": 0,
+            "next_step": None,
+            "purpose": None,
+            "end_goal": end_goal,
+            "has_lanes": False,
+        }
+
+    def _build_plan_overview(
+        self,
+        *,
+        session_id: str,
+        plan_path: str | None,
+        plan_sections: dict[str, list[str]] | None,
+        has_lanes: bool,
+    ) -> dict[str, object]:
+        sections = plan_sections if isinstance(plan_sections, dict) else {}
+        completed: list[str] = []
+        incomplete: list[str] = []
+        for lines in sections.values():
+            for line in lines:
+                parsed = self._parse_plan_checkbox_line(line)
+                if not parsed:
+                    continue
+                text = str(parsed["text"])
+                if parsed["status"] == "completed":
+                    completed.append(text)
+                else:
+                    incomplete.append(text)
+        total = len(completed) + len(incomplete)
+        progress = f"{len(completed)}/{total}" if total > 0 else "0/0"
+        end_goals = self._clean_bullets(sections.get("End Goal", []))
+        purposes = self._clean_bullets(sections.get("Purpose", []))
+        return {
+            "session_id": session_id,
+            "plan_path": plan_path,
+            "progress": progress,
+            "completed_count": len(completed),
+            "incomplete_count": len(incomplete),
+            "next_step": incomplete[0] if incomplete else None,
+            "purpose": purposes[0] if purposes else None,
+            "end_goal": end_goals[0] if end_goals else None,
+            "has_lanes": has_lanes,
+        }
 
     def _registered_tools_snapshot(self) -> list[object]:
         from .mcp_server import create_server
@@ -1028,11 +2312,31 @@ class RuntimeService:
             "sync": sync_result,
             "session": session_result,
         }
+        selected = session_result.get("selected_session") if isinstance(session_result.get("selected_session"), dict) else {}
+        selected_session_id = str(selected.get("session_id") or "").strip() or None
+        result["project_overview"] = self._build_project_overview(
+            project_root,
+            repo_summary=result.get("repo_summary") if isinstance(result.get("repo_summary"), dict) else None,
+            selected_session_id=selected_session_id,
+            stage=str(result.get("stage") or "unknown"),
+            ready=bool(result.get("ready")),
+        )
+        if selected_session_id:
+            result["session_overview"] = session_result.get("session_overview")
+            result["skills_overview"] = session_result.get("skills_overview")
+            selected_sections = selected.get("sections") if isinstance(selected.get("sections"), dict) else {}
+            goal_values = self._clean_bullets(selected_sections.get("Goal", []))
+            result["plan_overview"] = self._build_default_plan_overview(
+                session_id=selected_session_id,
+                end_goal=goal_values[0] if goal_values else None,
+            )
 
         # Without rules injection, AIDOCS operates in MCP-tool-only mode —
         # the agent can use indexed retrieval but does not follow any /.MEMORY/rules/ directives.
-        from .config import AGENT_INJECT_RULES_ON_BOOTSTRAP
-        if AGENT_INJECT_RULES_ON_BOOTSTRAP:
+        effective_config = self.effective_config(project_root, session_id=selected_session_id)
+        agent_config = effective_config.get("agent") if isinstance(effective_config.get("agent"), dict) else {}
+        inject_rules = _parse_bool(agent_config.get("inject_rules_on_bootstrap"), default=True)
+        if inject_rules:
             rules = self._load_project_rules(project_root)
             if rules:
                 result["rules"] = rules
@@ -1093,7 +2397,16 @@ class RuntimeService:
 
         selected = bootstrap["session"]["selected_session"]["session_id"]
         result["selected_session_id"] = selected
+        intent = self._infer_skill_trigger_intent(user_request, action_kind)
+        skill_trigger_state = self.skill_trigger_state(
+            project_root,
+            selected,
+            intent=intent,
+            workflow_state=action_kind,
+        )
         result["managed_mode"] = self.hub.managed_mode.set_mode(project_root, session_id=selected, source="/aidocs")
+        result["skill_trigger_state"] = skill_trigger_state
+        result["active_skills"] = list(skill_trigger_state.get("active_skills", []))
         result["operator_summary"] = self.hub.action_surface.current_session_bundle(project_root, limit=10, max_queries=12)
         result["readiness_summary"] = self._build_readiness_summary(
             bootstrap=bootstrap,
@@ -1177,6 +2490,16 @@ class RuntimeService:
             }
 
         session_id = managed.get("session_id")
+        skill_trigger_state = None
+        if isinstance(session_id, str) and session_id.strip():
+            intent = self._infer_skill_trigger_intent(user_request, action_kind)
+            skill_trigger_state = self.skill_trigger_state(
+                project_root,
+                session_id,
+                intent=intent,
+                workflow_state=action_kind,
+            )
+
         preflight = self.hub.policy.preflight_action(
             project_root,
             action_kind=action_kind,
@@ -1201,6 +2524,9 @@ class RuntimeService:
             "managed_mode": True,
             "action_kind": action_kind,
             "session_id": session_id,
+            "skill_trigger_state": skill_trigger_state,
+            "active_skills": list((skill_trigger_state or {}).get("active_skills", [])),
+            "imported_skill_state": (skill_trigger_state or {}).get("imported_skill_state"),
             "allowed_direct_inspection": bool(explicit_targets) and action_kind in {"inspect", "read_file", "read_error"},
             "requires_session": bool(preflight.get("requires_session")),
             "requires_task_lifecycle": requires_task_lifecycle,
@@ -1209,7 +2535,13 @@ class RuntimeService:
             "preflight": preflight,
         }
 
-    def classify_prompt_action(self, user_request: str, explicit_targets: list[str] | None = None) -> dict[str, object]:
+    def classify_prompt_action(
+        self,
+        user_request: str,
+        explicit_targets: list[str] | None = None,
+        project_root: Path | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, object]:
         text = user_request.strip().lower()
         explicit_targets = [item for item in (explicit_targets or []) if str(item).strip()]
 
@@ -1220,7 +2552,7 @@ class RuntimeService:
                 action_kind = "inspect"
             return {"action_kind": action_kind, "why": ["explicit_targets"]}
 
-        mapping = self._get_action_tokens()
+        mapping = self._get_action_tokens(project_root=project_root, session_id=session_id)
         for action_kind, tokens in mapping:
             if any(token in text for token in tokens):
                 return {"action_kind": action_kind, "why": [f"matched:{action_kind}"]}
@@ -1237,7 +2569,11 @@ class RuntimeService:
         include_tests: bool = False,
     ) -> dict[str, object]:
         if not action_kind or action_kind == "auto":
-            classified = self.classify_prompt_action(user_request, explicit_targets=explicit_targets)
+            classified = self.classify_prompt_action(
+                user_request,
+                explicit_targets=explicit_targets,
+                project_root=project_root,
+            )
             action_kind = str(classified["action_kind"])
         else:
             classified = {"action_kind": action_kind, "why": ["provided"]}
@@ -1311,6 +2647,7 @@ class RuntimeService:
                 "mode": "mcp_orchestrated",
                 "classification": classified,
                 "route": route,
+                "active_skills": list(orchestration.get("active_skills", [])),
                 "operator_report": orchestration.get("operator_report"),
                 "readiness_summary": orchestration.get("readiness_summary"),
                 "report": self._build_handle_prompt_report(
@@ -1355,11 +2692,9 @@ class RuntimeService:
         steps: list[str] = []
         for section_name, lines in plan.sections.items():
             for line in lines:
-                stripped = line.strip()
-                if stripped.startswith("- [ ]"):
-                    step_text = stripped[5:].strip()
-                    if step_text:
-                        steps.append(step_text)
+                parsed = self._parse_plan_checkbox_line(line)
+                if parsed and parsed["status"] != "completed":
+                    steps.append(str(parsed["text"]))
 
         if not steps:
             return {"session_id": session_id, "steps": [], "message": "All plan steps are complete."}
@@ -1431,6 +2766,174 @@ class RuntimeService:
             ),
         }
 
+
+    def _plan_conductor_state_path(self, project_root: Path, session_id: str) -> Path:
+        return self.hub.sessions.session_path(project_root, session_id) / "artifacts" / "plan_conductor_state.json"
+
+    def _plan_conductor_lane_ids(self, project_root: Path, session_id: str) -> set[str]:
+        plan = self.hub.sessions.read_plan(project_root, session_id)
+        return {lane.lane_id for lane in plan.lanes}
+
+    def _require_plan_conductor_lane_id(self, project_root: Path, session_id: str, lane_id: str) -> None:
+        if lane_id not in self._plan_conductor_lane_ids(project_root, session_id):
+            raise ValueError(f"Unknown lane id: {lane_id}")
+
+    def _read_plan_conductor_state(self, project_root: Path, session_id: str) -> dict[str, object]:
+        path = self._plan_conductor_state_path(project_root, session_id)
+        lane_ids = self._plan_conductor_lane_ids(project_root, session_id)
+        empty_state = {
+            "paused_lanes": {},
+            "contract_ready_lane_ids": [],
+        }
+        if not path.exists():
+            return empty_state
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return empty_state
+        if not isinstance(payload, dict):
+            return empty_state
+
+        raw_paused_lanes = payload.get("paused_lanes") or {}
+        if not isinstance(raw_paused_lanes, dict):
+            raw_paused_lanes = {}
+        paused_lanes = {
+            str(lane_id): str(reason)
+            for lane_id, reason in raw_paused_lanes.items()
+            if str(lane_id).strip() in lane_ids and str(reason).strip()
+        }
+
+        raw_contract_ready = payload.get("contract_ready_lane_ids") or []
+        if not isinstance(raw_contract_ready, list):
+            raw_contract_ready = []
+        contract_ready_lane_ids = sorted(
+            {
+                str(lane_id)
+                for lane_id in raw_contract_ready
+                if str(lane_id).strip() in lane_ids
+            }
+        )
+        return {
+            "paused_lanes": paused_lanes,
+            "contract_ready_lane_ids": contract_ready_lane_ids,
+        }
+
+    def _write_plan_conductor_state(self, project_root: Path, session_id: str, state: dict[str, object]) -> None:
+        path = self._plan_conductor_state_path(project_root, session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def _plan_conductor_snapshot(
+        self,
+        project_root: Path,
+        session_id: str,
+    ) -> dict[str, dict[str, object]]:
+        state = self._read_plan_conductor_state(project_root, session_id)
+        conductor = PlanConductor(
+            self.hub,
+            project_root,
+            session_id,
+            paused_lanes=dict(state["paused_lanes"]),
+            contract_ready_lane_ids=set(state["contract_ready_lane_ids"]),
+        )
+        return {
+            "graph": conductor.graph(),
+            "runnable": conductor.runnable_lanes(),
+        }
+
+    def plan_conductor_graph(
+        self,
+        project_root: Path,
+        session_id: str,
+    ) -> dict[str, object]:
+        """Return the parsed conductor lane graph for a lane-aware session plan."""
+        return self._plan_conductor_snapshot(project_root, session_id)["graph"]
+
+    def plan_conductor_status(
+        self,
+        project_root: Path,
+        session_id: str,
+    ) -> dict[str, object]:
+        """Return conductor graph plus current runnable lane state for a session plan."""
+        snapshot = self._plan_conductor_snapshot(project_root, session_id)
+        return snapshot["graph"] | snapshot["runnable"]
+
+    def plan_conductor_report_inflight_overlap(
+        self,
+        project_root: Path,
+        session_id: str,
+        paused_lane_id: str,
+        conflicting_lane_id: str,
+        file_path: str,
+    ) -> dict[str, object]:
+        """Pause a lane when another in-flight lane reports an emergent file overlap."""
+        self._require_plan_conductor_lane_id(project_root, session_id, paused_lane_id)
+        self._require_plan_conductor_lane_id(project_root, session_id, conflicting_lane_id)
+        state = self._read_plan_conductor_state(project_root, session_id)
+        display = file_path.replace("\\", "/").lower()
+        paused_lanes = dict(state["paused_lanes"])
+        paused_lanes[paused_lane_id] = f"inflight-file-overlap:{display}:{conflicting_lane_id}"
+        paused_lanes[conflicting_lane_id] = f"inflight-file-overlap:{display}:{paused_lane_id}"
+        self._write_plan_conductor_state(
+            project_root,
+            session_id,
+            {
+                "paused_lanes": paused_lanes,
+                "contract_ready_lane_ids": list(state["contract_ready_lane_ids"]),
+            },
+        )
+        return self.plan_conductor_status(project_root, session_id)
+
+    def plan_conductor_resume_lane(
+        self,
+        project_root: Path,
+        session_id: str,
+        lane_id: str,
+    ) -> dict[str, object]:
+        """Clear a pause/hold so the conductor can reevaluate a lane."""
+        self._require_plan_conductor_lane_id(project_root, session_id, lane_id)
+        state = self._read_plan_conductor_state(project_root, session_id)
+        paused_lanes = dict(state["paused_lanes"])
+        paused_lanes.pop(lane_id, None)
+        self._write_plan_conductor_state(
+            project_root,
+            session_id,
+            {
+                "paused_lanes": paused_lanes,
+                "contract_ready_lane_ids": list(state["contract_ready_lane_ids"]),
+            },
+        )
+        return self.plan_conductor_status(project_root, session_id)
+
+    def plan_conductor_mark_contract_ready(
+        self,
+        project_root: Path,
+        session_id: str,
+        lane_id: str,
+        ready: bool = True,
+    ) -> dict[str, object]:
+        """Mark a contract lane ready so compatible dependent lanes can proceed."""
+        self._require_plan_conductor_lane_id(project_root, session_id, lane_id)
+        state = self._read_plan_conductor_state(project_root, session_id)
+        contract_ready_lane_ids = set(state["contract_ready_lane_ids"])
+        conductor = PlanConductor(self.hub, project_root, session_id)
+        lane = next((plan_lane for plan_lane in conductor.plan.lanes if plan_lane.lane_id == lane_id), None)
+        if ready and lane is not None and conductor._lane_is_contract_like(lane):
+            contract_ready_lane_ids.add(lane_id)
+        elif not ready:
+            contract_ready_lane_ids.discard(lane_id)
+        self._write_plan_conductor_state(
+            project_root,
+            session_id,
+            {
+                "paused_lanes": dict(state["paused_lanes"]),
+                "contract_ready_lane_ids": sorted(contract_ready_lane_ids),
+            },
+        )
+        return self.plan_conductor_status(project_root, session_id)
+
+
+
     def plan_connect(
         self,
         project_root: Path,
@@ -1444,20 +2947,63 @@ class RuntimeService:
         a decision map for the remaining work. The agent can then start executing from the first
         incomplete step without needing user guidance.
         """
-        plan = self.hub.sessions.read_plan(project_root, session_id)
-        if not plan or not plan.sections:
-            return {"session_id": session_id, "connected": False, "error": "No plan found. Create one first."}
+        plan = self.hub.sessions.read_plan_optional(project_root, session_id)
+        if plan is not None:
+            plan_feedback = self.hub.sessions.preview_plan_feedback_sections(project_root, session_id)
+            result = self._connect_existing_plan(project_root, session_id, plan, run_preflight=run_preflight)
+            if plan_feedback.get("status") == "awaiting_feedback":
+                result["plan_feedback"] = plan_feedback
+                result["instruction"] = (
+                    "Plan includes prose-only additions. Review the proposed structured steps awaiting feedback, "
+                    "then confirm or revise them before continuing implementation."
+                )
+            return result
+
+        roadmap_steps = self.hub.sessions.read_roadmap_steps(project_root)
+        open_work = self._collect_session_open_work(project_root, session_id)
+        if roadmap_steps or open_work:
+            session = self.hub.sessions.read_session(project_root, session_id)
+            goal_values = self._clean_bullets(session.sections.get("Goal", []))
+            return {
+                "session_id": session_id,
+                "connected": True,
+                "plan_source": "roadmap_summary" if roadmap_steps else "session_open_work",
+                "roadmap_steps": roadmap_steps,
+                "open_work": open_work,
+                "plan_overview": self._build_default_plan_overview(
+                    session_id=session_id,
+                    end_goal=goal_values[0] if goal_values else None,
+                ),
+                "next_action": "ask_user_what_to_work_on",
+                "instruction": "No session plan is available. Summarize the remaining roadmap and session-local open work, then ask the user what to work on next.",
+            }
+        session = self.hub.sessions.read_session(project_root, session_id)
+        goal_values = self._clean_bullets(session.sections.get("Goal", []))
+        return self._build_no_plan_no_roadmap_result(session_id, end_goal=goal_values[0] if goal_values else None)
+
+    def _connect_existing_plan(
+        self,
+        project_root: Path,
+        session_id: str,
+        plan,
+        run_preflight: bool = True,
+    ) -> dict[str, object]:
+        if not plan.sections:
+            return self._build_no_plan_no_roadmap_result(session_id)
 
         # Parse steps from all sections, tracking completion
         completed: list[str] = []
         incomplete: list[str] = []
         for section_name, lines in plan.sections.items():
             for line in lines:
-                stripped = line.strip()
-                if stripped.startswith("- [x]") or stripped.startswith("- [X]"):
-                    completed.append(stripped[5:].strip())
-                elif stripped.startswith("- [ ]"):
-                    incomplete.append(stripped[5:].strip())
+                parsed = self._parse_plan_checkbox_line(line)
+                if not parsed:
+                    continue
+                text = str(parsed["text"])
+                if parsed["status"] == "completed":
+                    completed.append(text)
+                else:
+                    incomplete.append(text)
 
         total = len(completed) + len(incomplete)
         progress = f"{len(completed)}/{total}" if total > 0 else "0/0"
@@ -1465,6 +3011,7 @@ class RuntimeService:
         result: dict[str, object] = {
             "session_id": session_id,
             "connected": True,
+            "plan_source": "session_plan",
             "plan_path": str(plan.path),
             "progress": progress,
             "completed_count": len(completed),
@@ -1472,6 +3019,18 @@ class RuntimeService:
             "completed_steps": completed,
             "next_steps": incomplete[:5],
         }
+        result["plan_overview"] = self._build_plan_overview(
+            session_id=session_id,
+            plan_path=str(plan.path),
+            plan_sections=plan.sections,
+            has_lanes=bool(plan.lanes),
+        )
+        if plan.lanes:
+            lane_summary = self._plan_conductor_snapshot(project_root, session_id)
+            result["lane_summary"] = lane_summary
+            result["conductor"] = lane_summary
+
+
 
         # Include plan goal/purpose if available
         purpose = plan.sections.get("Purpose", [])
@@ -1501,6 +3060,219 @@ class RuntimeService:
 
         return result
 
+    def _build_no_plan_no_roadmap_result(self, session_id: str, end_goal: str | None = None) -> dict[str, object]:
+        return {
+            "session_id": session_id,
+            "connected": True,
+            "plan_source": "none",
+            "roadmap_steps": [],
+            "open_work": [],
+            "plan_overview": self._build_default_plan_overview(session_id=session_id, end_goal=end_goal),
+            "next_action": "create_plan_or_roadmap",
+            "instruction": "No session plan, roadmap, or session-local open work is available. Ask the user for next steps or create a plan or roadmap first.",
+        }
+
+    def _collect_session_open_work(self, project_root: Path, session_id: str) -> list[dict[str, str]]:
+        open_work: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        def add_item(source: str, status: str, text: str) -> None:
+            cleaned = text.strip()
+            if not cleaned:
+                return
+            key = (source, status, cleaned)
+            if key in seen:
+                return
+            seen.add(key)
+            open_work.append({"source": source, "status": status, "text": cleaned})
+
+        for step in self.hub.sessions.read_handoff_steps_optional(project_root, session_id):
+            status = str(step.get("status") or "open")
+            if status in {"completed", "done"}:
+                continue
+            add_item("handoff_step", status, str(step.get("text") or ""))
+
+        session = self.hub.sessions.read_session(project_root, session_id)
+        for blocker in self._clean_bullets(session.sections.get("Blockers", [])):
+            if blocker.lower() != "none":
+                add_item("session_blocker", "blocked", blocker)
+                if self._looks_like_pending_user_input(blocker):
+                    add_item("pending_feedback", "pending_user_feedback", blocker)
+
+        handoff = self.hub.sessions.read_handoff_optional(project_root, session_id)
+        feedback_sections = [
+            session.sections.get("State", []),
+            session.sections.get("Upcoming", []),
+        ]
+        if handoff is not None:
+            for blocker in self._clean_bullets(handoff.sections.get("Risks and Blockers", [])):
+                if blocker.lower() != "none":
+                    add_item("handoff_blocker", "blocked", blocker)
+                    if self._looks_like_pending_user_input(blocker):
+                        add_item("pending_feedback", "pending_user_feedback", blocker)
+            feedback_sections.extend(
+                [
+                    handoff.sections.get("What Matters Now", []),
+                    handoff.sections.get("Open Questions", []),
+                    handoff.sections.get("Suggested Next Steps", []),
+                ]
+            )
+
+        for lines in feedback_sections:
+            for item in self._clean_bullets(lines):
+                if self._looks_like_pending_user_input(item):
+                    add_item("pending_feedback", "pending_user_feedback", item)
+
+        return open_work
+
+    def _parse_plan_checkbox_line(self, line: str) -> dict[str, str] | None:
+        stripped = line.strip()
+        match = re.match(r"^-\s+(\[[ xX~>!]\])\s+(.+)$", stripped)
+        if not match:
+            return None
+        marker, text = match.groups()
+        status = _PLAN_CHECKBOX_STATES.get(marker)
+        if status is None:
+            return None
+        return {"status": status, "text": text.strip()}
+
+    def _looks_like_pending_user_input(self, text: str) -> bool:
+        lowered = text.lower()
+        return any(
+            token in lowered
+            for token in (
+                "feedback",
+                "confirm",
+                "confirmation",
+                "approve",
+                "approval",
+                "sign off",
+                "sign-off",
+                "user input",
+                "user decision",
+            )
+        )
+
+    def _feedback_confirms_completion(self, feedback: str) -> bool:
+        lowered = feedback.strip().casefold()
+        if not lowered:
+            return False
+        return any(
+            token in lowered
+            for token in (
+                "confirm",
+                "confirmed",
+                "complete",
+                "completed",
+                "done",
+                "approved",
+                "looks good",
+                "lgtm",
+            )
+        )
+
+    def _normalize_plan_prose_text(self, text: str) -> str:
+        normalized = text.strip().rstrip(".")
+        normalized = re.sub(r"^(the\s+agent\s+should|agent\s+should|should)\s+", "", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized:
+            return text.strip()
+        return normalized[0].upper() + normalized[1:]
+
+    def _mark_matching_roadmap_step_pending_feedback(
+        self,
+        project_root: Path,
+        session_id: str,
+        plan,
+    ) -> dict[str, object] | None:
+        if plan is None:
+            return None
+
+        completed: list[str] = []
+        incomplete_found = False
+        for lines in plan.sections.values():
+            for line in lines:
+                parsed = self._parse_plan_checkbox_line(line)
+                if parsed is None:
+                    continue
+                if parsed["status"] == "completed":
+                    completed.append(parsed["text"])
+                else:
+                    incomplete_found = True
+        if not completed or incomplete_found:
+            return None
+
+        session = self.hub.sessions.read_session(project_root, session_id)
+        candidate_texts = completed + [
+            self._clean_bullet_value(plan.sections.get("Purpose", [])),
+            self._clean_bullet_value(plan.sections.get("End Goal", [])),
+            self._clean_bullet_value(session.sections.get("Goal", [])),
+        ]
+        normalized_candidates = {
+            self._normalize_state_text(text)
+            for text in candidate_texts
+            if text and self._normalize_state_text(text)
+        }
+        if not normalized_candidates:
+            return None
+
+        roadmap_steps = self.hub.sessions.read_roadmap_steps(project_root)
+        matches = [
+            step for step in roadmap_steps
+            if step.get("status") in {"open", "in_progress"}
+            and self._normalize_state_text(str(step.get("text") or "")) in normalized_candidates
+        ]
+        if len(matches) != 1:
+            return None
+        return self.mark_roadmap_step_pending_feedback(project_root, str(matches[0]["text"]))
+
+    def _clean_bullet_value(self, lines: list[str]) -> str:
+        cleaned = self._clean_bullets(lines)
+        return cleaned[0] if cleaned else ""
+
+    def _normalize_state_text(self, text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
+
+    def _execution_state(self, goal: str | None, state: list[str] | None) -> list[str] | None:
+        items = list(state or [])
+        if goal:
+            items.insert(0, f"Current task: {goal}")
+        return items or None
+
+    def _clean_file_bullets(self, values: list[str] | None) -> list[str]:
+        cleaned: list[str] = []
+        for item in values or []:
+            text = str(item or "").strip()
+            if text.startswith("- "):
+                text = text[2:].strip()
+            if text.startswith("`") and text.endswith("`") and len(text) >= 2:
+                text = text[1:-1].strip()
+            if text and text != "-":
+                cleaned.append(text)
+        return cleaned
+
+    def _resolve_task_lane_scope(
+        self,
+        project_root: Path,
+        session_id: str,
+        relevant_files: list[str] | None,
+    ) -> tuple[str | None, list[str]]:
+        normalized_files = list(dict.fromkeys(path.replace("\\", "/").strip() for path in (relevant_files or []) if path and path.strip()))
+        if not normalized_files:
+            return None, []
+        try:
+            conductor = PlanConductor(self.hub, project_root, session_id)
+        except Exception:
+            return None, []
+        matches: list[tuple[str, list[str]]] = []
+        for lane in conductor.plan.lanes:
+            lane_files = [file_path.replace("\\", "/").strip() for file_path in lane.files if file_path and file_path.strip()]
+            if normalized_files and all(path in lane_files for path in normalized_files):
+                matches.append((lane.lane_id, lane_files))
+        if len(matches) != 1:
+            return None, []
+        return matches[0]
+
     def task_begin(
         self,
         project_root: Path,
@@ -1519,11 +3291,20 @@ class RuntimeService:
         include_code_bundle: bool = True,
         include_tests: bool = False,
     ) -> dict[str, object]:
+        current_lane_id, lane_exact_paths = self._resolve_task_lane_scope(project_root, session_id, relevant_files)
+        self.hub.query_gate.set(
+            project_root,
+            session_id,
+            allow_read=False,
+            last_tool="task_begin",
+            known_exact_paths=[],
+            current_lane_id=current_lane_id,
+            lane_exact_paths=lane_exact_paths,
+        )
+        execution_state = self._execution_state(goal, state)
         session_patch: dict[str, list[str]] = {"Status": ["- active"]}
-        if goal is not None:
-            session_patch["Goal"] = [f"- {goal}"]
-        if state is not None:
-            session_patch["State"] = self._as_bullets(state)
+        if execution_state is not None:
+            session_patch["State"] = self._as_bullets(execution_state)
         if upcoming is not None:
             session_patch["Upcoming"] = self._as_bullets(upcoming)
         if blockers is not None:
@@ -1531,21 +3312,18 @@ class RuntimeService:
         session = self.hub.sessions.update_session(project_root, session_id, session_patch)
 
         plan_patch: dict[str, list[str]] = {}
-        if goal is not None:
-            plan_patch["Purpose"] = [f"- {goal}"]
         session_scope = self.hub.sessions.read_session(project_root, session_id).sections.get("Scope", ["-"])
         if session_scope:
             plan_patch.setdefault("Scope", session_scope)
-        if state is not None:
-            plan_patch["Current State"] = self._as_bullets(state)
+        if execution_state is not None:
+            plan_patch["Current State"] = self._as_bullets(execution_state)
         if partial_goals is not None:
             plan_patch["Partial Goals"] = self._as_bullets(partial_goals)
         elif upcoming is not None:
             plan_patch["Partial Goals"] = self._as_bullets(upcoming)
         if end_goal is not None:
             plan_patch["End Goal"] = [f"- {end_goal}"]
-        elif goal is not None:
-            plan_patch["End Goal"] = [f"- {goal}"]
+
         if constraints is not None:
             plan_patch["Constraints"] = self._as_bullets(constraints)
         if blockers is not None:
@@ -1609,6 +3387,13 @@ class RuntimeService:
         include_code_bundle: bool = False,
         include_tests: bool = False,
     ) -> dict[str, object]:
+        effective_relevant_files = relevant_files
+        if effective_relevant_files is None:
+            try:
+                existing_context = self.hub.sessions.read_context(project_root, session_id)
+                effective_relevant_files = self._clean_file_bullets(existing_context.sections.get("Relevant Files", []))
+            except Exception:
+                effective_relevant_files = None
         return self.task_begin(
             project_root=project_root,
             session_id=session_id,
@@ -1618,7 +3403,7 @@ class RuntimeService:
             partial_goals=partial_goals,
             end_goal=end_goal,
             blockers=blockers,
-            relevant_files=relevant_files,
+            relevant_files=effective_relevant_files,
             relevant_commands=relevant_commands,
             relevant_snippets=relevant_snippets,
             session_facts=session_facts,
@@ -1636,6 +3421,15 @@ class RuntimeService:
         include_code_bundle: bool = False,
         include_tests: bool = False,
     ) -> dict[str, object]:
+        self.hub.query_gate.set(
+            project_root,
+            session_id,
+            allow_read=False,
+            last_tool="task_complete",
+            known_exact_paths=[],
+            current_lane_id=None,
+            lane_exact_paths=[],
+        )
         session = self.hub.sessions.read_session(project_root, session_id)
         existing_state = self._clean_bullets(session.sections.get("State", []))
         existing_state.append(result_summary)
@@ -1692,6 +3486,12 @@ class RuntimeService:
             result["plan"] = {"path": str(plan.path), "sections": plan.sections}
         if handoff is not None:
             result["handoff"] = {"path": str(handoff.path), "sections": handoff.sections}
+        try:
+            roadmap_feedback = self._mark_matching_roadmap_step_pending_feedback(project_root, session_id, plan)
+        except Exception:
+            roadmap_feedback = None
+        if roadmap_feedback is not None:
+            result["roadmap_feedback"] = roadmap_feedback
         if include_code_bundle:
             result["code_bundle"] = self._refresh_session_code_bundle(
                 project_root,
@@ -1717,6 +3517,84 @@ class RuntimeService:
     def _as_bullets(self, values: list[str]) -> list[str]:
         cleaned = [item.strip() for item in values if item and item.strip()]
         return [f"- {item}" for item in cleaned] or ["-"]
+
+    def mark_roadmap_step_pending_feedback(self, project_root: Path, step_text: str) -> dict[str, object]:
+        return self.hub.sessions.update_roadmap_step_state(project_root, step_text, "pending_user_feedback")
+
+    def update_roadmap_feedback_state(self, project_root: Path, step_text: str, feedback: str) -> dict[str, object]:
+        matches = self.hub.sessions.find_roadmap_step_matches(project_root, step_text)
+        if len(matches) > 1:
+            return {
+                "ok": False,
+                "error_code": "roadmap_step_ambiguous",
+                "message": "Multiple roadmap items match that step text. Use a more specific target.",
+                "step_text": step_text,
+                "match_count": len(matches),
+                "matches": matches,
+            }
+        if not matches:
+            return {
+                "ok": False,
+                "error_code": "roadmap_step_not_found",
+                "message": "No actionable roadmap step matched that text in ROADMAP_2_0_0.md.",
+                "step_text": step_text,
+            }
+        current = matches[0]
+        current_status = str(current.get("status") or "")
+        if current_status != "pending_user_feedback":
+            return {
+                "ok": False,
+                "error_code": "roadmap_feedback_state_required",
+                "message": "Roadmap feedback updates only apply to steps currently pending user feedback.",
+                "step_text": step_text,
+                "current_status": current_status,
+                "expected_status": "pending_user_feedback",
+                "matches": matches,
+            }
+        status = "completed" if self._feedback_confirms_completion(feedback) else "in_progress"
+        result = self.hub.sessions.update_roadmap_step_state(project_root, step_text, status)
+        result["ok"] = True
+        result["feedback"] = feedback
+        return result
+
+    def normalize_plan_prose(self, project_root: Path, session_id: str) -> dict[str, object]:
+        plan = self.hub.sessions.read_plan(project_root, session_id)
+        existing_lines = list(plan.sections.get("Steps", []))
+        original_prose: list[str] = []
+        normalized_lines: list[str] = []
+        seen_existing = {line.strip() for line in existing_lines}
+
+        for line in existing_lines:
+            parsed = self._parse_plan_checkbox_line(line)
+            if parsed is not None:
+                continue
+            stripped = line.strip()
+            if self.hub.sessions._is_lane_metadata_line(stripped):
+                continue
+            if not stripped or stripped == "-" or not stripped.startswith("-"):
+                continue
+            prose = stripped[1:].strip()
+            if not prose:
+                continue
+            original_prose.append(prose)
+            normalized = f"- [>] {self._normalize_plan_prose_text(prose)}"
+            if normalized.strip() not in seen_existing:
+                normalized_lines.append(normalized)
+                seen_existing.add(normalized.strip())
+
+        if normalized_lines:
+            plan = self.hub.sessions.update_plan(
+                project_root,
+                session_id,
+                {"Steps": existing_lines + normalized_lines},
+            )
+
+        return {
+            "status": "awaiting_feedback" if normalized_lines else "unchanged",
+            "original_prose": original_prose,
+            "normalized_lines": normalized_lines,
+            "plan_path": str(plan.path),
+        }
 
     def _as_file_bullets(self, values: list[str]) -> list[str]:
         cleaned = [item.strip() for item in values if item and item.strip()]

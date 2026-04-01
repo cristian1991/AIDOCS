@@ -9,6 +9,9 @@ from typing import Any
 class ActionSurfaceService:
     """Cross-layer comparison over procedure, capability, execution, and link surfaces."""
 
+    _NOISY_FAMILIES = {"capability", "procedure", "execution", "project_status"}
+    _PREFERRED_FAMILIES = {"memory", "task_lifecycle", "session", "bootstrap", "workflow", "schema", "code", "project", "related_project", "orchestration", "analysis"}
+
     def __init__(self, hub) -> None:
         self.hub = hub
 
@@ -413,6 +416,7 @@ class ActionSurfaceService:
 
         ordered: list[str] = []
         seen: set[str] = set()
+        family_by_name = {str(item.get("name") or "").strip(): str(item.get("capability_family") or "").strip() for item in capabilities}
 
         def add(value: str | None) -> None:
             item = str(value or "").strip()
@@ -428,9 +432,15 @@ class ActionSurfaceService:
             if str(item.get("definition_kind") or "") == "workflow_action":
                 add(str(item.get("action_kind") or "").strip() or None)
         for item in runs:
-            add(str(item.get("capability_name") or "").strip() or None)
+            capability_name = str(item.get("capability_name") or "").strip() or None
+            if capability_name and family_by_name.get(capability_name, "") in self._NOISY_FAMILIES:
+                continue
+            add(capability_name)
         for item in events:
-            add(str(item.get("capability_name") or "").strip() or None)
+            capability_name = str(item.get("capability_name") or "").strip() or None
+            if capability_name and family_by_name.get(capability_name, "") in self._NOISY_FAMILIES:
+                continue
+            add(capability_name)
 
         vocabulary = self._build_vocabulary(capabilities, procedures)
         session_lines = []
@@ -445,7 +455,9 @@ class ActionSurfaceService:
             elif "_" in token:
                 add(token)
 
-        return ordered[:max_queries]
+        preferred = [item for item in ordered if family_by_name.get(item, "") in self._PREFERRED_FAMILIES or family_by_name.get(item, "") == ""]
+        non_preferred = [item for item in ordered if item not in preferred]
+        return (preferred + non_preferred)[:max_queries]
 
     def _build_vocabulary(
         self,

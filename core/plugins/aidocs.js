@@ -12,6 +12,7 @@ let _runtimeHostStateCache = new Map()
 
 const HOST_STATE_SUCCESS_TTL_MS = 3000
 const HOST_STATE_FAILURE_TTL_MS = 15000
+const MESSAGE_DIRECTIVE_ACTIONS = new Set(["edit", "write_memory", "task_begin", "task_update", "task_complete"])
 
 function aidocsMemoryConfigPath(projectRoot, fileName) {
   return path.join(projectRoot, ".MEMORY", "config", fileName)
@@ -897,13 +898,16 @@ function buildPromptContext(state, promptText, activeCommand, activeCommandMeta,
   const classification = {
     action_kind: (promptState && promptState.action_kind) || classifyPromptAction(promptText).action_kind,
   }
+  const prefersStrictMcpPath = MESSAGE_DIRECTIVE_ACTIONS.has(classification.action_kind)
   const workflowSummary = summarizeWorkflowActions(state.workflowActions)
   const parts = [
     "AIDOCS-managed mode is active for this project.",
     state.sessionID ? `Bound session: \`${state.sessionID}\`.` : "",
     state.sessionID ? "Stay in the bound AIDOCS session and continue its current conductor/plan flow; do not switch to generic worktree or standalone execution setup." : "",
     `Action: \`${classification.action_kind}\`.`,
-    "MANDATORY: Use AIDOCS MCP tools FIRST. Fall back to raw Read/Grep only if MCP returns empty.",
+    prefersStrictMcpPath
+      ? "Prefer AIDOCS MCP tools first for this task. Use raw Read/Grep when the user already gave an explicit target or direct inspection is faster."
+      : "Use AIDOCS MCP tools when they materially help, but avoid read/search churn; if the user already gave a direct file, error, or exact target, inspect it directly.",
     state.startupState === "stale_indexes" ? "Note: indexes are stale. Run `/aidocs` when convenient to refresh, but you can continue working." : "",
   ].filter(Boolean)
     const effectiveImportedSkillState = resolveImportedSkillStateForContext(state, promptHostState, explicitPromptStateProvided)
@@ -1167,19 +1171,6 @@ async function AIDOCSPlugin(input) {
       if (!config.inject_message_directives) {
         return
       }
-      const actionKind = sessionClassification.get(sessionID)
-      if (!actionKind) {
-        return
-      }
-      const directive = getActionDirective(actionKind)
-      if (!directive) {
-        return
-      }
-      last.parts.push({
-        type: "text",
-        text: `\n<tool-directive action="${actionKind}">\n${directive}\n</tool-directive>`,
-      })
-
       // Plan-aware message rewrite: when user confirms ("ok", "continue") and PLAN.md has unchecked steps,
       // inject the next step as context so the agent continues working instead of stopping.
       const promptText = extractPromptText(last.parts)
@@ -1189,7 +1180,7 @@ async function AIDOCSPlugin(input) {
       const state = isContinuation ? await resolveAidocsState(projectRoot, trimmed) : null
       if (isContinuation && state && state.managed && state.sessionID) {
         try {
-          const planPath = path.join(projectRoot, ".MEMORY", "sessions", state.sessionID, "PLAN.md")
+          const planPath = path.join(projectRoot, ".MEMORY", "sessions", state.sessionID, "plans", "PLAN.md")
           if (fsSync.existsSync(planPath)) {
             const planText = fsSync.readFileSync(planPath, "utf8")
             // Find incomplete steps (lines starting with - [ ] )
@@ -1211,6 +1202,22 @@ async function AIDOCSPlugin(input) {
           // Plan read failed — skip continuation
         }
       }
+
+      const actionKind = sessionClassification.get(sessionID)
+      if (!actionKind) {
+        return
+      }
+      if (!MESSAGE_DIRECTIVE_ACTIONS.has(actionKind)) {
+        return
+      }
+      const directive = getActionDirective(actionKind)
+      if (!directive) {
+        return
+      }
+      last.parts.push({
+        type: "text",
+        text: `\n<tool-directive action="${actionKind}">\n${directive}\n</tool-directive>`,
+      })
     },
 
     "command.execute.before": async ({ command, sessionID }, output) => {
@@ -1259,6 +1266,13 @@ async function AIDOCSPlugin(input) {
             : ""
       )
       if (!candidatePath) {
+        return
+      }
+
+      // Only gate files inside the project — temp files, system files, other projects are unguarded
+      const normalizedRoot = projectRoot.replace(/\\/g, "/").toLowerCase()
+      const normalizedCandidate = candidatePath.replace(/\\/g, "/").toLowerCase()
+      if (!normalizedCandidate.startsWith(normalizedRoot)) {
         return
       }
 

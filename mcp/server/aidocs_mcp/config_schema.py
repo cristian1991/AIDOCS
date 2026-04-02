@@ -10,7 +10,7 @@ from typing import Literal, TypedDict
 
 
 SettingType = Literal["integer", "boolean", "string", "string_list"]
-SettingScope = Literal["project"]
+SettingScope = Literal["project", "global"]
 ConfigEditMode = Literal["explicit_user_permitted"]
 
 
@@ -34,15 +34,20 @@ def _setting(
     allowed_values: list[str] | None = None,
     value_descriptions: dict[str, str] | None = None,
     security_sensitive: bool = False,
+    scope: SettingScope = "project",
 ) -> SettingMetadata:
+    allowed_scopes: list[SettingScope] = [scope]
+    agent_editable_scopes: list[SettingScope] = (
+        [] if scope == "global" or security_sensitive else ["project"]
+    )
     return {
         "type": type,
         "default": default,
         "allowed_values": allowed_values,
         "description": description,
         "value_descriptions": value_descriptions or {},
-        "allowed_scopes": ["project"],
-        "agent_editable_scopes": [],
+        "allowed_scopes": allowed_scopes,
+        "agent_editable_scopes": agent_editable_scopes,
         "security_sensitive": security_sensitive,
         "requires_restart": True,
     }
@@ -134,6 +139,12 @@ SETTINGS_CATALOG: dict[str, SettingMetadata] = {
         default=True,
         description="Whether project workflow and standards rules are loaded during bootstrap.",
     ),
+    "global.aidocs_core_version": _setting(
+        type="string",
+        default="1.0.0",
+        description="AIDOCS core version. Global setting that agents must never modify.",
+        scope="global",
+    ),
     "dev.dev_mode": _setting(
         type="boolean",
         default=False,
@@ -151,6 +162,36 @@ SETTINGS_CATALOG: dict[str, SettingMetadata] = {
             "off": "Disable comment-quality rule reminders and enforcement.",
         },
     ),
+    "presentation.helper_skill_excerpt_lines": _setting(
+        type="integer",
+        default=12,
+        description="Maximum non-empty lines injected from a helper skill into host context.",
+    ),
+    "presentation.helper_skill_excerpt_chars": _setting(
+        type="integer",
+        default=1200,
+        description="Maximum characters injected from a helper skill into host context.",
+    ),
+    "presentation.workflow_summary_limit": _setting(
+        type="integer",
+        default=3,
+        description="Maximum workflow actions shown in compact workflow summaries.",
+    ),
+    "presentation.resume_journal_last_n": _setting(
+        type="integer",
+        default=10,
+        description="Default journal entry count returned by session resume bundles.",
+    ),
+    "presentation.handoff_stale_after_hours": _setting(
+        type="integer",
+        default=24,
+        description="Hours after which handoff freshness is considered stale.",
+    ),
+    "presentation.handoff_recent_hours": _setting(
+        type="integer",
+        default=24,
+        description="Hours during which a handoff step counts as recently changed.",
+    ),
 }
 
 
@@ -161,9 +202,11 @@ def available_config_edit_modes(profile: str = "release") -> list[ConfigEditMode
 
 
 def self_edit_available_in_profile(profile: str = "release") -> bool:
+    """Check if self-editing is allowed. Returns True only when dev_mode=true in aidocs.toml."""
     if profile != "release":
         raise ValueError(f"Unknown config edit profile: {profile}")
-    return False
+    from .config import DEV_MODE
+    return DEV_MODE
 
 
 def is_setting_agent_editable(
@@ -180,9 +223,13 @@ def is_setting_agent_editable(
         return False
     if scope not in metadata["allowed_scopes"]:
         return False
+    if scope == "global":
+        return False
 
     editable_scopes = metadata["agent_editable_scopes"] or [
-        allowed_scope for allowed_scope in metadata["allowed_scopes"] if allowed_scope == scope
+        allowed_scope
+        for allowed_scope in metadata["allowed_scopes"]
+        if allowed_scope == scope
     ]
     return scope in editable_scopes
 
@@ -195,7 +242,9 @@ def validate_setting_value(setting_path: str, value: object) -> None:
     setting_type = metadata["type"]
     if setting_type == "integer":
         if not isinstance(value, int) or isinstance(value, bool):
-            raise ValueError(f"Config setting {setting_path} requires an integer value.")
+            raise ValueError(
+                f"Config setting {setting_path} requires an integer value."
+            )
     elif setting_type == "boolean":
         if not isinstance(value, bool):
             raise ValueError(f"Config setting {setting_path} requires a boolean value.")
@@ -203,12 +252,22 @@ def validate_setting_value(setting_path: str, value: object) -> None:
         if not isinstance(value, str):
             raise ValueError(f"Config setting {setting_path} requires a string value.")
     elif setting_type == "string_list":
-        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-            raise ValueError(f"Config setting {setting_path} requires a list of strings.")
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) for item in value
+        ):
+            raise ValueError(
+                f"Config setting {setting_path} requires a list of strings."
+            )
     else:
-        raise ValueError(f"Unsupported config setting type for {setting_path}: {setting_type}.")
+        raise ValueError(
+            f"Unsupported config setting type for {setting_path}: {setting_type}."
+        )
 
     allowed_values = metadata["allowed_values"]
-    if allowed_values is not None and isinstance(value, str) and value not in allowed_values:
+    if (
+        allowed_values is not None
+        and isinstance(value, str)
+        and value not in allowed_values
+    ):
         allowed = ", ".join(allowed_values)
         raise ValueError(f"Config setting {setting_path} must be one of: {allowed}.")

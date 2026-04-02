@@ -877,7 +877,8 @@ function buildPromptContext(state, promptText, activeCommand, activeCommandMeta,
   }
 
   if (state.startupState === "stale_indexes") {
-    return "AIDOCS startup detected stale indexes. Run `/aidocs` first to refresh bootstrap and index state before normal work."
+    // Stale indexes are a warning, not a blocker — the agent can still work.
+    // Append the warning to normal context instead of replacing it.
   }
 
   if (!state.managed) {
@@ -903,6 +904,7 @@ function buildPromptContext(state, promptText, activeCommand, activeCommandMeta,
     state.sessionID ? "Stay in the bound AIDOCS session and continue its current conductor/plan flow; do not switch to generic worktree or standalone execution setup." : "",
     `Action: \`${classification.action_kind}\`.`,
     "MANDATORY: Use AIDOCS MCP tools FIRST. Fall back to raw Read/Grep only if MCP returns empty.",
+    state.startupState === "stale_indexes" ? "Note: indexes are stale. Run `/aidocs` when convenient to refresh, but you can continue working." : "",
   ].filter(Boolean)
     const effectiveImportedSkillState = resolveImportedSkillStateForContext(state, promptHostState, explicitPromptStateProvided)
   const importedSkills = effectiveImportedSkillState && Array.isArray(effectiveImportedSkillState.active_skills)

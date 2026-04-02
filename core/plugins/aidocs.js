@@ -99,6 +99,71 @@ function mergePythonPath(existing, extraPath) {
   return `${extraPath}${path.delimiter}${existing}`
 }
 
+function summarizeExecutionValue(value, maxLength = 500) {
+  if (value === undefined || value === null) {
+    return null
+  }
+  let text = null
+  if (typeof value === "string") {
+    text = value
+  } else {
+    try {
+      text = JSON.stringify(value)
+    } catch {
+      text = String(value)
+    }
+  }
+  if (!text) {
+    return null
+  }
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
+}
+
+function recordNativeToolUse(projectRoot, sessionID, toolName, args, outputValue) {
+  if (!projectRoot || !sessionID || !toolName) {
+    return false
+  }
+  const sourceRoot = resolveAidocsRuntimeSourceRoot()
+  if (!sourceRoot) {
+    return false
+  }
+  const pythonBin = resolvePythonBin()
+  const pythonPath = path.join(sourceRoot, "mcp", "server")
+  const script = [
+    "import json, sys",
+    "from pathlib import Path",
+    "from aidocs_mcp.execution_index_store import ExecutionIndexStore",
+    "project_root = Path(sys.argv[1])",
+    "session_id = sys.argv[2]",
+    "tool_name = sys.argv[3]",
+    "target_entity = sys.argv[4] or None",
+    "payload = json.loads(sys.argv[5])",
+    "store = ExecutionIndexStore()",
+    "store.record_event(project_root, 'native_tool_use', 'opencode_plugin', session_id=session_id, capability_name=tool_name, action_kind='native_tool', target_entity=target_entity, status='success', payload=payload)",
+  ].join(";")
+  const payload = {
+    args: summarizeExecutionValue(args),
+    output: summarizeExecutionValue(outputValue),
+  }
+  try {
+    const result = childProcess.spawnSync(
+      pythonBin,
+      ["-c", script, projectRoot, sessionID, String(toolName), summarizeExecutionValue(args, 200) || "", JSON.stringify(payload)],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PYTHONPATH: mergePythonPath(process.env.PYTHONPATH, pythonPath),
+        },
+        timeout: 10000,
+      }
+    )
+    return result.status === 0
+  } catch {
+    return false
+  }
+}
+
 function hostStateCacheKey(projectRoot, sessionID, promptText) {
   return JSON.stringify([projectRoot, sessionID || "", promptText || ""])
 }
@@ -360,6 +425,38 @@ async function readJsonIfExists(target) {
   return JSON.parse(await fs.readFile(target, "utf8"))
 }
 
+function normalizeGatePath(filePath) {
+  if (!filePath || typeof filePath !== "string") {
+    return null
+  }
+  const normalized = filePath.replace(/\\/g, "/").trim()
+  return normalized || null
+}
+
+async function getQueryGateState(projectRoot, sessionID) {
+  if (!sessionID) {
+    return null
+  }
+  return readJsonIfExists(path.join(projectRoot, ".MEMORY", "sessions", sessionID, "query-gate.json"))
+}
+
+function hasGrantedReadAccess(gate, filePath) {
+  const normalized = normalizeGatePath(filePath)
+  if (!normalized) {
+    return true
+  }
+  if (gate && gate.allow_read) {
+    return true
+  }
+  const known = new Set(Array.isArray(gate && gate.known_exact_paths)
+    ? gate.known_exact_paths.map(normalizeGatePath).filter(Boolean)
+    : [])
+  const lane = new Set(Array.isArray(gate && gate.lane_exact_paths)
+    ? gate.lane_exact_paths.map(normalizeGatePath).filter(Boolean)
+    : [])
+  return known.has(normalized) || lane.has(normalized)
+}
+
 async function readTextIfExists(target) {
   if (!(await fileExists(target))) {
     return null
@@ -608,6 +705,9 @@ function extractImportedSkillStateFromHostState(hostState, phase) {
     active_skills: Array.isArray(sourceState.active_skills)
       ? sourceState.active_skills.filter(Boolean)
       : [],
+    runtime_owned_capabilities: Array.isArray(sourceState.runtime_owned_capabilities)
+      ? sourceState.runtime_owned_capabilities.filter((item) => item && typeof item === "object")
+      : [],
     provider_states: phase === "session" && sessionSnapshot && typeof sessionSnapshot.provider_states === "object"
       ? sessionSnapshot.provider_states
       : {},
@@ -616,6 +716,9 @@ function extractImportedSkillStateFromHostState(hostState, phase) {
       : null,
     triggered: Array.isArray(sourceState.triggered) ? sourceState.triggered : [],
     mode_metadata: sourceState.mode_metadata || (promptState && promptState.mode_metadata) || null,
+    helper_skill_guidance: Array.isArray(sourceState.helper_skill_guidance)
+      ? sourceState.helper_skill_guidance
+      : [],
     override_modes: phase === "prompt" && promptState && typeof promptState.override_modes === "object"
       ? promptState.override_modes
       : {},
@@ -638,6 +741,30 @@ function resolveEffectiveImportedSkillState(state, promptHostState) {
     return startupRuntimeState
   }
   return state && state.importedSkillState ? state.importedSkillState : null
+}
+
+function renderHelperSkillGuidance(importedSkillState) {
+  const guidance = importedSkillState && Array.isArray(importedSkillState.helper_skill_guidance)
+    ? importedSkillState.helper_skill_guidance.filter((item) => item && typeof item === "object" && typeof item.content === "string" && item.content.trim())
+    : []
+  if (!guidance.length) {
+    return []
+  }
+  return guidance.slice(0, 2).map((item) => {
+    const name = String(item.name || item.skill_id || "skill").trim()
+    const content = String(item.content || "").trim()
+    return `<aidocs-skill name="${name}">\n${content}\n</aidocs-skill>`
+  })
+}
+
+function renderRuntimeOwnedCapabilities(importedSkillState) {
+  const capabilities = importedSkillState && Array.isArray(importedSkillState.runtime_owned_capabilities)
+    ? importedSkillState.runtime_owned_capabilities.filter((item) => item && typeof item === "object" && typeof item.capability_id === "string" && item.capability_id.trim())
+    : []
+  if (!capabilities.length) {
+    return ""
+  }
+  return `Runtime-owned workflow capabilities: ${capabilities.map((item) => `\`${String(item.capability_id).trim()}\``).join(", ")}.`
 }
 
 function resolveImportedSkillStateForContext(state, promptHostState, promptStateWasProvided) {
@@ -688,20 +815,49 @@ async function resolvePromptHostState(projectRoot, state, promptText) {
 
 function buildPromptContext(state, promptText, activeCommand, activeCommandMeta, promptHostState) {
   const isAidocsEntry = (activeCommandMeta && activeCommandMeta.command_id === "aidocs") || activeCommand === "aidocs" || promptText.startsWith("/aidocs") || promptText.toLowerCase().trim().replace(/^\//, "").startsWith("aidocs")
+  const explicitPromptStateProvided = arguments.length >= 5
+  const promptPayload = promptHostState && promptHostState.source === "runtime_host_state" && promptHostState.payload
+    ? promptHostState.payload
+    : (!explicitPromptStateProvided && state && state.hostState && typeof state.hostState === "object" ? state.hostState : null)
+  const interactionText = promptPayload && promptPayload.interaction_text && typeof promptPayload.interaction_text === "object"
+    ? promptPayload.interaction_text
+    : null
   if (isAidocsEntry) {
     const preamble = "CRITICAL: The user typed `/aidocs`. This is a SYSTEM COMMAND, not a memory request or rule to store. Do NOT save this as a memory, preference, or workflow rule."
     if (!state.initialized) {
       return [
         preamble,
-        "This project has no AIDOCS structure. Call the `project_init` MCP tool with the project root path",
-        "to create .MEMORY/, AGENTS.md/CLAUDE.md, and AIDOCS templates.",
-        "After initialization, call `project_bootstrap_or_resume` to activate managed mode.",
+        interactionText && typeof interactionText.missing_structure === "string"
+          ? interactionText.missing_structure
+          : [
+              "This project has no AIDOCS structure. Call the `project_init` MCP tool with the project root path",
+              "to create .MEMORY/, AGENTS.md/CLAUDE.md, and AIDOCS templates.",
+              "After initialization, call `project_bootstrap_or_resume` to activate managed mode.",
+            ].join(" "),
       ].join(" ")
     }
     return [
       preamble,
-      buildAidocsExecutionPrompt(),
+      interactionText && typeof interactionText.execution_prompt === "string"
+        ? interactionText.execution_prompt
+        : buildAidocsExecutionPrompt(),
     ].join(" ")
+  }
+
+  if (interactionText && typeof interactionText.startup_message === "string" && interactionText.startup_message.trim()) {
+    return interactionText.startup_message
+  }
+
+  if (interactionText && typeof interactionText.unmanaged_message === "string" && interactionText.unmanaged_message.trim()) {
+    return interactionText.unmanaged_message
+  }
+
+  if (interactionText && typeof interactionText.prompt_context === "string" && interactionText.prompt_context.trim()) {
+    const parts = [interactionText.prompt_context]
+    if (typeof interactionText.action_directive === "string" && interactionText.action_directive.trim()) {
+      parts.push(interactionText.action_directive)
+    }
+    return parts.join(" ")
   }
 
   if (state.startupState === "not_initialized") {
@@ -731,10 +887,9 @@ function buildPromptContext(state, promptText, activeCommand, activeCommandMeta,
       "Tell the user to run `/aidocs` first.",
     ].join(" ")
   }
-
-  const promptPayload = promptHostState && promptHostState.source === "runtime_host_state" && promptHostState.payload
-    ? promptHostState.payload
-    : (state && state.hostState && typeof state.hostState === "object" ? state.hostState : null)
+  const lifecycleState = promptPayload && promptPayload.lifecycle_state && typeof promptPayload.lifecycle_state === "object"
+    ? promptPayload.lifecycle_state
+    : null
   const promptState = promptPayload && promptPayload.prompt_state && typeof promptPayload.prompt_state === "object"
     ? promptPayload.prompt_state
     : null
@@ -745,10 +900,11 @@ function buildPromptContext(state, promptText, activeCommand, activeCommandMeta,
   const parts = [
     "AIDOCS-managed mode is active for this project.",
     state.sessionID ? `Bound session: \`${state.sessionID}\`.` : "",
+    state.sessionID ? "Stay in the bound AIDOCS session and continue its current conductor/plan flow; do not switch to generic worktree or standalone execution setup." : "",
     `Action: \`${classification.action_kind}\`.`,
     "MANDATORY: Use AIDOCS MCP tools FIRST. Fall back to raw Read/Grep only if MCP returns empty.",
   ].filter(Boolean)
-    const effectiveImportedSkillState = resolveImportedSkillStateForContext(state, promptHostState, arguments.length >= 5)
+    const effectiveImportedSkillState = resolveImportedSkillStateForContext(state, promptHostState, explicitPromptStateProvided)
   const importedSkills = effectiveImportedSkillState && Array.isArray(effectiveImportedSkillState.active_skills)
     ? effectiveImportedSkillState.active_skills.filter(Boolean)
     : []
@@ -761,8 +917,22 @@ function buildPromptContext(state, promptText, activeCommand, activeCommandMeta,
     if (importedSkillModes.length) {
       parts.push(`Imported skill modes: ${importedSkillModes.map(([skillID, mode]) => `\`${skillID}=${mode}\``).join(", ")}.`)
     }
+    const runtimeOwnedCapabilities = renderRuntimeOwnedCapabilities(effectiveImportedSkillState)
+    if (runtimeOwnedCapabilities) {
+      parts.push(runtimeOwnedCapabilities)
+    }
+    const helperSkillBlocks = renderHelperSkillGuidance(effectiveImportedSkillState)
+    if (helperSkillBlocks.length) {
+      parts.push("Active AIDOCS helper skill guidance:")
+      parts.push(...helperSkillBlocks)
+    }
     if (workflowSummary) {
       parts.push(`Compiled workflow actions: ${workflowSummary}.`)
+    }
+    if (lifecycleState && lifecycleState.needs_task_complete) {
+      parts.push("Lifecycle follow-through: meaningful edit work happened since the last lifecycle tool call; use `aidocs_task_complete` if the task is done.")
+    } else if (lifecycleState && lifecycleState.needs_task_update) {
+      parts.push("Lifecycle follow-through: meaningful work has accumulated since the last lifecycle tool call; use `aidocs_task_update` to record progress.")
     }
   return parts.join(" ")
 }
@@ -1057,7 +1227,8 @@ async function AIDOCSPlugin(input) {
       }
     },
 
-    "tool.execute.before": async ({ tool, sessionID }) => {
+    "tool.execute.before": async (input, output) => {
+      const { tool, sessionID } = input || {}
       const normalizedTool = String(tool || "").toLowerCase()
       if (!GUARDED_TOOLS.has(normalizedTool)) {
         return
@@ -1073,16 +1244,45 @@ async function AIDOCSPlugin(input) {
       if (!state.managed) {
         throw new Error("AIDOCS-managed mode is inactive for this initialized project. Run /aidocs first.")
       }
-    },
 
-    "tool.execute.after": async ({ tool, sessionID }) => {
-      // After edit-type tools complete, remind about task lifecycle
-      const normalizedTool = String(tool || "").toLowerCase()
-      if (normalizedTool !== "edit" && normalizedTool !== "write") {
+      if (normalizedTool !== "read") {
         return
       }
+
+      const candidatePath = normalizeGatePath(
+        output && output.args && (output.args.filePath || output.args.path)
+          ? (output.args.filePath || output.args.path)
+          : input && input.args && (input.args.filePath || input.args.path)
+            ? (input.args.filePath || input.args.path)
+            : ""
+      )
+      if (!candidatePath) {
+        return
+      }
+
+      const gate = await getQueryGateState(projectRoot, state.sessionID)
+      // If no gate file exists yet (cold start / first prompt), allow reads with advisory
+      if (!gate) {
+        return
+      }
+      if (hasGrantedReadAccess(gate, candidatePath)) {
+        return
+      }
+
+      throw new Error(`AIDOCS indexed-read gate: "${candidatePath}" has not been discovered via code_investigate, code_find, code_trace, or code_bundle. Use AIDOCS indexed tools first before raw Read.`)
+    },
+
+    "tool.execute.after": async (input, output) => {
+      const { tool, sessionID, args } = input || {}
+      const normalizedTool = String(tool || "").toLowerCase()
       const state = await resolveAidocsState(projectRoot)
       if (!state.managed) {
+        return
+      }
+      if (state.sessionID) {
+        recordNativeToolUse(projectRoot, state.sessionID, tool, args, output)
+      }
+      if (normalizedTool !== "edit" && normalizedTool !== "write") {
         return
       }
       // Inject task lifecycle reminder into session context
@@ -1123,6 +1323,11 @@ module.exports = {
       extractSectionBullet,
       normalizeCommandName,
     readAidocsSourceRoot,
+    normalizeGatePath,
+    getQueryGateState,
+    hasGrantedReadAccess,
+    summarizeExecutionValue,
+    recordNativeToolUse,
     resolveActionTokensDir,
     loadActionTokens,
     classifyPromptAction,

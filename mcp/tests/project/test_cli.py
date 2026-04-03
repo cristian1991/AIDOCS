@@ -53,7 +53,7 @@ def test_config_json_default_target(monkeypatch) -> None:
     import io
     import sys
 
-    monkeypatch.setenv("AIDOCS_PATH", str(Path(__file__).resolve().parents[2]))
+    monkeypatch.setenv("AIDOCS_PATH", str(Path(__file__).resolve().parents[3]))
 
     old_stdout = sys.stdout
     sys.stdout = buf = io.StringIO()
@@ -72,7 +72,7 @@ def test_config_json_languages_target(monkeypatch) -> None:
     import io
     import sys
 
-    monkeypatch.setenv("AIDOCS_PATH", str(Path(__file__).resolve().parents[2]))
+    monkeypatch.setenv("AIDOCS_PATH", str(Path(__file__).resolve().parents[3]))
 
     old_stdout = sys.stdout
     sys.stdout = buf = io.StringIO()

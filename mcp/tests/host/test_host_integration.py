@@ -5,7 +5,7 @@ from pathlib import Path
 from aidocs_mcp.execution_index_store import ExecutionIndexStore
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_PATH = REPO_ROOT / "core" / "plugins" / "aidocs.js"
 
 

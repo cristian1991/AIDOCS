@@ -8,7 +8,7 @@ from aidocs_mcp.runtime_service import RuntimeService
 from aidocs_mcp.service_hub import AidocsServiceHub
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_PATH = REPO_ROOT / "core" / "plugins" / "aidocs.js"
 
 

@@ -27,5 +27,9 @@ mcp/build/
 mcp/dist/
 .mcp.json
 
+# Dashboard generated files
+apps/aidocs-dashboard/node_modules/
+apps/aidocs-dashboard/src-tauri/target/
+
 # Local git worktrees
 .worktrees/

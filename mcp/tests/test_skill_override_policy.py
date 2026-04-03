@@ -8,10 +8,24 @@ def test_override_registry_marks_writing_plans_as_aidocs_native(tmp_path: Path) 
 
     result = store.resolve("superpowers_external", "writing-plans")
 
-    assert result.mode == "aidocs_native_override"
+    assert result.mode == "aidocs_runtime_owned"
+    assert result.runtime_capability_id == "planning"
 
 
-def test_override_registry_marks_brainstorming_as_provider_content_runtime_controlled(tmp_path: Path) -> None:
+def test_override_registry_marks_verification_before_completion_as_runtime_owned() -> (
+    None
+):
+    store = SkillOverrideStore()
+
+    result = store.resolve("superpowers_external", "verification-before-completion")
+
+    assert result.mode == "aidocs_runtime_owned"
+    assert result.runtime_capability_id == "completion_verification"
+
+
+def test_override_registry_marks_brainstorming_as_provider_content_runtime_controlled(
+    tmp_path: Path,
+) -> None:
     store = SkillOverrideStore()
 
     result = store.resolve("superpowers_external", "brainstorming")
@@ -19,7 +33,9 @@ def test_override_registry_marks_brainstorming_as_provider_content_runtime_contr
     assert result.mode == "provider_content_aidocs_runtime"
 
 
-def test_override_registry_leaves_systematic_debugging_provider_native(tmp_path: Path) -> None:
+def test_override_registry_leaves_systematic_debugging_provider_native(
+    tmp_path: Path,
+) -> None:
     store = SkillOverrideStore()
 
     result = store.resolve("superpowers_external", "systematic-debugging")
@@ -39,6 +55,9 @@ def test_override_registry_is_inspectable_and_deterministic() -> None:
         "subagent-driven-development",
         "executing-plans",
     ]
-    assert any(rule.skill_id == "brainstorming" and rule.mode == "provider_content_aidocs_runtime" for rule in rules)
+    assert any(
+        rule.skill_id == "brainstorming"
+        and rule.mode == "provider_content_aidocs_runtime"
+        for rule in rules
+    )
     assert result_a == result_b
-

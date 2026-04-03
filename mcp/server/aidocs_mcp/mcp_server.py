@@ -18,6 +18,7 @@ from .config import (
     TOOLS_SYNC_TIMEOUT,
     TOOLS_GIT_TIMEOUT,
     TOOLS_MAX_TIMEOUT,
+    render_interaction_text,
 )
 from .config_schema import available_config_edit_modes, self_edit_available_in_profile
 from .file_ops import (
@@ -32,13 +33,30 @@ from .language_descriptors import (
     descriptor_semantics_summary,
     validate_language_descriptors,
 )
-from .plan_conductor import PlanConductor
+from .project_registry_service import ProjectRegistryService
 from .runtime_service import RuntimeService
 from .service_hub import AidocsServiceHub
 from .skill_provider import BUNDLED_PROVIDER_ID
 
 
 _BUNDLED_OVERRIDE_PROVIDER_ID = "superpowers_external"
+_RUNTIME_OWNED_OVERRIDE_MODES = {"aidocs_runtime_owned"}
+
+
+def _coerce_to_list(value: list[str] | str | None) -> list[str] | None:
+    """Coerce a JSON-encoded string to a list, or pass through lists/None."""
+    if value is None or isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        import json
+
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return parsed
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return value
 
 
 def _selected_skill_override_identity(
@@ -74,10 +92,9 @@ def _selected_skill_trigger_identity(
     if override_store is not None:
         decision = override_store.resolve(policy_provider_id, selected_name)
         override_mode = str(decision.mode or "").strip()
-        if override_mode == "aidocs_native_override":
+        if override_mode in _RUNTIME_OWNED_OVERRIDE_MODES:
             resolved_skill_id = str(decision.skill_id or selected_name)
-            provider = "aidocs"
-            runtime_provider = "aidocs"
+            runtime_provider = "aidocs_runtime"
         elif override_mode == "provider_content_aidocs_runtime":
             runtime_provider = "aidocs"
     elif (
@@ -291,29 +308,6 @@ def _lane_exact_path_is_granted(state: dict[str, Any], exact_path: str | None) -
     return isinstance(lane_exact_paths, list) and normalized in lane_exact_paths
 
 
-def _lane_owned_exact_path_is_granted(
-    hub: AidocsServiceHub,
-    project_root: Path,
-    session_id: str,
-    state: dict[str, Any],
-    exact_path: str | None,
-) -> bool:
-    if not exact_path:
-        return False
-    normalized = exact_path.replace("\\", "/").strip()
-    if not _is_known_exact_relative_path(normalized):
-        return False
-    lane_id = state.get("current_lane_id")
-    if not isinstance(lane_id, str) or not lane_id.strip():
-        return False
-    try:
-        return PlanConductor(hub, project_root, session_id).owns_file(
-            normalized, lane_id=lane_id.strip()
-        )
-    except Exception:
-        return False
-
-
 def _require_indexed_read_gate(
     hub: AidocsServiceHub, project_root: Path, exact_path: str | None = None
 ) -> dict[str, Any] | None:
@@ -324,22 +318,12 @@ def _require_indexed_read_gate(
     state = hub.query_gate.get(project_root, str(session_id))
     if state.get("allow_read"):
         return None
-    if (
-        _is_safe_known_exact_read_path(exact_path)
-        and not state.get("current_lane_id")
-        and not state.get("known_exact_paths")
-    ):
-        return None
     if _known_exact_path_is_granted(state, exact_path):
         return None
     if _lane_exact_path_is_granted(state, exact_path):
         return None
-    if _lane_owned_exact_path_is_granted(
-        hub, project_root, str(session_id), state, exact_path
-    ):
-        return None
     return {
-        "error": "Indexed-query prerequisite not satisfied. Use indexed retrieval tools first (for example: code_investigate, code_find, code_trace, code_bundle, schema_query, code_get_service_api)."
+        "error": render_interaction_text("interaction.errors.indexed_read_gate"),
     }
 
 
@@ -517,34 +501,41 @@ def _build_skill_mode_metadata(
     for item in triggered if isinstance(triggered, list) else []:
         if not isinstance(item, dict):
             continue
-        skill_id = str(item.get("skill_id") or "").strip()
-        override_mode = str(item.get("override_mode") or "").strip()
-        provider = str(item.get("provider") or "").strip()
-        runtime_provider = (
-            str(item.get("runtime_provider") or provider).strip() or provider
-        )
-        if not skill_id or not override_mode:
-            continue
-        active_skill_modes[skill_id] = override_mode
-        selected_skill_id = _match_selected_skill_id_for_trigger(
-            selected_skills=selected_skills,
-            skill_id=skill_id,
-            provider=provider,
-            runtime_provider=runtime_provider,
-            provider_states=provider_states,
-            override_store=override_store,
-        )
-        if selected_skill_id:
-            selected_skill_modes[selected_skill_id] = override_mode
-        decisions.append(
-            {
-                "skill_id": skill_id,
-                "selected_skill_id": selected_skill_id,
-                "override_mode": override_mode,
-                "provider": item.get("provider"),
-                "runtime_provider": item.get("runtime_provider"),
-            }
-        )
+            skill_id = str(item.get("skill_id") or "").strip()
+            override_mode = str(item.get("override_mode") or "").strip()
+            runtime_owned_capability = (
+                item.get("runtime_owned_capability")
+                if isinstance(item.get("runtime_owned_capability"), dict)
+                else None
+            )
+            provider = str(item.get("provider") or "").strip()
+            runtime_provider = (
+                str(item.get("runtime_provider") or provider).strip() or provider
+            )
+            if not skill_id or not override_mode:
+                continue
+            selected_skill_id = _match_selected_skill_id_for_trigger(
+                selected_skills=selected_skills,
+                skill_id=skill_id,
+                provider=provider,
+                runtime_provider=runtime_provider,
+                provider_states=provider_states,
+                override_store=override_store,
+            )
+            if runtime_owned_capability is None:
+                active_skill_modes[skill_id] = override_mode
+            if selected_skill_id:
+                selected_skill_modes[selected_skill_id] = override_mode
+            decisions.append(
+                {
+                    "skill_id": skill_id,
+                    "selected_skill_id": selected_skill_id,
+                    "override_mode": override_mode,
+                    "provider": item.get("provider"),
+                    "runtime_provider": item.get("runtime_provider"),
+                    "runtime_owned_capability": runtime_owned_capability,
+                }
+            )
     for selected_skill_id in selected_skills:
         if selected_skill_id in selected_skill_modes:
             continue
@@ -564,28 +555,46 @@ def _build_skill_mode_metadata(
         if override_store is not None:
             decision = override_store.resolve(provider_id, selected_name)
             override_mode = str(decision.mode or "").strip()
-            if override_mode == "aidocs_native_override":
+            runtime_owned_capability = None
+            if override_mode in _RUNTIME_OWNED_OVERRIDE_MODES:
                 resolved_skill_id = str(decision.skill_id or selected_name)
-                provider = "aidocs"
-                runtime_provider = "aidocs"
+                runtime_provider = "aidocs_runtime"
+                runtime_owned_capability = {
+                    "capability_id": str(decision.runtime_capability_id or "").strip(),
+                    "source": "aidocs_runtime",
+                    "reason": str(decision.reason or "").strip(),
+                    "mode": override_mode,
+                    "selected_skill_id": selected_skill_id,
+                    "provider": provider_id,
+                }
             elif override_mode == "provider_content_aidocs_runtime":
                 resolved_skill_id = selected_skill_id
                 runtime_provider = "aidocs"
         elif selected_name in active_skills and selected_skill_id not in active_skills:
-            override_mode = "aidocs_native_override"
+            override_mode = "aidocs_runtime_owned"
             resolved_skill_id = selected_name
-            provider = "aidocs"
-            runtime_provider = "aidocs"
+            runtime_provider = "aidocs_runtime"
+            runtime_owned_capability = {
+                "capability_id": selected_name,
+                "source": "aidocs_runtime",
+                "reason": "runtime-owned workflow authority",
+                "mode": override_mode,
+                "selected_skill_id": selected_skill_id,
+                "provider": provider_id,
+            }
+        else:
+            runtime_owned_capability = None
         if not override_mode:
             continue
         if (
-            resolved_skill_id not in active_skills
+            runtime_owned_capability is None
+            and resolved_skill_id not in active_skills
             and selected_skill_id not in active_skills
-            and override_mode != "aidocs_native_override"
         ):
             continue
         selected_skill_modes[selected_skill_id] = override_mode
-        active_skill_modes[resolved_skill_id] = override_mode
+        if runtime_owned_capability is None:
+            active_skill_modes[resolved_skill_id] = override_mode
         decisions.append(
             {
                 "skill_id": resolved_skill_id,
@@ -593,6 +602,7 @@ def _build_skill_mode_metadata(
                 "override_mode": override_mode,
                 "provider": provider,
                 "runtime_provider": runtime_provider,
+                "runtime_owned_capability": runtime_owned_capability,
             }
         )
     if not active_skill_modes and not selected_skill_modes:
@@ -643,6 +653,21 @@ def _annotate_skill_result(
     return result
 
 
+def _build_server_instructions() -> str:
+    """Build dynamic instructions for the MCP server InitializeResult."""
+    return (
+        "AIDOCS is your primary workflow for all code tasks. "
+        "ALWAYS use AIDOCS MCP tools (code_investigate, code_find, code_trace, code_bundle) "
+        "before reading files with code_get_lines. "
+        "Never use raw grep or glob when AIDOCS indexed tools can answer your question. "
+        "Follow TDD: write failing tests before production code. "
+        "Do not create git commits unless explicitly asked. "
+        "Keep all task output in /.MEMORY/sessions/<session-id>/ under the active session. "
+        "Use the session journal for significant decisions and outcomes. "
+        "When in doubt, call aidocs_orchestrate or aidocs_handle_prompt to route through AIDOCS."
+    )
+
+
 def create_server() -> Any:
     try:
         from fastmcp import FastMCP
@@ -655,7 +680,7 @@ def create_server() -> Any:
         templates_root=_resolve_templates_root(), script_root=_resolve_script_root()
     )
     runtime = RuntimeService(hub)
-    server = FastMCP("AIDOCS MCP")
+    server = FastMCP("AIDOCS MCP", instructions=_build_server_instructions())
     server._aidocs_test_hub = hub  # test access only
 
     raw_server_tool = server.tool
@@ -706,8 +731,6 @@ def create_server() -> Any:
     def _capture_enabled(
         name: str, run_middleware: bool, arguments: dict[str, Any] | None
     ) -> bool:
-        if run_middleware:
-            return False
         if name in {"aidocs_execution_run_record", "aidocs_execution_event_record"}:
             return False
         return _project_root_from_args(arguments) is not None
@@ -739,6 +762,8 @@ def create_server() -> Any:
 
     def _all_procedures(project_root: Path) -> list[dict[str, Any]]:
         return hub.procedures.find_procedures(project_root, query=None, limit=1000)
+
+    project_registry = ProjectRegistryService()
 
     original_call_tool = server.call_tool
 
@@ -772,6 +797,11 @@ def create_server() -> Any:
 
         managed = hub.managed_mode.get_mode(project_root)
         session_id = str(managed.get("session_id") or "").strip() or None
+        project_registry.record_project(
+            project_root,
+            managed_session_id=session_id,
+            title=project_root.name,
+        )
         run_id = f"mcp-{uuid4()}"
         payload_summary = {
             "tool_name": name,
@@ -871,13 +901,27 @@ def create_server() -> Any:
             )
         return resolved
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "List Sessions",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def session_list(project_root: str) -> list[dict[str, Any]]:
         """List sessions from project-local /.MEMORY/sessions/."""
         summaries = hub.sessions.list_sessions(Path(project_root))
         return [_session_summary_to_dict(item) for item in summaries]
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Read Session",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def session_read(project_root: str, session_id: str) -> dict[str, Any]:
         """Read a single session router file and return its parsed sections."""
         session = hub.sessions.read_session(Path(project_root), session_id)
@@ -887,13 +931,27 @@ def create_server() -> Any:
             "sections": session.sections,
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Select Session",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def session_select(project_root: str, session_id: str) -> dict[str, Any]:
         """Select an existing session and return its summary."""
         session = hub.sessions.select_session(Path(project_root), session_id)
         return _session_summary_to_dict(session)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Start Session",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def session_start(
         project_root: str,
         session_id: str | None = None,
@@ -910,7 +968,13 @@ def create_server() -> Any:
             include_tests=include_tests,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Session Start State",
+        }
+    )
     def session_start_state_get(
         project_root: str, session_id: str | None = None
     ) -> dict[str, Any]:
@@ -920,7 +984,14 @@ def create_server() -> Any:
             override_store=runtime._skill_overrides,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Bootstrap Project",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     @timed_sync
     def project_bootstrap_or_resume(
         project_root: str,
@@ -937,7 +1008,14 @@ def create_server() -> Any:
             include_tests=include_tests,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Orchestrate AIDOCS",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def aidocs_orchestrate(
         project_root: str,
         user_request: str,
@@ -958,12 +1036,20 @@ def create_server() -> Any:
             include_tests=include_tests,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={"readOnlyHint": True, "openWorldHint": False, "title": "Get Mode"}
+    )
     def aidocs_mode_get(project_root: str) -> dict[str, Any]:
         """Read the current runtime/session-binding AIDOCS-managed mode state."""
         return hub.managed_mode.get_mode(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Set Mode",
+        }
+    )
     def aidocs_mode_set(
         project_root: str, session_id: str, source: str = "/aidocs"
     ) -> dict[str, Any]:
@@ -972,12 +1058,24 @@ def create_server() -> Any:
             Path(project_root), session_id=session_id, source=source
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Clear Mode",
+        }
+    )
     def aidocs_mode_clear(project_root: str) -> dict[str, Any]:
         """Clear the current runtime/session-binding AIDOCS-managed mode state."""
         return hub.managed_mode.clear_mode(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Route Prompt",
+        }
+    )
     def aidocs_route_prompt(
         project_root: str,
         user_request: str,
@@ -995,7 +1093,14 @@ def create_server() -> Any:
             override_store=runtime._skill_overrides,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Classify Prompt",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def aidocs_classify_prompt(
         user_request: str, explicit_targets: list[str] | None = None
     ) -> dict[str, Any]:
@@ -1004,7 +1109,14 @@ def create_server() -> Any:
             user_request, explicit_targets=explicit_targets
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Handle Prompt",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def aidocs_handle_prompt(
         project_root: str,
         user_request: str,
@@ -1023,7 +1135,13 @@ def create_server() -> Any:
             include_tests=include_tests,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Create Session",
+        }
+    )
     def session_create(
         project_root: str,
         session_id: str,
@@ -1051,7 +1169,13 @@ def create_server() -> Any:
             "sections": session.sections,
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Session Claim Status",
+        }
+    )
     def session_claim_status(
         project_root: str, session_id: str, stale_after_minutes: int = 30
     ) -> dict[str, Any]:
@@ -1061,7 +1185,13 @@ def create_server() -> Any:
         )
         return {"session_id": session_id, "claims": claims}
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Claim Session",
+        }
+    )
     def session_claim(
         project_root: str,
         session_id: str,
@@ -1079,7 +1209,13 @@ def create_server() -> Any:
             "sections": session.sections,
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Release Session",
+        }
+    )
     def session_release(
         project_root: str, session_id: str, agent_id: str, run_id: str | None = None
     ) -> dict[str, Any]:
@@ -1093,7 +1229,13 @@ def create_server() -> Any:
             "sections": session.sections,
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Prune Stale Claims",
+        }
+    )
     def session_prune_stale_claims(
         project_root: str, session_id: str, stale_after_minutes: int = 30
     ) -> dict[str, Any]:
@@ -1107,7 +1249,13 @@ def create_server() -> Any:
             "sections": session.sections,
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Session Handoff",
+        }
+    )
     def session_handoff_get(project_root: str, session_id: str) -> dict[str, Any]:
         """Read the structured collaboration handoff for a session."""
         handoff = hub.sessions.read_handoff(Path(project_root), session_id)
@@ -1117,7 +1265,13 @@ def create_server() -> Any:
             "sections": handoff.sections,
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Update Session Handoff",
+        }
+    )
     def session_handoff_update(
         project_root: str,
         session_id: str,
@@ -1137,6 +1291,19 @@ def create_server() -> Any:
         append: bool = False,
     ) -> dict[str, Any]:
         """Update the structured collaboration handoff for a session."""
+        purpose = _coerce_to_list(purpose)
+        current_state = _coerce_to_list(current_state)
+        what_was_done = _coerce_to_list(what_was_done)
+        what_failed = _coerce_to_list(what_failed)
+        what_matters_now = _coerce_to_list(what_matters_now)
+        open_questions = _coerce_to_list(open_questions)
+        risks_and_blockers = _coerce_to_list(risks_and_blockers)
+        relevant_files = _coerce_to_list(relevant_files)
+        estimated_effort = _coerce_to_list(estimated_effort)
+        suggested_next_steps = _coerce_to_list(suggested_next_steps)
+        related_sessions = _coerce_to_list(related_sessions)
+        related_project_links = _coerce_to_list(related_project_links)
+        freshness = _coerce_to_list(freshness)
         patch: dict[str, list[str]] = {}
         if purpose is not None:
             patch["Purpose"] = runtime._as_bullets(purpose)
@@ -1182,7 +1349,13 @@ def create_server() -> Any:
             "sections": handoff.sections,
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Handoff Steps",
+        }
+    )
     def session_handoff_steps_get(project_root: str, session_id: str) -> dict[str, Any]:
         """Read structured handoff steps for a session."""
         return {
@@ -1190,14 +1363,26 @@ def create_server() -> Any:
             "steps": hub.sessions.read_handoff_steps(Path(project_root), session_id),
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Normalize Handoff Steps",
+        }
+    )
     def session_handoff_steps_normalize(
         project_root: str, session_id: str
     ) -> dict[str, Any]:
         """Normalize legacy/drifted handoff step markers into canonical step states."""
         return hub.sessions.normalize_handoff_steps(Path(project_root), session_id)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Update Handoff Step",
+        }
+    )
     def session_handoff_step_update(
         project_root: str,
         session_id: str,
@@ -1221,22 +1406,47 @@ def create_server() -> Any:
             "sections": handoff.sections,
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Session Compliance",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def session_compliance_get(project_root: str, session_id: str) -> dict[str, Any]:
         """Return task/logging debt and actionable continuity state for a session."""
         return runtime.session_compliance_summary(Path(project_root), session_id)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Skill Registry",
+        }
+    )
     def skill_registry_get(project_root: str) -> dict[str, Any]:
         """Return the available built-in + project-local skills."""
         return {"skills": hub.skills.list_skills(Path(project_root))}
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Session Skills",
+        }
+    )
     def session_skills_get(project_root: str, session_id: str) -> dict[str, Any]:
         """Return the selected skills for a session."""
         return hub.skills.get_selected_skills(Path(project_root), session_id)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Skill Trigger State",
+        }
+    )
     def skill_trigger_state_get(
         project_root: str,
         session_id: str,
@@ -1251,7 +1461,13 @@ def create_server() -> Any:
             override_store=runtime._skill_overrides,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Skill Override Registry",
+        }
+    )
     def skill_override_registry_get(project_root: str) -> dict[str, Any]:
         """Return the configured skill override rules for inspection/debugging."""
         _ = project_root
@@ -1259,14 +1475,26 @@ def create_server() -> Any:
             "rules": [item.to_dict() for item in runtime._skill_overrides.list_rules()]
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Skill Provider Status",
+        }
+    )
     def skill_provider_status_get(
         project_root: str, provider_id: str
     ) -> dict[str, Any]:
         """Return compatibility status and user choices for one external skill provider."""
         return runtime.skill_provider_status(Path(project_root), provider_id)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Set Skill Provider Override",
+        }
+    )
     def skill_provider_override_set(
         project_root: str, provider_id: str, choice: str | None
     ) -> dict[str, Any]:
@@ -1275,7 +1503,13 @@ def create_server() -> Any:
             Path(project_root), provider_id, choice
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Set Session Skills",
+        }
+    )
     def session_skills_set(
         project_root: str, session_id: str, selected_skills: list[str]
     ) -> dict[str, Any]:
@@ -1284,7 +1518,14 @@ def create_server() -> Any:
             Path(project_root), session_id, selected_skills
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Session Resume Bundle",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def session_resume_bundle(
         project_root: str,
         session_id: str,
@@ -1301,7 +1542,14 @@ def create_server() -> Any:
             journal_last_n=journal_last_n,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Connect Plan",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     @timed_sync
     def plan_connect(
         project_root: str,
@@ -1320,7 +1568,54 @@ def create_server() -> Any:
             Path(project_root), session_id=session_id, run_preflight=run_preflight
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Create Plan From Spec",
+        }
+    )
+    @timed_sync
+    def plan_create_from_spec(
+        project_root: str,
+        session_id: str,
+        spec_text: str,
+        scope: str | None = None,
+        constraints: list[str] | None = None,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Create or replace the session plan from a deterministic spec format."""
+        return runtime.plan_create_from_spec(
+            Path(project_root),
+            session_id=session_id,
+            spec_text=spec_text,
+            scope=scope,
+            constraints=constraints,
+        )
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Validate Plan",
+        }
+    )
+    @timed_sync
+    def plan_validate(
+        project_root: str,
+        session_id: str,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Validate that the session plan is executable and has real verification steps."""
+        return runtime.plan_validate(Path(project_root), session_id=session_id)
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Conductor Graph",
+        }
+    )
     @timed_sync
     def plan_conductor_graph(
         project_root: str,
@@ -1330,7 +1625,13 @@ def create_server() -> Any:
         """Return the conductor lane graph for a lane-aware session plan."""
         return runtime.plan_conductor_graph(Path(project_root), session_id=session_id)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Conductor Status",
+        }
+    )
     @timed_sync
     def plan_conductor_status(
         project_root: str,
@@ -1340,7 +1641,80 @@ def create_server() -> Any:
         """Return the conductor graph plus runnable lane status for a lane-aware session plan."""
         return runtime.plan_conductor_status(Path(project_root), session_id=session_id)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Execution Mode Select",
+        }
+    )
+    @timed_sync
+    def execution_mode_select(
+        project_root: str,
+        session_id: str,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Return the runtime-owned execution mode selection for a session plan."""
+        return runtime.execution_mode_select(Path(project_root), session_id=session_id)
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Dispatch Next Lane",
+        }
+    )
+    @timed_sync
+    def plan_dispatch_next(
+        project_root: str,
+        session_id: str,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Return the next delegated lane task packet for a session plan."""
+        return runtime.plan_dispatch_next(Path(project_root), session_id=session_id)
+
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Report Dispatch Result",
+        }
+    )
+    @timed_sync
+    def plan_dispatch_report(
+        project_root: str,
+        session_id: str,
+        packet_result: dict[str, Any],
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Ingest one delegated lane result and update conductor state."""
+        return runtime.plan_dispatch_report(
+            Path(project_root), session_id=session_id, packet_result=packet_result
+        )
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Execution Loop Next",
+        }
+    )
+    @timed_sync
+    def execution_loop_next(
+        project_root: str,
+        session_id: str,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Return the next execution-loop state for a session plan."""
+        return runtime.execution_loop_next(Path(project_root), session_id=session_id)
+
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Report Lane Overlap",
+        }
+    )
     @timed_sync
     def plan_conductor_report_inflight_overlap(
         project_root: str,
@@ -1359,7 +1733,13 @@ def create_server() -> Any:
             file_path=file_path,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Resume Lane",
+        }
+    )
     @timed_sync
     def plan_conductor_resume_lane(
         project_root: str,
@@ -1372,7 +1752,13 @@ def create_server() -> Any:
             Path(project_root), session_id=session_id, lane_id=lane_id
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Mark Contract Ready",
+        }
+    )
     @timed_sync
     def plan_conductor_mark_contract_ready(
         project_root: str,
@@ -1389,7 +1775,49 @@ def create_server() -> Any:
             ready=ready,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Record Lane Signal",
+        }
+    )
+    @timed_sync
+    def plan_conductor_record_lane_signal(
+        project_root: str,
+        session_id: str,
+        lane_id: str,
+        signal_kind: str,
+        target_lane_id: str,
+        detail: str = "",
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Record a structured signal from one lane about another lane.
+
+        Supported signal kinds:
+        - hidden_dependency_found: Lane discovered an undeclared dependency on another lane.
+        - undeclared_file_needed: Lane needs a file not declared in its plan scope.
+        - integration_failure_reopened: Integration tests fail, reopening a lane's status.
+
+        The signaling lane is automatically blocked until the signal is resolved.
+        """
+        return runtime.plan_conductor_record_lane_signal(
+            Path(project_root),
+            session_id=session_id,
+            lane_id=lane_id,
+            signal_kind=signal_kind,
+            target_lane_id=target_lane_id,
+            detail=detail,
+        )
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Plan Preflight",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     @timed_sync
     def plan_preflight(
         project_root: str,
@@ -1407,7 +1835,14 @@ def create_server() -> Any:
         """
         return runtime.plan_preflight(Path(project_root), session_id=session_id)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Begin Task",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def task_begin(
         project_root: str,
         session_id: str,
@@ -1444,7 +1879,14 @@ def create_server() -> Any:
             include_tests=include_tests,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Update Task",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def task_update(
         project_root: str,
         session_id: str,
@@ -1479,12 +1921,20 @@ def create_server() -> Any:
             include_tests=include_tests,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Complete Task",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def task_complete(
         project_root: str,
         session_id: str,
         result_summary: str,
         next_status: str = "done",
+        verification_evidence: dict[str, Any] | None = None,
         include_code_bundle: bool = False,
         include_tests: bool = False,
     ) -> dict[str, Any]:
@@ -1494,11 +1944,41 @@ def create_server() -> Any:
             session_id=session_id,
             result_summary=result_summary,
             next_status=next_status,
+            verification_evidence=verification_evidence,
             include_code_bundle=include_code_bundle,
             include_tests=include_tests,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Verification Gate",
+        }
+    )
+    @timed_sync
+    def verification_gate(
+        project_root: str,
+        session_id: str,
+        lane_id: str | None = None,
+        verification_evidence: dict[str, Any] | None = None,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        """Return runtime-owned verification status for a session or lane."""
+        return runtime.verification_gate(
+            Path(project_root),
+            session_id=session_id,
+            lane_id=lane_id,
+            verification_evidence=verification_evidence,
+        )
+
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Update Roadmap Feedback",
+        }
+    )
     def roadmap_feedback_update(
         project_root: str,
         step_text: str,
@@ -1511,7 +1991,13 @@ def create_server() -> Any:
             feedback=feedback,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Normalize Plan Prose",
+        }
+    )
     def plan_normalize_prose(
         project_root: str,
         session_id: str,
@@ -1521,7 +2007,13 @@ def create_server() -> Any:
             Path(project_root), session_id=session_id
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Normalize Session Artifacts",
+        }
+    )
     def session_artifacts_normalize(
         project_root: str,
         session_id: str,
@@ -1531,7 +2023,13 @@ def create_server() -> Any:
             Path(project_root), session_id=session_id
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Read Session Journal",
+        }
+    )
     def session_journal_read(
         project_root: str,
         session_id: str,
@@ -1546,7 +2044,13 @@ def create_server() -> Any:
         """
         return hub.sessions.read_journal(Path(project_root), session_id, last_n=last_n)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Log to Session Journal",
+        }
+    )
     def session_journal_log(
         project_root: str,
         session_id: str,
@@ -1572,7 +2076,13 @@ def create_server() -> Any:
             outcome=outcome,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Runtime Preflight",
+        }
+    )
     def runtime_preflight(
         project_root: str,
         action_kind: str,
@@ -1587,7 +2097,13 @@ def create_server() -> Any:
             user_explicit_targets=user_explicit_targets,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Update Session",
+        }
+    )
     def session_update(
         project_root: str, session_id: str, patch: dict[str, list[str]]
     ) -> dict[str, Any]:
@@ -1599,22 +2115,48 @@ def create_server() -> Any:
             "sections": session.sections,
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Read Memory",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def memory_read(project_root: str, targets: list[str]) -> dict[str, str]:
         """Read canonical memory files by target path."""
         return hub.memory.read_memory(Path(project_root), targets)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Sync Memory Index",
+        }
+    )
     def index_sync(project_root: str) -> dict[str, int]:
         """Rebuild the derived SQLite memory/session index from files."""
         return hub.index.sync_all(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Memory Index Status",
+        }
+    )
     def index_status(project_root: str) -> dict[str, Any]:
         """Report current derived index status for the project."""
         return hub.index.status(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Sync Schema Index",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     @timed_sync
     def schema_index_sync(
         project_root: str, timeout: int | None = None
@@ -1622,14 +2164,28 @@ def create_server() -> Any:
         """Rebuild the derived schema catalog from code and SQL files."""
         return hub.schema.sync_schema(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Search Memory",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def memory_search(
         project_root: str, query: str, limit: int = 10
     ) -> list[dict[str, str]]:
         """Search the derived memory index by path, title, or body text."""
         return hub.index.search_memory(Path(project_root), query=query, limit=limit)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Sync Code Index",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     @timed_sync
     def code_index_sync(
         project_root: str, include_tests: bool = False, timeout: int | None = None
@@ -1642,7 +2198,14 @@ def create_server() -> Any:
             "modules": hub.code.sync_modules(Path(project_root)),
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Modules",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def code_get_modules(
         project_root: str, kind: str | None = None
     ) -> list[dict[str, Any]]:
@@ -1656,7 +2219,14 @@ def create_server() -> Any:
         """
         return hub.code.get_modules(Path(project_root), kind=kind)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Module Files",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def code_get_module_files(
         project_root: str, module_path: str, limit: int = 200
     ) -> list[dict[str, Any]]:
@@ -1669,12 +2239,25 @@ def create_server() -> Any:
             Path(project_root), module_path=module_path, limit=limit
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Code Index Status",
+        }
+    )
     def code_index_status(project_root: str) -> dict[str, Any]:
         """Report current derived code index status for the project."""
         return hub.code.code_status(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Code Search",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def code_search(
         project_root: str, query: str, limit: int = 10
     ) -> list[dict[str, Any]]:
@@ -1685,12 +2268,26 @@ def create_server() -> Any:
             _grant_indexed_read_gate(hub, root, "code_search")
         return result
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Dependencies",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def code_get_dependencies(project_root: str, path: str) -> list[dict[str, str]]:
         """Return lightweight dependency edges for one indexed code file."""
         return hub.code.get_dependencies(Path(project_root), path=path)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Symbol Snippet",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def code_get_symbol_snippet(
         project_root: str,
         path: str,
@@ -1708,10 +2305,17 @@ def create_server() -> Any:
             line_number=line_number,
         )
         if result:
-            _grant_indexed_read_gate(hub, root, "code_get_symbol_snippet")
+            _grant_known_exact_path_read(hub, root, "code_get_symbol_snippet", path)
         return result
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Method Signature",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def code_get_method_signature(
         project_root: str,
         method: str,
@@ -1724,10 +2328,40 @@ def create_server() -> Any:
             root, method_name=method, container=container, limit=limit
         )
         if result.get("matches"):
-            _grant_indexed_read_gate(hub, root, "code_get_method_signature")
+            pass  # Precision tool - no blanket read grant
         return result
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Method Signature",
+        },
+        meta={"anthropic/searchHint": True},
+    )
+    def code_get_method_signature(
+        project_root: str,
+        method: str,
+        container: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Return exact method signatures so agents can call methods correctly without reading whole files."""
+        root = Path(project_root)
+        result = hub.code.get_method_signature(
+            root, method_name=method, container=container, limit=limit
+        )
+        if result.get("matches"):
+            pass  # Precision tool - no blanket read grant
+        return result
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Method Signatures",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def code_get_method_signatures(
         project_root: str,
         methods: list[str],
@@ -1743,10 +2377,17 @@ def create_server() -> Any:
             limit_per_method=limit_per_method,
         )
         if result.get("methods"):
-            _grant_indexed_read_gate(hub, root, "code_get_method_signatures")
+            pass  # Precision tool - no blanket read grant
         return result
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Enum Values",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def code_get_enum_values(
         project_root: str,
         enum_name: str,
@@ -1759,10 +2400,17 @@ def create_server() -> Any:
             root, enum_name=enum_name, limit=limit, include_related=include_related
         )
         if result.get("matches"):
-            _grant_indexed_read_gate(hub, root, "code_get_enum_values")
+            pass  # Precision tool - no blanket read grant
         return result
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Constructor Params",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def code_get_constructor_params(
         project_root: str,
         type_name: str,
@@ -1775,10 +2423,17 @@ def create_server() -> Any:
             root, type_name=type_name, limit=limit, include_related=include_related
         )
         if result.get("matches"):
-            _grant_indexed_read_gate(hub, root, "code_get_constructor_params")
+            pass  # Precision tool - no blanket read grant
         return result
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Constructor Params Batch",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def code_get_constructor_params_batch(
         project_root: str,
         types: list[str],
@@ -1794,10 +2449,17 @@ def create_server() -> Any:
             limit_per_type=limit_per_type,
         )
         if result.get("types"):
-            _grant_indexed_read_gate(hub, root, "code_get_constructor_params_batch")
+            pass  # Precision tool - no blanket read grant
         return result
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Service API",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def code_get_service_api(
         project_root: str,
         service_name: str,
@@ -1807,10 +2469,17 @@ def create_server() -> Any:
         root = Path(project_root)
         result = hub.code.get_service_api(root, service_name=service_name, limit=limit)
         if result.get("methods"):
-            _grant_indexed_read_gate(hub, root, "code_get_service_api")
+            pass  # Precision tool - no blanket read grant
         return result
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Entity Properties",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def code_get_entity_properties(
         project_root: str,
         entity_name: str,
@@ -1821,17 +2490,24 @@ def create_server() -> Any:
         if result.get("entity_name") and (
             result.get("properties") or result.get("note")
         ):
-            _grant_indexed_read_gate(hub, root, "code_get_entity_properties")
+            pass  # Precision tool - no blanket read grant
         return result
 
     # ── File operations (line-based read/edit with safety) ──
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Code Lines",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def code_get_lines(
         project_root: str,
         path: str,
         start_line: int = 1,
-        count: int = 50,
+        count: int = 30,
         show_line_numbers: bool = True,
         known_exact_path: bool = False,
     ) -> dict[str, Any]:
@@ -1843,7 +2519,7 @@ def create_server() -> Any:
         Args:
             path: Relative path to the file from project root.
             start_line: First line to read (1-indexed).
-            count: Number of lines to read (max 200).
+            count: Number of lines to read (default 30, max 200).
             show_line_numbers: Prefix each line with its number for easy reference.
             known_exact_path: Bypass the indexed-read gate only for an exact relative path.
         """
@@ -1862,7 +2538,13 @@ def create_server() -> Any:
             show_line_numbers=show_line_numbers,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Create File",
+        }
+    )
     def code_create_file(
         project_root: str,
         path: str,
@@ -1887,7 +2569,13 @@ def create_server() -> Any:
             )
         return result
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Edit Lines",
+        }
+    )
     def code_edit_lines(
         project_root: str,
         path: str,
@@ -1937,7 +2625,13 @@ def create_server() -> Any:
             )
         return result
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Batch Edit",
+        }
+    )
     def code_batch_edit(
         project_root: str,
         edits: list[dict[str, Any]],
@@ -1977,7 +2671,13 @@ def create_server() -> Any:
                     )
         return result
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Config Edit Policy",
+        }
+    )
     def config_edit_policy_get(
         profile: Literal["release"] = "release",
     ) -> dict[str, Any]:
@@ -1990,7 +2690,14 @@ def create_server() -> Any:
             },
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Code Investigate",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     @timed_tool
     def code_investigate(
         project_root: str,
@@ -2018,6 +2725,24 @@ def create_server() -> Any:
         )
         if result.get("findings"):
             _grant_indexed_read_gate(hub, root, "code_investigate")
+        findings = result.get("findings") or []
+        next_tools = result.get("next_tools") or []
+        compact = runtime.build_artifact_backed_result(
+            root,
+            inline_summary=(
+                f"Investigation for `{concept}` found {len(findings)} finding(s) and {len(next_tools)} suggested next tool(s)."
+            ),
+            payload=result,
+            artifact_name=f"code-investigate-{concept}",
+            structured_summary={
+                "concept": concept,
+                "finding_count": len(findings),
+                "next_tool_count": len(next_tools),
+                "depth": depth,
+                "focus": focus,
+            },
+        )
+        result.update(compact)
         return result
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -2049,7 +2774,14 @@ def create_server() -> Any:
         "factories": "Find Create* helpers, factory-style methods, and setup helpers",
     }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Code Find",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     @timed_tool
     def code_find(
         project_root: str,
@@ -2191,7 +2923,14 @@ def create_server() -> Any:
         "setting": "Trace a configuration setting across layers",
     }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Code Trace",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     @timed_tool
     def code_trace(
         project_root: str,
@@ -2290,7 +3029,14 @@ def create_server() -> Any:
         "tree": "Recursive component import tree",
     }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Code Bundle",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     @timed_tool
     def code_bundle(
         project_root: str,
@@ -2331,6 +3077,43 @@ def create_server() -> Any:
                 )
             ):
                 _grant_indexed_read_gate(hub, root, "code_bundle")
+            bundle_type = m
+            file_count = (
+                len(result.get("files") or []) if isinstance(result, dict) else 0
+            )
+            symbol_count = (
+                len(result.get("symbols") or []) if isinstance(result, dict) else 0
+            )
+            if not file_count and isinstance(result, dict):
+                file_count = len(result.get("primary_files") or []) + len(
+                    result.get("related_files") or []
+                )
+            summary_bits: list[str] = []
+            if file_count:
+                summary_bits.append(f"files={file_count}")
+            if symbol_count:
+                summary_bits.append(f"symbols={symbol_count}")
+            if result.get("missing"):
+                inline_summary = f"Bundle `{bundle_type}` for `{target}` is missing."
+            else:
+                suffix = f" ({', '.join(summary_bits)})" if summary_bits else ""
+                inline_summary = (
+                    f"Bundle `{bundle_type}` prepared for `{target}`{suffix}."
+                )
+            compact = runtime.build_artifact_backed_result(
+                root,
+                inline_summary=inline_summary,
+                payload=result,
+                artifact_name=f"code-bundle-{bundle_type}-{target}",
+                structured_summary={
+                    "mode": bundle_type,
+                    "target": target,
+                    "missing": bool(result.get("missing")),
+                    "file_count": file_count,
+                    "symbol_count": symbol_count,
+                },
+            )
+            result.update(compact)
             return result
 
         if m == "file":
@@ -2391,7 +3174,14 @@ def create_server() -> Any:
             "available_modes": list(create_server._BUNDLE_MODES.keys()),
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Schema Query",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     @timed_tool
     def schema_query(
         project_root: str,
@@ -2486,7 +3276,14 @@ def create_server() -> Any:
     # Legacy Tools (deprecated — use unified tools above)
     # ═══════════════════════════════════════════════════════════════════════
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Capture Memory",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     def memory_capture(
         project_root: str,
         kind: str,
@@ -2522,7 +3319,13 @@ def create_server() -> Any:
             "content": result.content,
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Initialize Project",
+        }
+    )
     @timed_sync
     def project_init(
         project_root: str,
@@ -2544,7 +3347,13 @@ def create_server() -> Any:
             Path(project_root), init_git=init_git, create_remote=create_remote
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Ensure MCP Config",
+        }
+    )
     def project_ensure_mcp_config(project_root: str) -> dict[str, Any]:
         """Ensure the target project has a .mcp.json with the aidocs MCP server entry for Claude Code.
 
@@ -2553,27 +3362,58 @@ def create_server() -> Any:
         """
         return runtime.ensure_claude_mcp_config(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Check Project",
+        }
+    )
     def project_check(project_root: str) -> dict[str, Any]:
         """Run strict session-era structural check on a project."""
         return hub.updater.run_check(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Check Project (Legacy)",
+        }
+    )
     def project_check_legacy(project_root: str) -> dict[str, Any]:
         """Run legacy-compatible structural check on a project."""
         return hub.updater.run_check_legacy(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Fix Project",
+        }
+    )
     def project_fix(project_root: str) -> dict[str, Any]:
         """Run safe deterministic structural fixes on a project."""
         return hub.updater.run_fix(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Inspect Legacy",
+        }
+    )
     def project_inspect_legacy(project_root: str) -> dict[str, Any]:
         """Inspect whether legacy runtime files/folders are still present."""
         return hub.updater.inspect_legacy_runtime(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Sync Project Indexes",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
     @timed_sync
     def project_sync_indexes(
         project_root: str, include_tests: bool = False, timeout: int | None = None
@@ -2606,7 +3446,14 @@ def create_server() -> Any:
             "execution_pruning": hub.execution.prune_old_events(root),
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Project Status",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def project_status(project_root: str) -> dict[str, Any]:
         """Return a consolidated status view for memory, code, and schema indexes."""
         root = Path(project_root)
@@ -2624,109 +3471,261 @@ def create_server() -> Any:
             "legacy": hub.updater.inspect_legacy_runtime(root),
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Project Origins",
+        }
+    )
     def project_origins_get(project_root: str) -> dict[str, Any]:
         """Return git remote/origin context, including private/public split hints."""
         root = Path(project_root)
         return runtime.project_origins(root)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Language Descriptors",
+        }
+    )
     def index_language_descriptors_get(project_root: str) -> dict[str, Any]:
         """Return the active built-in + project-local language descriptor registry summary."""
         return descriptor_registry_summary(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Validate Language Descriptors",
+        }
+    )
     def index_language_descriptors_validate(project_root: str) -> dict[str, Any]:
         """Validate built-in and project-local TOML language descriptors."""
         return validate_language_descriptors(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Language Descriptor Semantics",
+        }
+    )
     def index_language_descriptor_semantics_get() -> dict[str, Any]:
         """Return the available built-in descriptor semantic families/tags."""
         return descriptor_semantics_summary()
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Language Descriptor Match",
+        }
+    )
     def index_language_descriptor_match_get(
         project_root: str, relative_path: str
     ) -> dict[str, Any]:
         """Show which descriptor would classify a given project-relative path."""
         return descriptor_match_summary(Path(project_root), relative_path)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Capability Index Status",
+        }
+    )
     def capability_index_status(project_root: str) -> dict[str, Any]:
         """Return current MCP capability index status for a project."""
         return hub.capabilities.capability_status(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Capability Definitions",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def capability_definitions_get(
         project_root: str, query: str | None = None, limit: int = 50
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Return indexed MCP capability definitions, optionally filtered by query."""
-        return hub.capabilities.find_capabilities(
-            Path(project_root), query=query, limit=limit
+        root = Path(project_root)
+        result = hub.capabilities.find_capabilities(root, query=query, limit=limit)
+        return runtime.build_artifact_backed_result(
+            root,
+            inline_summary=f"Found {len(result)} capability definition(s).",
+            payload=result,
+            artifact_name="capability-definitions",
+            structured_summary={
+                "count": len(result),
+                "query": query,
+                "limit": limit,
+            },
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Procedure Index Status",
+        }
+    )
     def procedure_index_status(project_root: str) -> dict[str, Any]:
         """Return current procedure-definition index status for a project."""
         return hub.procedures.procedure_status(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Procedure Definitions",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def procedure_definitions_get(
         project_root: str, query: str | None = None, limit: int = 50
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Return indexed procedure definitions, optionally filtered by query."""
-        return hub.procedures.find_procedures(
-            Path(project_root), query=query, limit=limit
+        root = Path(project_root)
+        result = hub.procedures.find_procedures(root, query=query, limit=limit)
+        return runtime.build_artifact_backed_result(
+            root,
+            inline_summary=f"Found {len(result)} procedure definition(s).",
+            payload=result,
+            artifact_name="procedure-definitions",
+            structured_summary={
+                "count": len(result),
+                "query": query,
+                "limit": limit,
+            },
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Procedure Capability Link Status",
+        }
+    )
     def procedure_capability_link_status(project_root: str) -> dict[str, Any]:
         """Return current procedure-to-capability link status for a project."""
         return hub.procedure_links.link_status(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Procedure Capability Links",
+        }
+    )
     def procedure_capability_links_get(
         project_root: str,
         procedure_id: str | None = None,
         unresolved_only: bool = False,
         limit: int = 50,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Return indexed procedure-to-capability links, optionally filtered by procedure or unresolved status."""
-        return hub.procedure_links.list_links(
-            Path(project_root),
+        root = Path(project_root)
+        result = hub.procedure_links.list_links(
+            root,
             procedure_id=procedure_id,
             unresolved_only=unresolved_only,
             limit=limit,
         )
+        return runtime.build_artifact_backed_result(
+            root,
+            inline_summary=f"Found {len(result)} procedure-capability link(s).",
+            payload=result,
+            artifact_name="procedure-capability-links",
+            structured_summary={
+                "count": len(result),
+                "procedure_id": procedure_id,
+                "unresolved_only": unresolved_only,
+                "limit": limit,
+            },
+        )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Execution Index Status",
+        }
+    )
     def execution_index_status(project_root: str) -> dict[str, Any]:
         """Return current execution-evidence index status for a project."""
         return hub.execution.execution_status(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Execution Runs",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def execution_runs_get(
         project_root: str, session_id: str | None = None, limit: int = 50
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Return indexed execution runs, optionally filtered by session."""
-        return hub.execution.list_runs(
-            Path(project_root), session_id=session_id, limit=limit
+        root = Path(project_root)
+        result = hub.execution.list_runs(root, session_id=session_id, limit=limit)
+        return runtime.build_artifact_backed_result(
+            root,
+            inline_summary=f"Found {len(result)} execution run(s).",
+            payload=result,
+            artifact_name="execution-runs",
+            session_id=session_id,
+            structured_summary={
+                "count": len(result),
+                "session_id": session_id,
+                "limit": limit,
+            },
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Execution Events",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def execution_events_get(
         project_root: str,
         query: str | None = None,
         session_id: str | None = None,
         limit: int = 50,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Return indexed execution events, optionally filtered by query/session."""
-        return hub.execution.list_events(
-            Path(project_root), query=query, session_id=session_id, limit=limit
+        root = Path(project_root)
+        result = hub.execution.list_events(
+            root, query=query, session_id=session_id, limit=limit
+        )
+        return runtime.build_artifact_backed_result(
+            root,
+            inline_summary=f"Found {len(result)} execution event(s).",
+            payload=result,
+            artifact_name="execution-events",
+            session_id=session_id,
+            structured_summary={
+                "count": len(result),
+                "query": query,
+                "session_id": session_id,
+                "limit": limit,
+            },
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Record Execution Run",
+        }
+    )
     def execution_run_record(
         project_root: str,
         run_kind: str,
@@ -2758,7 +3757,13 @@ def create_server() -> Any:
         )
         return {"run_id": resolved}
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Record Execution Event",
+        }
+    )
     def execution_event_record(
         project_root: str,
         event_kind: str,
@@ -2792,24 +3797,53 @@ def create_server() -> Any:
         )
         return {"event_id": resolved}
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Query Last Execution",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def execution_query_last(
         project_root: str,
         action_kind: str | None = None,
         capability_name: str | None = None,
         session_id: str | None = None,
         limit: int = 5,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Query: 'What actually ran last time?' — returns recent execution events matching filters."""
-        return hub.execution.query_last_execution(
-            Path(project_root),
+        root = Path(project_root)
+        result = hub.execution.query_last_execution(
+            root,
             action_kind=action_kind,
             capability_name=capability_name,
             session_id=session_id,
             limit=limit,
         )
+        return runtime.build_artifact_backed_result(
+            root,
+            inline_summary=f"Found {len(result)} recent execution event(s).",
+            payload=result,
+            artifact_name="execution-query-last",
+            session_id=session_id,
+            structured_summary={
+                "count": len(result),
+                "action_kind": action_kind,
+                "capability_name": capability_name,
+                "session_id": session_id,
+                "limit": limit,
+            },
+        )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Execution Summary",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def execution_query_summary(
         project_root: str, session_id: str | None = None
     ) -> dict[str, Any]:
@@ -2818,7 +3852,69 @@ def create_server() -> Any:
             Path(project_root), session_id=session_id
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Dashboard Snapshot",
+        },
+        meta={"anthropic/searchHint": True},
+    )
+    def dashboard_snapshot(
+        project_root: str,
+        session_id: str | None = None,
+        event_limit: int = 12,
+    ) -> dict[str, Any]:
+        """Return an operator-friendly dashboard snapshot for sessions, conductor state, config, execution, and usage proxies."""
+        root = Path(project_root)
+        payload = runtime.dashboard_snapshot(
+            root,
+            session_id=session_id,
+            event_limit=event_limit,
+        )
+        session_count = len(payload.get("sessions") or [])
+        return runtime.build_artifact_backed_result(
+            root,
+            inline_summary=(
+                f"Dashboard snapshot ready for {session_count} session(s). "
+                f"Selected session: `{payload.get('selected_session_id') or 'none'}`."
+            ),
+            payload=payload,
+            artifact_name="dashboard-snapshot",
+            session_id=session_id,
+            structured_summary={
+                "session_id": payload.get("selected_session_id"),
+                "session_count": session_count,
+                "has_selected_session": payload.get("selected_session") is not None,
+                "token_usage_available": bool(
+                    (payload.get("token_usage") or {}).get("available")
+                ),
+            },
+        )
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Project Registry List",
+        },
+        meta={"anthropic/searchHint": True},
+    )
+    def project_registry_list() -> dict[str, Any]:
+        """List MCP-touched AIDOCS projects known to the global registry."""
+        return {
+            "ok": True,
+            "projects": project_registry.list_projects(),
+        }
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Execution Compliance",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def execution_query_compliance(
         project_root: str, session_id: str | None = None, limit: int = 20
     ) -> dict[str, Any]:
@@ -2827,7 +3923,13 @@ def create_server() -> Any:
             Path(project_root), session_id=session_id, limit=limit
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Prune Execution Events",
+        }
+    )
     def execution_prune(
         project_root: str, max_age_days: int = 30, max_events: int = 10000
     ) -> dict[str, Any]:
@@ -2836,7 +3938,14 @@ def create_server() -> Any:
             Path(project_root), max_age_days=max_age_days, max_events=max_events
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Compare Action Surface",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def action_surface_compare(
         project_root: str,
         query: str,
@@ -2848,7 +3957,14 @@ def create_server() -> Any:
             Path(project_root), query=query, session_id=session_id, limit=limit
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Assess Action Surface",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def action_surface_assess(
         project_root: str,
         query: str,
@@ -2860,7 +3976,14 @@ def create_server() -> Any:
             Path(project_root), query=query, session_id=session_id, limit=limit
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Action Surface Status Bundle",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def action_surface_status_bundle(
         project_root: str,
         queries: list[str],
@@ -2872,7 +3995,14 @@ def create_server() -> Any:
             Path(project_root), queries=queries, session_id=session_id, limit=limit
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Action Surface Session Bundle",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def action_surface_session_bundle(
         project_root: str,
         session_id: str,
@@ -2887,7 +4017,14 @@ def create_server() -> Any:
             max_queries=max_queries,
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Current Session Action Surface",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def action_surface_current_session_bundle(
         project_root: str,
         limit: int = 20,
@@ -2898,17 +4035,37 @@ def create_server() -> Any:
             Path(project_root), limit=limit, max_queries=max_queries
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Compile Workflow Actions",
+        }
+    )
     def workflow_actions_compile(project_root: str) -> dict[str, Any]:
         """Compile human-readable workflow rules into the runtime workflow artifact."""
         return hub.workflow.compile_project_rules(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Workflow Actions",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def workflow_actions_get(project_root: str) -> dict[str, Any] | None:
         """Read the compiled runtime workflow artifact for a project if present."""
         return hub.workflow.read_compiled(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Workflow Triggers",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def workflow_triggers_for_action(
         project_root: str, action_kind: str
     ) -> dict[str, Any]:
@@ -2925,17 +4082,38 @@ def create_server() -> Any:
             "pending_actions": pending,
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Project Status Model",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def project_status_model_get(project_root: str) -> dict[str, Any] | None:
         """Read the deterministic project status model if present."""
         return hub.project_status.read_model(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Evaluate Project Status",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def project_status_evaluate(project_root: str) -> dict[str, Any]:
         """Evaluate the deterministic project status model."""
         return hub.project_status.evaluate(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Project Status Area Bundle",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def project_status_area_bundle(
         project_root: str, area_id: str, limit: int = 20
     ) -> dict[str, Any]:
@@ -2944,7 +4122,14 @@ def create_server() -> Any:
             Path(project_root), area_id=area_id, limit=limit
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Related Project Code Search",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def related_project_code_search(
         project_root: str, name: str, query: str, limit: int = 10
     ) -> list[dict[str, Any]]:
@@ -2953,7 +4138,14 @@ def create_server() -> Any:
         hub.code.sync_code_manifest(related_root, include_tests=False)
         return hub.code.search_code(related_root, query=query, limit=limit)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Related Project Symbol Bundle",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def related_project_symbol_bundle(
         project_root: str,
         name: str,
@@ -2969,7 +4161,14 @@ def create_server() -> Any:
             related_root, symbol=symbol, path=path, kind=kind, limit=limit
         )
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Related Project Subsystem Bundle",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def related_project_subsystem_bundle(
         project_root: str, name: str, concept: str, limit: int = 20
     ) -> dict[str, Any]:
@@ -2979,7 +4178,14 @@ def create_server() -> Any:
         hub.schema.sync_schema(related_root)
         return hub.code.get_subsystem_bundle(related_root, concept=concept, limit=limit)
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Related Project Compare Concept",
+        },
+        meta={"anthropic/searchHint": True},
+    )
     def related_project_compare_concept(
         project_root: str, name: str, concept: str, limit: int = 20
     ) -> dict[str, Any]:
@@ -3005,12 +4211,24 @@ def create_server() -> Any:
             ),
         }
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Legacy Read Runtime",
+        }
+    )
     def legacy_read_runtime(project_root: str) -> dict[str, Any]:
         """Inspect legacy NOW/plans state without mutating the project."""
         return hub.legacy.inspect_legacy(Path(project_root))
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Legacy Build Session Proposal",
+        }
+    )
     def legacy_build_session_proposal(
         project_root: str, session_id: str | None = None
     ) -> dict[str, Any]:
@@ -3023,7 +4241,13 @@ def create_server() -> Any:
     # Database Query Tool
     # ═══════════════════════════════════════════════════════════════════════
 
-    @server.tool()
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Database Query",
+        }
+    )
     def db_query(
         project_root: str,
         sql: str,

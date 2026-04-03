@@ -11,6 +11,7 @@ from aidocs_mcp.skill_provider import (
     load_external_provider_skills,
     resolve_bundled_provider,
     resolve_external_provider,
+    strip_frontmatter,
     validate_provider_id,
 )
 from aidocs_mcp.types import ExternalSkillProvider, SkillRecord
@@ -34,20 +35,29 @@ class SkillStore:
             "project_local": 1,
         }.get(str(provider), 3)
 
-    def _register_skill_payload(self, items: dict[str, dict[str, object]], payload: dict[str, object]) -> None:
+    def _register_skill_payload(
+        self, items: dict[str, dict[str, object]], payload: dict[str, object]
+    ) -> None:
         skill_id = str(payload.get("skill_id") or "").strip()
         if not skill_id:
             return
         existing = items.get(skill_id)
-        if existing is None or self._provider_priority(str(payload.get("provider") or "")) < self._provider_priority(str(existing.get("provider") or "")):
+        if existing is None or self._provider_priority(
+            str(payload.get("provider") or "")
+        ) < self._provider_priority(str(existing.get("provider") or "")):
             items[skill_id] = payload
 
     def _validated_selected_skills(
         self,
         project_root: Path,
         selected_skills: list[str],
-    ) -> tuple[list[str], list[str], dict[str, dict[str, object]], dict[str, dict[str, object]]]:
-        available_skills = {str(item.get("skill_id") or ""): item for item in self.list_skills(project_root)}
+    ) -> tuple[
+        list[str], list[str], dict[str, dict[str, object]], dict[str, dict[str, object]]
+    ]:
+        available_skills = {
+            str(item.get("skill_id") or ""): item
+            for item in self.list_skills(project_root)
+        }
         normalized_selected = self.normalize_selected_skill_ids(selected_skills)
         unknown_skill_ids: list[str] = []
         blocked_by_provider: dict[str, dict[str, object]] = {}
@@ -61,15 +71,24 @@ class SkillStore:
             if not skill.get("selectable", True):
                 provider_id = str(skill.get("provider") or "")
                 if provider_id:
-                    entry = blocked_by_provider.setdefault(provider_id, {"provider": skill, "skill_ids": []})
+                    entry = blocked_by_provider.setdefault(
+                        provider_id, {"provider": skill, "skill_ids": []}
+                    )
                     entry["skill_ids"].append(skill_id)
-        return normalized_selected, unknown_skill_ids, blocked_by_provider, available_skills
+        return (
+            normalized_selected,
+            unknown_skill_ids,
+            blocked_by_provider,
+            available_skills,
+        )
 
     def _bundled_skill_aliases(self) -> dict[str, str]:
         provider = resolve_bundled_provider(self._built_in_dir())
         aliases: dict[str, str] = {}
         for record in load_bundled_provider_skills(provider, self._parse_frontmatter):
-            canonical_skill_id = str(record.name or record.skill_id.rsplit("/", 1)[-1]).strip()
+            canonical_skill_id = str(
+                record.name or record.skill_id.rsplit("/", 1)[-1]
+            ).strip()
             provider_skill_id = str(record.skill_id).strip()
             if canonical_skill_id:
                 aliases[canonical_skill_id] = canonical_skill_id
@@ -120,7 +139,9 @@ class SkillStore:
     def session_skill_state_path(self, project_root: Path, session_id: str) -> Path:
         return project_root / ".MEMORY" / "sessions" / session_id / "skills.json"
 
-    def _parse_semver(self, version: str | None) -> tuple[tuple[int, int, int], tuple[tuple[int, object], ...] | None] | None:
+    def _parse_semver(
+        self, version: str | None
+    ) -> tuple[tuple[int, int, int], tuple[tuple[int, object], ...] | None] | None:
         if not version:
             return None
         match = _SEMVER_RE.fullmatch(version.strip())
@@ -167,7 +188,14 @@ class SkillStore:
         parsed_version = self._parse_semver(version)
         if parsed_version is None:
             return False
-        operator = next((item for item in (">=", "<=", ">", "<", "==") if constraint.startswith(item)), None)
+        operator = next(
+            (
+                item
+                for item in (">=", "<=", ">", "<", "==")
+                if constraint.startswith(item)
+            ),
+            None,
+        )
         if operator is None:
             return False
         parsed_target = self._parse_semver(constraint[len(operator) :].strip())
@@ -185,20 +213,36 @@ class SkillStore:
         return comparison == 0
 
     def _provider_skill_selectable(self, provider: ExternalSkillProvider) -> bool:
-        return provider.compatibility_state in {"compatible", "incompatible_but_user_override"}
+        return provider.compatibility_state in {
+            "compatible",
+            "incompatible_but_user_override",
+        }
 
     def _compatibility_policy(self, provider_id: str) -> dict[str, object] | None:
         return _PROVIDER_COMPATIBILITY.get(provider_id)
 
-    def _apply_provider_state(self, provider: ExternalSkillProvider) -> ExternalSkillProvider:
+    def _apply_provider_state(
+        self, provider: ExternalSkillProvider
+    ) -> ExternalSkillProvider:
         policy = self._compatibility_policy(provider.provider_id) or {}
-        compatible_versions = [str(item) for item in policy.get("compatible_versions", []) if str(item).strip()]
+        compatible_versions = [
+            str(item)
+            for item in policy.get("compatible_versions", [])
+            if str(item).strip()
+        ]
         choices = [str(item) for item in policy.get("choices", []) if str(item).strip()]
         compatibility_state = "compatible"
         if provider.user_choice == "disable":
             compatibility_state = "disabled"
-        elif compatible_versions and not all(self._version_satisfies(provider.version, item) for item in compatible_versions):
-            compatibility_state = "incompatible_but_user_override" if provider.user_choice == "keep_enabled_anyway" else "detected_incompatible"
+        elif compatible_versions and not all(
+            self._version_satisfies(provider.version, item)
+            for item in compatible_versions
+        ):
+            compatibility_state = (
+                "incompatible_but_user_override"
+                if provider.user_choice == "keep_enabled_anyway"
+                else "detected_incompatible"
+            )
         return ExternalSkillProvider(
             provider_id=provider.provider_id,
             root_path=provider.root_path,
@@ -210,13 +254,17 @@ class SkillStore:
             user_choice=provider.user_choice,
         )
 
-    def _write_external_providers(self, project_root: Path, providers: list[ExternalSkillProvider]) -> None:
+    def _write_external_providers(
+        self, project_root: Path, providers: list[ExternalSkillProvider]
+    ) -> None:
         registry_path = self.external_provider_registry_path(project_root)
         registry_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"providers": [item.to_dict() for item in providers]}
         registry_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
-    def _read_external_provider_payload(self, project_root: Path) -> tuple[dict[str, object], Path | None]:
+    def _read_external_provider_payload(
+        self, project_root: Path
+    ) -> tuple[dict[str, object], Path | None]:
         registry_path = self.external_provider_registry_path(project_root)
         legacy_path = self.legacy_external_provider_registry_path(project_root)
         for candidate in (registry_path, legacy_path):
@@ -226,9 +274,15 @@ class SkillStore:
                 payload = json.loads(candidate.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            if candidate == legacy_path and registry_path != legacy_path and not registry_path.exists():
+            if (
+                candidate == legacy_path
+                and registry_path != legacy_path
+                and not registry_path.exists()
+            ):
                 registry_path.parent.mkdir(parents=True, exist_ok=True)
-                registry_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+                registry_path.write_text(
+                    json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+                )
                 try:
                     legacy_path.unlink()
                 except OSError:
@@ -261,12 +315,24 @@ class SkillStore:
             path=str(file),
             origin=origin,
             source=source,
-            tags=[item.strip() for item in (meta.get("tags") or "").split(",") if item.strip()],
+            tags=[
+                item.strip()
+                for item in (meta.get("tags") or "").split(",")
+                if item.strip()
+            ],
+            content=strip_frontmatter(text),
+            skill_kind=(meta.get("kind") or "helper").strip() or "helper",
         )
 
-    def list_external_providers(self, project_root: Path) -> list[ExternalSkillProvider]:
+    def list_external_providers(
+        self, project_root: Path
+    ) -> list[ExternalSkillProvider]:
         payload, _ = self._read_external_provider_payload(project_root)
-        providers = payload.get("providers") if isinstance(payload.get("providers"), list) else []
+        providers = (
+            payload.get("providers")
+            if isinstance(payload.get("providers"), list)
+            else []
+        )
         result: list[ExternalSkillProvider] = []
         for item in providers:
             if not isinstance(item, dict):
@@ -284,24 +350,40 @@ class SkillStore:
                         provider_id=provider_id,
                         root_path=Path(root_path),
                         version=str(item.get("version") or "").strip() or None,
-                        compatibility_state=str(item.get("compatibility_state") or "unknown").strip() or "unknown",
-                        compatible_versions=[str(value) for value in item.get("compatible_versions", [])] if isinstance(item.get("compatible_versions"), list) else [],
-                        compatible_version_range=str(item.get("compatible_version_range") or "").strip() or None,
-                        choices=[str(value) for value in item.get("choices", [])] if isinstance(item.get("choices"), list) else [],
+                        compatibility_state=str(
+                            item.get("compatibility_state") or "unknown"
+                        ).strip()
+                        or "unknown",
+                        compatible_versions=[
+                            str(value) for value in item.get("compatible_versions", [])
+                        ]
+                        if isinstance(item.get("compatible_versions"), list)
+                        else [],
+                        compatible_version_range=str(
+                            item.get("compatible_version_range") or ""
+                        ).strip()
+                        or None,
+                        choices=[str(value) for value in item.get("choices", [])]
+                        if isinstance(item.get("choices"), list)
+                        else [],
                         user_choice=str(item.get("user_choice") or "").strip() or None,
                     )
                 )
             )
         return result
 
-    def get_external_provider(self, project_root: Path, provider_id: str) -> ExternalSkillProvider:
+    def get_external_provider(
+        self, project_root: Path, provider_id: str
+    ) -> ExternalSkillProvider:
         provider_key = validate_provider_id(provider_id)
         for provider in self.list_external_providers(project_root):
             if provider.provider_id == provider_key:
                 return provider
         raise ValueError(f"Unknown external skill provider: {provider_key}")
 
-    def _provider_status_payload(self, provider: ExternalSkillProvider) -> dict[str, object]:
+    def _provider_status_payload(
+        self, provider: ExternalSkillProvider
+    ) -> dict[str, object]:
         return {
             "provider_id": provider.provider_id,
             "provider_state": provider.compatibility_state,
@@ -320,8 +402,13 @@ class SkillStore:
         blocked_skill_ids: list[str],
         provider_ids: list[str],
     ) -> dict[str, object]:
-        providers = [self.get_external_provider(project_root, provider_id) for provider_id in provider_ids]
-        providers_payload = [self._provider_status_payload(provider) for provider in providers]
+        providers = [
+            self.get_external_provider(project_root, provider_id)
+            for provider_id in provider_ids
+        ]
+        providers_payload = [
+            self._provider_status_payload(provider) for provider in providers
+        ]
         return {
             "ok": False,
             "error": "incompatible_provider",
@@ -331,15 +418,25 @@ class SkillStore:
             "providers": providers_payload,
         }
 
-    def register_external_provider(self, project_root: Path, *, provider_name: str, path: str) -> dict[str, object]:
-        provider = self._apply_provider_state(resolve_external_provider(provider_name, path, project_root))
-        providers = [item for item in self.list_external_providers(project_root) if item.provider_id != provider.provider_id]
+    def register_external_provider(
+        self, project_root: Path, *, provider_name: str, path: str
+    ) -> dict[str, object]:
+        provider = self._apply_provider_state(
+            resolve_external_provider(provider_name, path, project_root)
+        )
+        providers = [
+            item
+            for item in self.list_external_providers(project_root)
+            if item.provider_id != provider.provider_id
+        ]
         providers.append(provider)
         providers.sort(key=lambda item: item.provider_id)
         self._write_external_providers(project_root, providers)
         return provider.to_dict()
 
-    def set_external_provider_override(self, project_root: Path, provider_id: str, choice: str | None) -> ExternalSkillProvider:
+    def set_external_provider_override(
+        self, project_root: Path, provider_id: str, choice: str | None
+    ) -> ExternalSkillProvider:
         provider_key = validate_provider_id(provider_id)
         normalized_choice = (choice or "").strip() or None
         providers = self.list_external_providers(project_root)
@@ -374,12 +471,18 @@ class SkillStore:
     def list_skills(self, project_root: Path) -> list[dict[str, object]]:
         items: dict[str, dict[str, object]] = {}
         bundled_provider = resolve_bundled_provider(self._built_in_dir())
-        for record in load_bundled_provider_skills(bundled_provider, self._parse_frontmatter):
+        for record in load_bundled_provider_skills(
+            bundled_provider, self._parse_frontmatter
+        ):
             record_payload = record.to_dict()
             record_payload["provider_skill_id"] = record_payload["skill_id"]
-            record_payload["skill_id"] = str(record_payload.get("name") or record.skill_id.rsplit("/", 1)[-1])
+            record_payload["skill_id"] = str(
+                record_payload.get("name") or record.skill_id.rsplit("/", 1)[-1]
+            )
             record_payload["provider_state"] = bundled_provider.compatibility_state
-            record_payload["selectable"] = self._provider_skill_selectable(bundled_provider)
+            record_payload["selectable"] = self._provider_skill_selectable(
+                bundled_provider
+            )
             self._register_skill_payload(items, record_payload)
         for source, directory in (("project", self._project_dir(project_root)),):
             if not directory.is_dir():
@@ -395,7 +498,9 @@ class SkillStore:
                     continue
                 self._register_skill_payload(items, record.to_dict())
         for provider in self.list_external_providers(project_root):
-            records, warnings = load_external_provider_skills(provider, self._parse_frontmatter)
+            records, warnings = load_external_provider_skills(
+                provider, self._parse_frontmatter
+            )
             for record in records:
                 record_payload = record.to_dict()
                 record_payload["provider_state"] = provider.compatibility_state
@@ -411,23 +516,46 @@ class SkillStore:
             ),
         )
 
-    def get_selected_skills(self, project_root: Path, session_id: str) -> dict[str, object]:
+    def get_selected_skills(
+        self, project_root: Path, session_id: str
+    ) -> dict[str, object]:
         path = self.session_skill_state_path(project_root, session_id)
         if not path.is_file():
-            return {"session_id": session_id, "path": str(path), "selected_skills": [], "invalid_selected_skills": []}
+            return {
+                "session_id": session_id,
+                "path": str(path),
+                "selected_skills": [],
+                "invalid_selected_skills": [],
+            }
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             payload = {}
-        selected = payload.get("selected_skills") if isinstance(payload.get("selected_skills"), list) else []
+        selected = (
+            payload.get("selected_skills")
+            if isinstance(payload.get("selected_skills"), list)
+            else []
+        )
         raw_selected = [str(item) for item in selected]
         normalized_selected = self.normalize_selected_skill_ids(raw_selected)
-        available_skills = {str(item.get("skill_id") or ""): item for item in self.list_skills(project_root)}
-        valid_selected = [skill_id for skill_id in normalized_selected if skill_id in available_skills]
-        invalid_selected = [skill_id for skill_id in normalized_selected if skill_id not in available_skills]
+        available_skills = {
+            str(item.get("skill_id") or ""): item
+            for item in self.list_skills(project_root)
+        }
+        valid_selected = [
+            skill_id for skill_id in normalized_selected if skill_id in available_skills
+        ]
+        invalid_selected = [
+            skill_id
+            for skill_id in normalized_selected
+            if skill_id not in available_skills
+        ]
         if valid_selected != raw_selected:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"selected_skills": valid_selected}, indent=2) + "\n", encoding="utf-8")
+            path.write_text(
+                json.dumps({"selected_skills": valid_selected}, indent=2) + "\n",
+                encoding="utf-8",
+            )
         return {
             "session_id": session_id,
             "path": str(path),
@@ -435,21 +563,45 @@ class SkillStore:
             "invalid_selected_skills": invalid_selected,
         }
 
-    def set_selected_skills(self, project_root: Path, session_id: str, selected_skills: list[str]) -> dict[str, object]:
-        normalized_selected, unknown_skill_ids, blocked_by_provider, _available_skills = self._validated_selected_skills(project_root, selected_skills)
+    def set_selected_skills(
+        self, project_root: Path, session_id: str, selected_skills: list[str]
+    ) -> dict[str, object]:
+        (
+            normalized_selected,
+            unknown_skill_ids,
+            blocked_by_provider,
+            _available_skills,
+        ) = self._validated_selected_skills(project_root, selected_skills)
         if unknown_skill_ids:
             raise ValueError("Unknown skill(s): " + ", ".join(unknown_skill_ids))
-        blocked_skill_ids = [skill_id for item in blocked_by_provider.values() for skill_id in item["skill_ids"]]
+        blocked_skill_ids = [
+            skill_id
+            for item in blocked_by_provider.values()
+            for skill_id in item["skill_ids"]
+        ]
         if blocked_skill_ids:
-            raise ValueError(f"Skill '{blocked_skill_ids[0]}' is not selectable in the current provider state.")
+            raise ValueError(
+                f"Skill '{blocked_skill_ids[0]}' is not selectable in the current provider state."
+            )
         path = self.session_skill_state_path(project_root, session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"selected_skills": normalized_selected}
         path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        return {"session_id": session_id, "path": str(path), "selected_skills": payload["selected_skills"]}
+        return {
+            "session_id": session_id,
+            "path": str(path),
+            "selected_skills": payload["selected_skills"],
+        }
 
-    def try_set_selected_skills(self, project_root: Path, session_id: str, selected_skills: list[str]) -> dict[str, object]:
-        normalized_selected, unknown_skill_ids, blocked_by_provider, _available_skills = self._validated_selected_skills(project_root, selected_skills)
+    def try_set_selected_skills(
+        self, project_root: Path, session_id: str, selected_skills: list[str]
+    ) -> dict[str, object]:
+        (
+            normalized_selected,
+            unknown_skill_ids,
+            blocked_by_provider,
+            _available_skills,
+        ) = self._validated_selected_skills(project_root, selected_skills)
         if unknown_skill_ids:
             return {
                 "ok": False,
@@ -457,10 +609,16 @@ class SkillStore:
                 "session_id": session_id,
                 "unknown_skill_ids": unknown_skill_ids,
             }
-        blocked_skill_ids = [skill_id for item in blocked_by_provider.values() for skill_id in item["skill_ids"]]
+        blocked_skill_ids = [
+            skill_id
+            for item in blocked_by_provider.values()
+            for skill_id in item["skill_ids"]
+        ]
         blocked_provider_ids = sorted(blocked_by_provider)
         if blocked_skill_ids and blocked_provider_ids:
-            return self._structured_incompatible_selection_result(project_root, session_id, blocked_skill_ids, blocked_provider_ids)
+            return self._structured_incompatible_selection_result(
+                project_root, session_id, blocked_skill_ids, blocked_provider_ids
+            )
         result = self.set_selected_skills(project_root, session_id, selected_skills)
         result["ok"] = True
         return result

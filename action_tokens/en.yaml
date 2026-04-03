@@ -1,19 +1,3 @@
-task_begin:
-  - begin task
-  - start task
-  - new task
-
-task_complete:
-  - complete task
-  - finish task
-  - task done
-  - mark complete
-
-task_update:
-  - update task
-  - task progress
-  - task status
-
 project_update:
   - update project
   - fix drift
@@ -60,6 +44,12 @@ deploy_health_check:
 git_push:
   - push
 
+git_pull:
+  - pull
+  - fetch
+  - sync
+  - update from
+
 git_commit:
   - commit
 
@@ -79,18 +69,37 @@ read_error:
   - failed
 
 edit:
+  - edit
   - fix
   - change
-  - edit
   - update
-  - implement
-  - refactor
+  - modify
+  - replace
   - rename
+  - refactor
+  - clean
+  - improve
   - add
   - remove
-  - create
   - delete
   - move
+  - create
+  - build a
+  - implement
+  - write
+  - set
+  - configure
+  - adjust
+  - patch
+  - correct
+  - convert
+  - migrate
+  - restructure
+  - redesign
+  - rewrite
+  - rework
+  - optimize
+  - simplify
 
 trace:
   - trace
@@ -112,4 +121,173 @@ understand:
   - investigate
   - show me
   - what is
+  - why
   - what's
+
+# Reserved groups below are not normal action kinds.
+# They are English user-intent descriptors used by runtime heuristics.
+# Prefix meaning:
+# - __plan_validation_*         -> plan quality checks
+# - __skill_trigger_<name>_*    -> helper-skill activation phrases
+#
+# Suffix meaning:
+# - _intent    -> user wording that should activate the helper skill
+# - _workflow  -> internal workflow/action-state words that should keep it active
+
+# Phrases that make plan_validate reject a step as too vague to execute safely.
+__plan_validation_vague_patterns:
+  - do the thing
+  - implement stuff
+  - fix it
+  - handle it
+  - work on it
+  - make it better
+
+# Activates the brainstorming helper when the user is exploring designs or ambiguity.
+__skill_trigger_brainstorming_intent:
+  - brainstorming
+  - creative
+  - creative-task
+  - ideation
+  - design
+  - architecture
+  - approach
+  - ambiguous
+
+# Keeps brainstorming active for design/discovery-oriented workflow states.
+__skill_trigger_brainstorming_workflow:
+  - design
+  - discovery
+
+# Activates systematic-debugging when the user is working a bug/regression/error.
+__skill_trigger_systematic_debugging_intent:
+  - debugging
+  - debug
+  - bug
+  - regression
+  - read-error
+
+# Keeps systematic-debugging active for debugging-oriented workflow states.
+__skill_trigger_systematic_debugging_workflow:
+  - read-error
+  - debugging
+  - investigate
+
+# Interprets user wording that means runtime-owned planning should take over.
+__skill_trigger_writing_plans_intent:
+  - planning
+  - plan
+  - roadmap
+  - spec
+
+# Keeps planning authority active during planning/design/discovery workflow states.
+__skill_trigger_writing_plans_workflow:
+  - planning
+  - design
+  - discovery
+
+# Interprets wording that means completion verification should be enforced.
+__skill_trigger_verification_before_completion_intent:
+  - verification
+  - verify
+  - completion
+  - verification-before-completion
+
+# Keeps completion verification active near verification/release workflow states.
+__skill_trigger_verification_before_completion_workflow:
+  - verification
+  - completion
+  - release
+
+# Activates deep-retrieval when the user needs precise API/signature/trace context.
+__skill_trigger_deep_retrieval_intent:
+  - deep-retrieval
+  - retrieval
+  - signature
+  - signatures
+  - constructor
+  - constructors
+  - enum
+  - service-api
+  - api
+  - trace
+
+# Keeps deep-retrieval active for inspect/investigate/trace workflow states.
+__skill_trigger_deep_retrieval_workflow:
+  - inspect
+  - investigate
+  - trace
+
+# Activates the testing helper when the user is focused on tests, validation, or regressions.
+__skill_trigger_test_driven_validation_intent:
+  - test-driven-validation
+  - test
+  - tests
+  - testing
+  - validation
+  - regression
+
+# Keeps the testing helper active during verification/testing workflow states.
+__skill_trigger_test_driven_validation_workflow:
+  - verification
+  - testing
+
+# Intent-guard phrase groups below justify tool categories that still need
+# stricter safety checks than the normal canonical action keys provide.
+# These are read by runtime safety checks, not by action classification.
+
+# Stricter wording for file creation/generation tools.
+# This stays separate from normal `edit` because creation/generation can be
+# broader than ordinary editing and may need a narrower allow-list.
+__intent_guard_write:
+  - create
+  - add
+  - generate
+  - scaffold
+  - new
+  - init
+  - setup
+  - build
+  - implement
+  - write
+  - make
+  - fix
+  - update
+
+# Reserved wording for local shell execution.
+# Bash is currently free in intent_guard, but this key is kept editable so a
+# stricter shell-intent policy can be reintroduced without changing file shape.
+__intent_guard_bash:
+  - run
+  - execute
+  - test
+  - build
+  - compile
+  - install
+  - start
+  - stop
+  - restart
+  - deploy
+  - lint
+  - format
+  - check
+  - npm
+  - dotnet
+  - pip
+  - cargo
+  - make
+  - docker
+
+# Destructive wording that must match explicitly.
+# This is intentionally not merged into any normal action key.
+__intent_guard_destructive:
+  - force push
+  - reset hard
+  - delete branch
+  - drop table
+  - rm -rf
+  - clean
+  - purge
+  - wipe
+  - destroy
+  - nuke

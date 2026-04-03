@@ -1,0 +1,34 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - img "CodeNexus" [ref=e6]
+      - generic [ref=e7]:
+        - generic [ref=e8]: CodeNexus
+        - heading "AIDOCS Control Panel" [level=1] [ref=e9]
+        - link "codenexus.cloud" [ref=e10] [cursor=pointer]:
+          - /url: https://codenexus.cloud
+    - navigation "Dashboard navigation" [ref=e11]:
+      - button "Overview" [ref=e12] [cursor=pointer]:
+        - generic [ref=e13]: Overview
+      - button "Sessions" [ref=e15] [cursor=pointer]:
+        - generic [ref=e16]: Sessions
+      - button "Conductor" [ref=e18] [cursor=pointer]:
+        - generic [ref=e19]: Conductor
+      - button "Execution" [ref=e21] [cursor=pointer]:
+        - generic [ref=e22]: Execution
+      - button "Config" [ref=e24] [cursor=pointer]:
+        - generic [ref=e25]: Config
+      - button "TOML" [ref=e27] [cursor=pointer]:
+        - generic [ref=e28]: TOML
+      - button "Usage" [ref=e30] [cursor=pointer]:
+        - generic [ref=e31]: Usage
+    - generic [ref=e33]:
+      - generic [ref=e34]: Security stance
+      - paragraph [ref=e35]: Desktop-local operator plane. Runtime stays authoritative. Raw TOML editing is available for operator-level control.
+  - main [ref=e36]:
+    - generic [ref=e38]:
+      - generic [ref=e39]: Operator Console
+      - heading "AIDOCS dashboard, control surface, and TOML workbench in one desktop app." [level=2] [ref=e40]
+      - paragraph [ref=e41]: This app reads runtime state through the local bridge, exposes typed config controls, and gives direct access to the AIDOCS TOML surfaces that shape workflow, indexing, and operator behavior.
+    - generic [ref=e46]: Cannot read properties of undefined (reading 'invoke')
+    - region "Overview metrics"

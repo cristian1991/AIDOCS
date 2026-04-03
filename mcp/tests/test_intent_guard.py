@@ -1,9 +1,18 @@
 """Tests for intent_guard — verifies agent actions trace back to user intent."""
+
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
 from aidocs_mcp.intent_guard import check_intent, scan_for_injection, GuardResult
+
+
+def _write_action_tokens(root: Path, content: str) -> None:
+    action_tokens = root / "action_tokens"
+    action_tokens.mkdir(parents=True, exist_ok=True)
+    (action_tokens / "en.yaml").write_text(content, encoding="utf-8")
 
 
 class TestCheckIntent:
@@ -56,12 +65,16 @@ class TestCheckIntent:
         assert result.allowed is False
 
     def test_code_edit_lines_needs_intent(self) -> None:
-        result = check_intent("mcp__aidocs__code_edit_lines", "update the header layout")
+        result = check_intent(
+            "mcp__aidocs__code_edit_lines", "update the header layout"
+        )
         assert result.allowed is True
         assert "update" in result.matched_keywords
 
     def test_code_batch_edit_needs_intent(self) -> None:
-        result = check_intent("mcp__aidocs__code_batch_edit", "refactor the modal components")
+        result = check_intent(
+            "mcp__aidocs__code_batch_edit", "refactor the modal components"
+        )
         assert result.allowed is True
         assert "refactor" in result.matched_keywords
 
@@ -80,7 +93,8 @@ class TestCheckIntent:
     def test_bash_allowed_with_run(self) -> None:
         result = check_intent("bash", "run the tests")
         assert result.allowed is True
-        assert "run" in result.matched_keywords
+        assert result.category == "free"
+        assert result.matched_keywords is None
 
     def test_bash_allowed_with_build(self) -> None:
         result = check_intent("bash", "build the project")
@@ -90,18 +104,27 @@ class TestCheckIntent:
         result = check_intent("bash", "dotnet test the new module")
         assert result.allowed is True
 
-    def test_bash_blocked_without_execution_keywords(self) -> None:
+    def test_bash_allowed_without_execution_keywords(self) -> None:
         result = check_intent("bash", "investigate the bug")
-        assert result.allowed is False
+        assert result.allowed is True
+        assert result.category == "free"
+
+    def test_git_pull_allowed_with_pull_intent(self) -> None:
+        result = check_intent("git_pull", "pull latest changes from origin")
+        assert result.allowed is True
 
     # ── Memory tools ──
 
     def test_memory_capture_allowed_with_remember(self) -> None:
-        result = check_intent("mcp__aidocs__memory_capture", "remember this pattern for next time")
+        result = check_intent(
+            "mcp__aidocs__memory_capture", "remember this pattern for next time"
+        )
         assert result.allowed is True
 
     def test_memory_capture_blocked_without_keywords(self) -> None:
-        result = check_intent("mcp__aidocs__memory_capture", "what is the architecture?")
+        result = check_intent(
+            "mcp__aidocs__memory_capture", "what is the architecture?"
+        )
         assert result.allowed is False
 
     # ── Unknown tools (fail open) ──
@@ -124,7 +147,9 @@ class TestCheckIntent:
     # ── Multiple keywords ──
 
     def test_multiple_keywords_matched(self) -> None:
-        result = check_intent("edit", "fix and update the patient form, then add validation")
+        result = check_intent(
+            "edit", "fix and update the patient form, then add validation"
+        )
         assert result.allowed is True
         assert len(result.matched_keywords) >= 2
 
@@ -134,6 +159,41 @@ class TestCheckIntent:
         result = check_intent("edit", "FIX the BUG")
         assert result.allowed is True
         assert "fix" in result.matched_keywords
+
+    def test_intent_guard_phrases_can_be_overridden_from_action_tokens(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        global_root = tmp_path / "global"
+        _write_action_tokens(
+            global_root,
+            "__intent_guard_bash:\n  - verify shell\n",
+        )
+        monkeypatch.setenv("AIDOCS_PATH", str(global_root))
+
+        allowed = check_intent("bash", "verify shell the project")
+        blocked = check_intent("bash", "run the project")
+
+        assert allowed.allowed is True
+        assert allowed.category == "free"
+        assert blocked.allowed is True
+
+    def test_bash_is_free_even_when_intent_guard_override_tokens_exist(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        global_root = tmp_path / "global"
+        _write_action_tokens(
+            global_root,
+            "bash:\n  - run\n__intent_guard_bash:\n  - verify shell\n",
+        )
+        monkeypatch.setenv("AIDOCS_PATH", str(global_root))
+
+        first = check_intent("bash", "run the tests")
+        second = check_intent("bash", "verify shell the tests")
+
+        assert first.allowed is True
+        assert second.allowed is True
+        assert first.category == "free"
+        assert second.category == "free"
 
 
 class TestScanForInjection:

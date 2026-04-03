@@ -32,8 +32,12 @@ def _make_runtime(tmp_path: Path, plan_text: str) -> tuple[RuntimeService, Path,
     runtime = RuntimeService(hub=hub)
     project = tmp_path / "project"
     session_id = "2026-03-30-conductor-runtime"
-    runtime.hub.sessions.create_session(project, session_id, "Conductor Runtime", "user", "Run lanes safely")
-    runtime.hub.sessions.plan_file(project, session_id).write_text(plan_text, encoding="utf-8")
+    runtime.hub.sessions.create_session(
+        project, session_id, "Conductor Runtime", "user", "Run lanes safely"
+    )
+    runtime.hub.sessions.plan_file(project, session_id).write_text(
+        plan_text, encoding="utf-8"
+    )
     return runtime, project, session_id
 
 
@@ -59,11 +63,17 @@ def _assert_shared_file_overlap_blocks_parallel_lane(tmp_path: Path) -> None:
     result = conductor.runnable_lanes()
 
     assert result["runnable_lane_ids"] == []
-    assert result["blocked_reasons"]["lane-a"] == ["shared-file-overlap:src/pages/index.tsx:lane-b"]
-    assert result["blocked_reasons"]["lane-b"] == ["shared-file-overlap:src/pages/index.tsx:lane-a"]
+    assert result["blocked_reasons"]["lane-a"] == [
+        "shared-file-overlap:src/pages/index.tsx:lane-b"
+    ]
+    assert result["blocked_reasons"]["lane-b"] == [
+        "shared-file-overlap:src/pages/index.tsx:lane-a"
+    ]
 
 
-def test_conductor_marks_dependency_free_non_overlapping_lanes_runnable(tmp_path: Path) -> None:
+def test_conductor_marks_dependency_free_non_overlapping_lanes_runnable(
+    tmp_path: Path,
+) -> None:
     conductor = _make_conductor(
         tmp_path,
         "# Plan\n"
@@ -94,7 +104,9 @@ def test_conductor_blocks_parallel_lanes_that_share_a_file(tmp_path: Path) -> No
     _assert_shared_file_overlap_blocks_parallel_lane(tmp_path)
 
 
-def test_conductor_overlap_blocks_parallel_lanes_that_share_a_file(tmp_path: Path) -> None:
+def test_conductor_overlap_blocks_parallel_lanes_that_share_a_file(
+    tmp_path: Path,
+) -> None:
     _assert_shared_file_overlap_blocks_parallel_lane(tmp_path)
 
 
@@ -123,7 +135,9 @@ def test_conductor_respects_sparse_hard_depends_on(tmp_path: Path) -> None:
     assert result["waiting_on"] == {"integration": ["api-contract"]}
 
 
-def test_conductor_blocks_later_phases_until_earlier_phase_is_resolved(tmp_path: Path) -> None:
+def test_conductor_blocks_later_phases_until_earlier_phase_is_resolved(
+    tmp_path: Path,
+) -> None:
     conductor = _make_conductor(
         tmp_path,
         "# Plan\n"
@@ -147,7 +161,9 @@ def test_conductor_blocks_later_phases_until_earlier_phase_is_resolved(tmp_path:
     assert result["blocked_reasons"]["integration"] == ["waiting-on-phase:foundation"]
 
 
-def test_conductor_unblocks_next_phase_when_earlier_phases_are_completed(tmp_path: Path) -> None:
+def test_conductor_unblocks_next_phase_when_earlier_phases_are_completed(
+    tmp_path: Path,
+) -> None:
     conductor = _make_conductor(
         tmp_path,
         "# Plan\n"
@@ -175,7 +191,37 @@ def test_conductor_blocks_same_phase_overlap_unconditionally(tmp_path: Path) -> 
     _assert_shared_file_overlap_blocks_parallel_lane(tmp_path)
 
 
-def test_conductor_canonicalizes_file_paths_before_overlap_checks(tmp_path: Path) -> None:
+def test_conductor_allows_dependent_lane_with_shared_file_when_dependency_is_unresolved(
+    tmp_path: Path,
+) -> None:
+    """When lane B depends on lane A and they share files, lane A should still be runnable.
+    The overlap only prevents simultaneous execution, not the first lane from starting."""
+    conductor = _make_conductor(
+        tmp_path,
+        "# Plan\n"
+        "\n## Steps\n"
+        "- Phase: Dependent shared file work\n"
+        "- Lane: lane-a\n"
+        "- Files: src/shared.py\n"
+        "- [ ] Build lane a\n"
+        "- Lane: lane-b\n"
+        "- Files: src/shared.py\n"
+        "- depends_on: lane-a\n"
+        "- [ ] Build lane b\n",
+    )
+
+    result = conductor.runnable_lanes()
+
+    # lane-a should be runnable (no dependencies)
+    assert "lane-a" in result["runnable_lane_ids"]
+    # lane-b should be blocked by dependency, not by overlap
+    assert "lane-b" not in result["runnable_lane_ids"]
+    assert "waiting-on:lane-a" in result["blocked_reasons"]["lane-b"]
+
+
+def test_conductor_canonicalizes_file_paths_before_overlap_checks(
+    tmp_path: Path,
+) -> None:
     conductor = _make_conductor(
         tmp_path,
         "# Plan\n"
@@ -192,8 +238,12 @@ def test_conductor_canonicalizes_file_paths_before_overlap_checks(tmp_path: Path
     result = conductor.runnable_lanes()
 
     assert result["runnable_lane_ids"] == []
-    assert result["blocked_reasons"]["lane-a"] == ["shared-file-overlap:src/foo.py:lane-b"]
-    assert result["blocked_reasons"]["lane-b"] == ["shared-file-overlap:src/foo.py:lane-a"]
+    assert result["blocked_reasons"]["lane-a"] == [
+        "shared-file-overlap:src/foo.py:lane-b"
+    ]
+    assert result["blocked_reasons"]["lane-b"] == [
+        "shared-file-overlap:src/foo.py:lane-a"
+    ]
 
 
 def test_conductor_graph_uses_canonical_file_owner_keys(tmp_path: Path) -> None:

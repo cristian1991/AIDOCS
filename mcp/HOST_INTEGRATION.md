@@ -47,8 +47,9 @@ The MCP server already provides the required primitives. This document describes
    - `preflight_only`
    - route-guided MCP-first work
 5. If the route or action requires broader orchestration, the host may then call `aidocs_orchestrate` or a more specific MCP/runtime entrypoint.
-6. Host should prefer the top-level `report` field for default user-facing output.
-7. Host should use deeper fields only when more detail is needed:
+6. If a managed session is already bound, the host should keep execution inside that session and its current conductor/plan flow instead of switching to generic worktree or standalone execution setup.
+7. Host should prefer the top-level `report` field for default user-facing output.
+8. Host should use deeper fields only when more detail is needed:
    - `readiness_summary` for compact structured readiness
    - `operator_report` / `operator_summary` for richer managed-session understanding
    - full orchestration/bootstrap payloads for advanced inspection or debugging
@@ -85,6 +86,7 @@ The MCP server already provides the required primitives. This document describes
 2. `aidocs_route_prompt`
 3. obey returned route
 4. call `aidocs_orchestrate` or more specific MCP tools only when the route/work type requires it
+5. if `recommended_mcp_flow` includes `plan_conductor_status`, stay in the currently bound managed session and continue its conductor lane flow
 
 ### Broad understanding
 1. `aidocs_classify_prompt`
@@ -96,9 +98,10 @@ The MCP server already provides the required primitives. This document describes
 1. `aidocs_classify_prompt`
 2. `aidocs_route_prompt`
 3. `task_begin`
-4. bundle retrieval
-5. edit
-6. `task_complete`
+4. if planning is needed, use `plan_create_from_spec` / `plan_validate` / `plan_preflight`
+5. if lane-aware work exists, use `execution_mode_select` and `plan_dispatch_next`
+6. edit / delegated execution
+7. `verification_gate` and `task_complete`
 
 ## What Is Implemented Already
 
@@ -109,6 +112,7 @@ The MCP server already provides the required primitives. This document describes
 - `aidocs_classify_prompt` — keyword-based, advisory, synced with policy service
 - session lifecycle methods
 - task lifecycle methods (`task_begin`, `task_update`, `task_complete`)
+- runtime-owned orchestration methods (`plan_create_from_spec`, `plan_validate`, `execution_mode_select`, `plan_dispatch_next`, `plan_dispatch_report`, `execution_loop_next`, `verification_gate`)
 - memory/code/schema retrieval methods
 - `workflow_triggers_for_action` — action_kind → trigger → pending actions
 - `workflow_actions_compile` / `workflow_actions_get`
@@ -117,6 +121,8 @@ The MCP server already provides the required primitives. This document describes
 - `readiness_summary` and operator-facing action-surface summaries with pending workflow bullets
 - Claude Code hook with advisory directives, workflow surfacing, execution evidence
 - OpenCode plugin with entry gate, context injection, post-edit task reminders
+- OpenCode plugin with entry gate, managed-mode enforcement, raw-read gate enforcement, native execution logging, context injection, and post-edit task reminders
+- host context now separates helper skill guidance from runtime-owned workflow capability markers
 
 ## What Still Requires Real Host Support
 
@@ -143,9 +149,10 @@ The MCP server already provides the required primitives. This document describes
 
 Current boundary:
 
-- This is a real Claude Code host-enforced entry, routing, and execution-evidence layer.
+- This is a real Claude Code host-enforced entry and routing layer.
 - Classification is advisory — the LLM decides final tool usage.
 - Task lifecycle wrapping (`task_begin`/`task_complete`) is surfaced as guidance, not auto-invoked.
+- Runtime-owned workflow capabilities such as planning or completion verification may be surfaced separately from helper skills.
 - Pending workflow actions are surfaced in PreToolUse context but not auto-executed.
 
 ## OpenCode Implementation
@@ -156,7 +163,10 @@ Current boundary:
   - inject AIDOCS system context on each chat turn
   - tell the model to require `/aidocs` first in initialized but unmanaged projects
   - block core repo tools in unmanaged initialized projects unless the current slash command is `/aidocs`
+  - keep managed execution inside the currently bound session/conductor flow
+  - block raw `read` when the indexed-read gate has not granted the requested path
   - inject session and compiled workflow-action context in managed mode
+  - record `native_tool_use` execution events after native tool calls
   - remind about `task_complete` after edit/write tool completions in managed mode
   - recognize `/aidocs` by command identity, not only by raw prompt text
   - read lightweight command metadata from `core/.commands/*.md`
@@ -167,7 +177,9 @@ Current boundary:
 - Prompt interpretation is still primarily model/system driven in OpenCode today.
 - Unlike Claude Code, the current OpenCode plugin does not yet invoke `aidocs_classify_prompt` and `aidocs_route_prompt` on each normal prompt from hook time.
 - The OpenCode plugin currently uses local project state plus command metadata, not runtime-derived per-prompt routing.
+- OpenCode now distinguishes helper skill guidance from runtime-owned workflow capabilities in prompt context.
 - Task lifecycle reminders are injected post-edit but not auto-invoked.
+- OpenCode now also enforces raw-read gating and records native tool execution, but it still does not perform full per-prompt runtime classification at hook time.
 - The next stronger slice is runtime-driven prompt routing: call lightweight MCP classification and route methods on each prompt, then inject the returned advisory guidance.
 - After that, add session claim/release and richer tool-time policy based on MCP routing decisions.
 
@@ -194,6 +206,14 @@ Current boundary:
 ### Cursor
 - First-pass AIDOCS support is startup-only via `sessionStart`.
 - Treat Cursor startup routing as a compact session-selection/bootstrap prompt layer until broader hook parity is explicitly verified.
+
+### GitHub Copilot CLI
+- Superpowers now supports `sessionStart` startup context via `additionalContext` in Copilot CLI.
+- AIDOCS does not yet ship a Copilot-specific host integration path.
+- Recommended next step is a design slice, not immediate implementation:
+  - validate Copilot CLI hook/event surface and config shape in detail
+  - map AIDOCS `SessionStart` behavior onto Copilot's startup hook contract
+  - decide whether first-pass support should be startup-only (like Cursor) or include broader prompt/tool routing later
 
 ### Codex
 - Codex hooks are experimental as of March 2026.

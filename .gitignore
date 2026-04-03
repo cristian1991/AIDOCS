@@ -8,6 +8,7 @@
 .opencode/node_modules/
 .opencode/bun.lock
 .opencode/package.json
+.opencode/plugins/
 
 # Claude Code local settings
 .claude/settings.local.json
@@ -25,3 +26,6 @@ core/.MEMORY/.index/
 mcp/build/
 mcp/dist/
 .mcp.json
+
+# Local git worktrees
+.worktrees/

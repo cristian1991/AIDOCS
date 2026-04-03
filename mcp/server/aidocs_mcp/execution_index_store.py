@@ -11,6 +11,26 @@ from uuid import uuid4
 class ExecutionIndexStore:
     """Derived SQLite index for execution runs and event evidence."""
 
+    _LIFECYCLE_TOOLS = {
+        "aidocs_task_begin",
+        "aidocs_task_update",
+        "aidocs_task_complete",
+    }
+    _EDIT_LIKE_TOOLS = {
+        "edit",
+        "write",
+        "bash",
+        "aidocs_code_edit_lines",
+        "aidocs_code_batch_edit",
+        "aidocs_code_create_file",
+    }
+    _MEANINGFUL_MCP_PREFIXES = (
+        "aidocs_code_",
+        "aidocs_schema_",
+        "aidocs_memory_",
+        "aidocs_session_",
+    )
+
     def index_root(self, project_root: Path) -> Path:
         return project_root / ".MEMORY" / ".index"
 
@@ -161,8 +181,12 @@ class ExecutionIndexStore:
     def execution_status(self, project_root: Path) -> dict[str, Any]:
         self.init_db(project_root)
         with self.connect(project_root) as conn:
-            run_count = conn.execute("SELECT COUNT(*) FROM execution_runs").fetchone()[0]
-            event_count = conn.execute("SELECT COUNT(*) FROM execution_events").fetchone()[0]
+            run_count = conn.execute("SELECT COUNT(*) FROM execution_runs").fetchone()[
+                0
+            ]
+            event_count = conn.execute(
+                "SELECT COUNT(*) FROM execution_events"
+            ).fetchone()[0]
             run_kind_rows = conn.execute(
                 "SELECT run_kind, COUNT(*) AS count FROM execution_runs GROUP BY run_kind ORDER BY count DESC, run_kind ASC"
             ).fetchall()
@@ -177,11 +201,15 @@ class ExecutionIndexStore:
             "execution_runs": int(run_count),
             "execution_events": int(event_count),
             "run_kinds": {row["run_kind"]: int(row["count"]) for row in run_kind_rows},
-            "event_kinds": {row["event_kind"]: int(row["count"]) for row in event_kind_rows},
+            "event_kinds": {
+                row["event_kind"]: int(row["count"]) for row in event_kind_rows
+            },
             "by_source": {row["source_kind"]: int(row["count"]) for row in source_rows},
         }
 
-    def list_runs(self, project_root: Path, session_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    def list_runs(
+        self, project_root: Path, session_id: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
         self.init_db(project_root)
         sql = "SELECT run_id, run_kind, source_kind, session_id, procedure_id, capability_name, status, ad_hoc, target_entity, metadata_json, started_at, completed_at FROM execution_runs"
         params: list[Any] = []
@@ -213,7 +241,9 @@ class ExecutionIndexStore:
             params.append(session_id.strip())
         if query and query.strip():
             needle = f"%{query.strip()}%"
-            clauses.append("(event_kind LIKE ? OR COALESCE(capability_name, '') LIKE ? OR COALESCE(action_kind, '') LIKE ? OR COALESCE(payload_json, '') LIKE ?)")
+            clauses.append(
+                "(event_kind LIKE ? OR COALESCE(capability_name, '') LIKE ? OR COALESCE(action_kind, '') LIKE ? OR COALESCE(payload_json, '') LIKE ?)"
+            )
             params.extend([needle, needle, needle, needle])
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
@@ -222,6 +252,128 @@ class ExecutionIndexStore:
         with self.connect(project_root) as conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._event_row_to_dict(row) for row in rows]
+
+    def session_lifecycle_activity_summary(
+        self,
+        project_root: Path,
+        session_id: str,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        self.init_db(project_root)
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                "SELECT rowid, event_id, run_id, event_kind, source_kind, session_id, procedure_id, capability_name, action_kind, target_entity, status, payload_json, observed_at FROM execution_events WHERE session_id = ? ORDER BY observed_at DESC, rowid DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        events = [self._event_row_to_dict(row) for row in rows]
+        recent_activity: list[dict[str, Any]] = []
+        last_lifecycle_tool: str | None = None
+        last_lifecycle_observed_at: str | None = None
+
+        for event in events:
+            capability_name = str(event.get("capability_name") or "").strip()
+            if (
+                event.get("event_kind") == "tool_call_completed"
+                and capability_name in self._LIFECYCLE_TOOLS
+            ):
+                last_lifecycle_tool = capability_name
+                last_lifecycle_observed_at = (
+                    str(event.get("observed_at") or "").strip() or None
+                )
+                break
+            recent_activity.append(event)
+
+        edit_like_count = sum(
+            1 for event in recent_activity if self._is_edit_like_event(event)
+        )
+        meaningful_work_count = sum(
+            1 for event in recent_activity if self._is_meaningful_work_event(event)
+        )
+
+        needs_task_complete = edit_like_count >= 1
+        needs_task_update = not needs_task_complete and meaningful_work_count >= 3
+
+        return {
+            "session_id": session_id,
+            "last_lifecycle_tool": last_lifecycle_tool,
+            "last_lifecycle_observed_at": last_lifecycle_observed_at,
+            "edit_like_count": edit_like_count,
+            "meaningful_work_count": meaningful_work_count,
+            "needs_task_update": needs_task_update,
+            "needs_task_complete": needs_task_complete,
+            "recent_activity_count": len(recent_activity),
+        }
+
+    def session_journal_coverage_summary(
+        self,
+        project_root: Path,
+        session_id: str,
+        latest_journal_at: datetime | None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        self.init_db(project_root)
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                "SELECT rowid, event_id, run_id, event_kind, source_kind, session_id, procedure_id, capability_name, action_kind, target_entity, status, payload_json, observed_at FROM execution_events WHERE session_id = ? ORDER BY observed_at DESC, rowid DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        events = [self._event_row_to_dict(row) for row in rows]
+
+        meaningful_events: list[dict[str, Any]] = []
+        for event in events:
+            if not self._is_meaningful_work_event(event):
+                continue
+            observed_text = str(event.get("observed_at") or "").strip()
+            if not observed_text:
+                continue
+            try:
+                observed_at = datetime.strptime(observed_text, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if latest_journal_at is not None and observed_at <= latest_journal_at:
+                continue
+            meaningful_events.append(event)
+
+        latest_meaningful_at = None
+        if meaningful_events:
+            latest_meaningful_at = (
+                str(meaningful_events[0].get("observed_at") or "").strip() or None
+            )
+
+        return {
+            "meaningful_event_count_since_journal": len(meaningful_events),
+            "latest_meaningful_event_at": latest_meaningful_at,
+            "logging_debt": bool(meaningful_events),
+        }
+
+    def _is_edit_like_event(self, event: dict[str, Any]) -> bool:
+        capability_name = str(event.get("capability_name") or "").strip().lower()
+        return capability_name in self._EDIT_LIKE_TOOLS
+
+    def _is_meaningful_work_event(self, event: dict[str, Any]) -> bool:
+        capability_name = str(event.get("capability_name") or "").strip().lower()
+        event_kind = str(event.get("event_kind") or "").strip().lower()
+        action_kind = str(event.get("action_kind") or "").strip().lower()
+        if event_kind == "native_tool_use":
+            return capability_name in self._EDIT_LIKE_TOOLS or capability_name not in {
+                "read",
+                "glob",
+                "grep",
+            }
+        if event_kind == "tool_call_completed":
+            if capability_name in self._LIFECYCLE_TOOLS:
+                return False
+            if not capability_name and action_kind in {
+                "edit",
+                "write_memory",
+                "trace",
+                "understand",
+                "inspect",
+                "investigate",
+            }:
+                return True
+            return capability_name.startswith(self._MEANINGFUL_MCP_PREFIXES)
+        return False
 
     def _run_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
@@ -234,7 +386,9 @@ class ExecutionIndexStore:
             "status": row["status"],
             "ad_hoc": bool(row["ad_hoc"]),
             "target_entity": row["target_entity"],
-            "metadata": json.loads(row["metadata_json"]) if row["metadata_json"] else {},
+            "metadata": json.loads(row["metadata_json"])
+            if row["metadata_json"]
+            else {},
             "started_at": row["started_at"],
             "completed_at": row["completed_at"],
         }
@@ -300,7 +454,9 @@ class ExecutionIndexStore:
             where = " WHERE session_id = ?"
             params.append(session_id.strip())
         with self.connect(project_root) as conn:
-            total_events = conn.execute(f"SELECT COUNT(*) FROM execution_events{where}", params).fetchone()[0]
+            total_events = conn.execute(
+                f"SELECT COUNT(*) FROM execution_events{where}", params
+            ).fetchone()[0]
             action_kinds = conn.execute(
                 f"SELECT action_kind, COUNT(*) AS count FROM execution_events{where} GROUP BY action_kind ORDER BY count DESC",
                 params,
@@ -325,8 +481,14 @@ class ExecutionIndexStore:
         return {
             "session_id": session_id,
             "total_events": int(total_events),
-            "by_action_kind": {row["action_kind"]: int(row["count"]) for row in action_kinds if row["action_kind"]},
-            "by_event_kind": {row["event_kind"]: int(row["count"]) for row in event_kinds},
+            "by_action_kind": {
+                row["action_kind"]: int(row["count"])
+                for row in action_kinds
+                if row["action_kind"]
+            },
+            "by_event_kind": {
+                row["event_kind"]: int(row["count"]) for row in event_kinds
+            },
             "by_source": {row["source_kind"]: int(row["count"]) for row in sources},
             "ad_hoc_events": int(adhoc_count),
             "procedure_linked_events": int(procedure_count),
@@ -385,7 +547,9 @@ class ExecutionIndexStore:
                 }
                 for row in adhoc
             ],
-            "compliance_ratio": f"{len(procedured)}/{len(procedured) + len(adhoc)}" if (procedured or adhoc) else "no data",
+            "compliance_ratio": f"{len(procedured)}/{len(procedured) + len(adhoc)}"
+            if (procedured or adhoc)
+            else "no data",
         }
 
     def prune_old_events(
@@ -396,7 +560,14 @@ class ExecutionIndexStore:
     ) -> dict[str, int]:
         """Prune execution events older than max_age_days or exceeding max_events count."""
         self.init_db(project_root)
-        cutoff = (datetime.now(timezone.utc) - __import__("datetime").timedelta(days=max_age_days)).isoformat().replace("+00:00", "Z")
+        cutoff = (
+            (
+                datetime.now(timezone.utc)
+                - __import__("datetime").timedelta(days=max_age_days)
+            )
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
         with self.connect(project_root) as conn:
             # Delete by age
             age_result = conn.execute(
@@ -433,4 +604,9 @@ class ExecutionIndexStore:
         }
 
     def _timestamp(self) -> str:
-        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        return (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )

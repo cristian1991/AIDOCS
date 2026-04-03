@@ -59,3 +59,17 @@ dev_mode = true
 # "advisory": agent gets a reminder but is not blocked
 # "off": no comment enforcement
 comment_enforcement = "advisory"
+
+[presentation]
+# Maximum non-empty lines included when helper skill guidance is injected into host context.
+helper_skill_excerpt_lines = 12
+# Maximum characters included when helper skill guidance is injected into host context.
+helper_skill_excerpt_chars = 1200
+# Maximum workflow actions included in compact workflow summaries.
+workflow_summary_limit = 3
+# Default journal entries returned by session_resume_bundle when no explicit limit is provided.
+resume_journal_last_n = 10
+# Handoff freshness window in hours before handoff is considered stale.
+handoff_stale_after_hours = 24
+# How many hours a handoff step is considered recently changed.
+handoff_recent_hours = 24

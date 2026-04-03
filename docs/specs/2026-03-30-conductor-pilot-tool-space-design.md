@@ -39,6 +39,12 @@ Specifically, the following should not control execution for this pilot:
 - `subagent-driven-development`
 - `executing-plans`
 
+Why this still matters after recent Superpowers updates:
+
+- Superpowers restored a user-visible execution choice between `subagent-driven-development` and `executing-plans`
+- Superpowers also moved plan/spec review from subagent review loops to inline self-review
+- for this pilot, neither of those execution-path decisions should supersede the active AIDOCS managed session or conductor lane graph
+
 Behavioral/process skills may still be useful in a subordinate role, for example:
 
 - debugging

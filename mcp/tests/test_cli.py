@@ -1,15 +1,28 @@
 """Tests for the aidocs CLI commands."""
+
 import json
 from pathlib import Path
 
 from aidocs_mcp import __version__
-from aidocs_mcp.cli import cmd_benchmark, cmd_config, cmd_descriptors, cmd_init, cmd_snapshots, cmd_status, cmd_sync, cmd_version
+from aidocs_mcp.cli import (
+    cmd_benchmark,
+    cmd_config,
+    cmd_dashboard,
+    cmd_dashboard_set_config,
+    cmd_descriptors,
+    cmd_init,
+    cmd_snapshots,
+    cmd_status,
+    cmd_sync,
+    cmd_version,
+)
 
 
 def test_version(capsys: object) -> None:
     """version command prints version string."""
     import io
     import sys
+
     old_stdout = sys.stdout
     sys.stdout = buf = io.StringIO()
     cmd_version([])
@@ -176,6 +189,7 @@ def test_sync_on_initialized_project(tmp_path: Path) -> None:
 
     # Verify index was populated
     from aidocs_mcp.code_index_store import CodeIndexStore
+
     store = CodeIndexStore()
     with store.connect(root) as conn:
         count = conn.execute("SELECT COUNT(*) FROM code_files").fetchone()[0]
@@ -215,6 +229,56 @@ def test_sync_on_uninitialized_project(tmp_path: Path) -> None:
     assert result == 1
 
 
+def test_dashboard_json_snapshot_on_initialized_project(tmp_path: Path) -> None:
+    import io
+    import sys
+
+    root = tmp_path / "project"
+    root.mkdir()
+    cmd_init([str(root)])
+
+    old_stdout = sys.stdout
+    sys.stdout = buf = io.StringIO()
+    result = cmd_dashboard([str(root), "--json"])
+    sys.stdout = old_stdout
+
+    payload = json.loads(buf.getvalue())
+    assert result == 0
+    assert payload["ok"] is True
+    assert "snapshot" in payload
+    assert payload["snapshot"]["project"]["project_name"] == "project"
+
+
+def test_dashboard_set_config_updates_project_file(tmp_path: Path) -> None:
+    import io
+    import sys
+
+    root = tmp_path / "project"
+    root.mkdir()
+    cmd_init([str(root)])
+
+    old_stdout = sys.stdout
+    sys.stdout = buf = io.StringIO()
+    result = cmd_dashboard_set_config(
+        [
+            str(root),
+            "--json",
+            "--setting",
+            "agent.directive_style",
+            "--value",
+            '"detailed"',
+        ]
+    )
+    sys.stdout = old_stdout
+
+    payload = json.loads(buf.getvalue())
+    assert result == 0
+    assert payload["ok"] is True
+    assert 'directive_style = "detailed"' in (root / "aidocs.toml").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_benchmark_json_on_initialized_project(tmp_path: Path) -> None:
     """benchmark --json emits structured output."""
     import io
@@ -238,11 +302,16 @@ def test_benchmark_json_on_initialized_project(tmp_path: Path) -> None:
     assert payload["iterations"] == 2
     assert payload["sync"]["code_files"] >= 1
     assert payload["classification"]["prompt_count"] >= 1
-    assert payload["classification"]["total_classifications"] == payload["classification"]["prompt_count"] * 2
+    assert (
+        payload["classification"]["total_classifications"]
+        == payload["classification"]["prompt_count"] * 2
+    )
     assert "per_language" in payload["classification"]
     assert "en" in payload["classification"]["per_language"]
     assert payload["retrieval"]["scenario_count"] >= 1
-    assert len(payload["retrieval"]["scenarios"]) == payload["retrieval"]["scenario_count"]
+    assert (
+        len(payload["retrieval"]["scenarios"]) == payload["retrieval"]["scenario_count"]
+    )
     assert "schema_benchmark" in payload
     assert payload["schema_benchmark"]["scenario_count"] >= 0
     assert "comparative" in payload
@@ -351,7 +420,18 @@ def test_snapshots_json_reads_manifest(monkeypatch, tmp_path: Path) -> None:
     manifest_dir = root / ".MEMORY" / "related-projects" / "index-snapshots"
     manifest_dir.mkdir(parents=True, exist_ok=True)
     (manifest_dir / "manifest.json").write_text(
-        json.dumps({"snapshots": [{"name": "OpenCode", "code_files": 10, "schema_entities": 0, "workflow_rule_count": 1}]}),
+        json.dumps(
+            {
+                "snapshots": [
+                    {
+                        "name": "OpenCode",
+                        "code_files": 10,
+                        "schema_entities": 0,
+                        "workflow_rule_count": 1,
+                    }
+                ]
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setenv("AIDOCS_PATH", str(root))

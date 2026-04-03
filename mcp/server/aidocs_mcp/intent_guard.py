@@ -14,15 +14,19 @@ explicitly ask the user and get approval.
 
 This module is stateless and deterministic — no AI inference, just keyword matching.
 """
+
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(slots=True)
 class GuardResult:
     """Result of an intent check."""
+
     allowed: bool
     category: str  # "free", "intent_required", "confirmation"
     reason: str | None = None
@@ -34,36 +38,71 @@ class GuardResult:
 # FREE: Agent can always use these without justification
 FREE_TOOLS: set[str] = {
     # Read/search operations
-    "read", "glob", "grep",
+    "read",
+    "glob",
+    "grep",
     # MCP read tools (all code_get_*, code_find, code_trace, etc.)
-    "code_get_lines", "code_get_outline", "code_get_symbol_snippet",
-    "code_get_method_signature", "code_get_method_signatures",
-    "code_get_constructor_params", "code_get_constructor_params_batch",
-    "code_get_enum_values", "code_get_entity_properties",
-    "code_get_service_api", "code_get_dependencies", "code_get_modules",
+    "code_get_lines",
+    "code_get_outline",
+    "code_get_symbol_snippet",
+    "code_get_method_signature",
+    "code_get_method_signatures",
+    "code_get_constructor_params",
+    "code_get_constructor_params_batch",
+    "code_get_enum_values",
+    "code_get_entity_properties",
+    "code_get_service_api",
+    "code_get_dependencies",
+    "code_get_modules",
     "code_get_module_files",
-    "code_find", "code_trace", "code_search", "code_investigate",
-    "code_bundle", "code_index_sync", "code_index_status",
-    "schema_query", "schema_index_sync",
-    "index_sync", "index_status",
+    "code_find",
+    "code_trace",
+    "code_search",
+    "code_investigate",
+    "code_bundle",
+    "code_index_sync",
+    "code_index_status",
+    "schema_query",
+    "schema_index_sync",
+    "index_sync",
+    "index_status",
     # Memory read
-    "memory_read", "memory_search",
+    "memory_read",
+    "memory_search",
     # Session read
-    "session_list", "session_read", "session_select",
-    "session_journal_read", "session_resume_bundle",
+    "session_list",
+    "session_read",
+    "session_select",
+    "session_journal_read",
+    "session_resume_bundle",
     # Status/diagnostic
-    "project_status", "project_check", "git_diag",
-    "index_language_descriptors_get", "index_language_descriptors_validate",
-    "capability_definitions_get", "capability_index_status",
+    "project_status",
+    "project_check",
+    "git_diag",
+    "index_language_descriptors_get",
+    "index_language_descriptors_validate",
+    "capability_definitions_get",
+    "capability_index_status",
     # Orchestration
-    "aidocs_classify_prompt", "aidocs_route_prompt", "aidocs_handle_prompt",
-    "aidocs_orchestrate", "aidocs_mode_get",
-    "action_surface_assess", "action_surface_compare",
-    "action_surface_status_bundle", "action_surface_session_bundle",
+    "aidocs_classify_prompt",
+    "aidocs_route_prompt",
+    "aidocs_handle_prompt",
+    "aidocs_orchestrate",
+    "aidocs_mode_get",
+    "action_surface_assess",
+    "action_surface_compare",
+    "action_surface_status_bundle",
+    "action_surface_session_bundle",
     "action_surface_current_session_bundle",
     "runtime_preflight",
-    "execution_events_get", "execution_runs_get",
-    "execution_query_last", "execution_query_summary", "execution_query_compliance",
+    "execution_events_get",
+    "execution_runs_get",
+    "execution_query_last",
+    "execution_query_summary",
+    "execution_query_compliance",
+    # Shell execution is allowed by default; protected-target and destructive
+    # safeguards are enforced elsewhere in host/runtime policy.
+    "bash",
 }
 
 # CONFIRMATION: Always requires explicit user confirmation
@@ -74,33 +113,120 @@ CONFIRMATION_TOOLS: set[str] = {
 # Keywords in user prompt that justify specific tool categories
 INTENT_KEYWORDS: dict[str, set[str]] = {
     # File editing
-    "edit": {"edit", "fix", "change", "update", "modify", "replace", "rename",
-             "refactor", "clean", "improve", "add", "remove", "delete", "move",
-             "create", "build", "implement", "write", "set", "configure", "adjust",
-             "patch", "correct", "convert", "migrate", "restructure", "redesign",
-             "rewrite", "rework", "optimize", "simplify"},
-
+    "edit": {
+        "edit",
+        "fix",
+        "change",
+        "update",
+        "modify",
+        "replace",
+        "rename",
+        "refactor",
+        "clean",
+        "improve",
+        "add",
+        "remove",
+        "delete",
+        "move",
+        "create",
+        "build",
+        "implement",
+        "write",
+        "set",
+        "configure",
+        "adjust",
+        "patch",
+        "correct",
+        "convert",
+        "migrate",
+        "restructure",
+        "redesign",
+        "rewrite",
+        "rework",
+        "optimize",
+        "simplify",
+    },
     # File creation
-    "write": {"create", "add", "generate", "scaffold", "new", "init", "setup",
-              "build", "implement", "write", "make", "fix", "update"},
-
+    "write": {
+        "create",
+        "add",
+        "generate",
+        "scaffold",
+        "new",
+        "init",
+        "setup",
+        "build",
+        "implement",
+        "write",
+        "make",
+        "fix",
+        "update",
+    },
     # Git operations
     "git_commit": {"commit", "save changes", "check in"},
     "git_push": {"push", "deploy", "ship", "publish", "release"},
     "git_pull": {"pull", "fetch", "sync", "update from"},
-
     # Shell execution
-    "bash": {"run", "execute", "test", "build", "compile", "install", "start",
-             "stop", "restart", "deploy", "lint", "format", "check",
-             "npm", "dotnet", "pip", "cargo", "make", "docker"},
-
+    "bash": {
+        "run",
+        "execute",
+        "test",
+        "build",
+        "compile",
+        "install",
+        "start",
+        "stop",
+        "restart",
+        "deploy",
+        "lint",
+        "format",
+        "check",
+        "npm",
+        "dotnet",
+        "pip",
+        "cargo",
+        "make",
+        "docker",
+    },
     # Memory writes
-    "memory_capture": {"remember", "save", "note", "record", "log", "capture",
-                       "store", "persist", "memorize", "keep"},
-
+    "memory_capture": {
+        "remember",
+        "save",
+        "note",
+        "record",
+        "log",
+        "capture",
+        "store",
+        "persist",
+        "memorize",
+        "keep",
+    },
     # Destructive operations (always need explicit keywords)
-    "destructive": {"force push", "reset hard", "delete branch", "drop table",
-                    "rm -rf", "clean", "purge", "wipe", "destroy", "nuke"},
+    "destructive": {
+        "force push",
+        "reset hard",
+        "delete branch",
+        "drop table",
+        "rm -rf",
+        "clean",
+        "purge",
+        "wipe",
+        "destroy",
+        "nuke",
+    },
+}
+
+_INTENT_GUARD_TOKEN_KEYS: dict[str, str] = {
+    "write": "__intent_guard_write",
+    "destructive": "__intent_guard_destructive",
+}
+
+_CANONICAL_INTENT_TOKEN_KEYS: dict[str, str] = {
+    "edit": "edit",
+    "memory_capture": "write_memory",
+    "git_commit": "git_commit",
+    "git_push": "git_push",
+    "git_pull": "git_pull",
 }
 
 # Map tool names to their intent keyword category
@@ -109,7 +235,6 @@ TOOL_INTENT_MAP: dict[str, str] = {
     "write": "write",
     "code_edit_lines": "edit",
     "code_batch_edit": "edit",
-    "bash": "bash",
     "memory_capture": "memory_capture",
     "session_journal_log": "memory_capture",
     "task_begin": "edit",
@@ -142,8 +267,70 @@ def _normalize_tool_name(tool_name: str) -> str:
     name = tool_name.strip().lower()
     for prefix in ("mcp__aidocs__", "mcp__playwright__"):
         if name.startswith(prefix):
-            name = name[len(prefix):]
+            name = name[len(prefix) :]
     return name
+
+
+def _resolve_action_tokens_dir() -> Path:
+    candidates = []
+    env_path = os.environ.get("AIDOCS_PATH")
+    if env_path:
+        candidates.append(Path(env_path) / "action_tokens")
+    candidates.extend(
+        [
+            Path(__file__).resolve().parents[3] / "action_tokens",
+            Path(__file__).resolve().parents[2] / "action_tokens",
+            Path.cwd() / "action_tokens",
+        ]
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return candidates[0]
+
+
+def _load_action_token_lists(directory: Path | None = None) -> dict[str, list[str]]:
+    root = directory or _resolve_action_tokens_dir()
+    if not root.is_dir():
+        return {}
+    merged: dict[str, list[str]] = {}
+    for yaml_file in sorted(root.glob("*.yaml")):
+        current_key: str | None = None
+        try:
+            for raw_line in yaml_file.read_text(encoding="utf-8").splitlines():
+                line = raw_line.rstrip()
+                if not line or line.lstrip().startswith("#"):
+                    continue
+                key_match = re.match(r"^(\w[\w_]*):\s*$", line)
+                if key_match:
+                    current_key = key_match.group(1)
+                    continue
+                item_match = re.match(r"^\s+-\s+(.+)$", line)
+                if item_match and current_key:
+                    token = item_match.group(1).strip()
+                    if token:
+                        merged.setdefault(current_key, []).append(token)
+        except Exception:
+            continue
+    return merged
+
+
+def _intent_keywords() -> dict[str, set[str]]:
+    token_lists = _load_action_token_lists()
+    resolved = {key: set(value) for key, value in INTENT_KEYWORDS.items()}
+    for category, token_key in _CANONICAL_INTENT_TOKEN_KEYS.items():
+        values = token_lists.get(token_key, [])
+        if values:
+            resolved[category] = {
+                str(item).strip().lower() for item in values if str(item).strip()
+            }
+    for category, token_key in _INTENT_GUARD_TOKEN_KEYS.items():
+        values = token_lists.get(token_key, [])
+        if values:
+            resolved[category] = {
+                str(item).strip().lower() for item in values if str(item).strip()
+            }
+    return resolved
 
 
 def _extract_prompt_keywords(prompt: str) -> set[str]:
@@ -154,7 +341,7 @@ def _extract_prompt_keywords(prompt: str) -> set[str]:
     words = set(re.findall(r"[a-z]{2,}", lower))
     # Also check for multi-word phrases
     phrases = set()
-    for phrase_set in INTENT_KEYWORDS.values():
+    for phrase_set in _intent_keywords().values():
         for phrase in phrase_set:
             if " " in phrase and phrase in lower:
                 phrases.add(phrase)
@@ -196,7 +383,7 @@ def check_intent(
         # Unknown tool — allow by default (fail open for unknown tools)
         return GuardResult(allowed=True, category="free")
 
-    required_keywords = INTENT_KEYWORDS.get(intent_category, set())
+    required_keywords = _intent_keywords().get(intent_category, set())
     if not required_keywords:
         return GuardResult(allowed=True, category="free")
 
@@ -216,7 +403,7 @@ def check_intent(
             allowed=False,
             category="confirmation",
             reason=f"Destructive operation `{normalized}` not found in user prompt. "
-                   f"The user must explicitly request this action.",
+            f"The user must explicitly request this action.",
         )
 
     # Intent not found — block with helpful message
@@ -225,8 +412,8 @@ def check_intent(
         allowed=False,
         category="intent_required",
         reason=f"Tool `{normalized}` requires user intent. "
-               f"The user prompt does not contain keywords like: {', '.join(example_keywords)}. "
-               f"Ask the user if they want to {intent_category}.",
+        f"The user prompt does not contain keywords like: {', '.join(example_keywords)}. "
+        f"Ask the user if they want to {intent_category}.",
     )
 
 
@@ -246,11 +433,18 @@ def scan_for_injection(content: str) -> list[dict[str, str]]:
         for pattern in INJECTION_PATTERNS:
             match = pattern.search(line)
             if match:
-                findings.append({
-                    "line": line_number,
-                    "matched": match.group(0),
-                    "pattern": pattern.pattern,
-                    "line_content": line.strip()[:200],
-                    "severity": "high" if any(kw in pattern.pattern.lower() for kw in ("curl", "eval", "exec", "rm", "powershell")) else "medium",
-                })
+                findings.append(
+                    {
+                        "line": line_number,
+                        "matched": match.group(0),
+                        "pattern": pattern.pattern,
+                        "line_content": line.strip()[:200],
+                        "severity": "high"
+                        if any(
+                            kw in pattern.pattern.lower()
+                            for kw in ("curl", "eval", "exec", "rm", "powershell")
+                        )
+                        else "medium",
+                    }
+                )
     return findings

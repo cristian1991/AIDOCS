@@ -1,5 +1,11 @@
 # Skill Override Policy Design
 
+> Historical design document.
+>
+> This file describes an earlier override model that used `aidocs_native_override` terminology.
+> The current implementation uses runtime-owned capability markers such as `aidocs_runtime_owned` and separates helper skills from runtime-owned workflow authority.
+> Keep this document for history, but do not treat it as the current source of truth.
+
 ## Goal
 
 Define how AIDOCS chooses between its own orchestration/runtime behavior and bundled/provider skill content, especially for `superpowers`-derived skills shipped with AIDOCS.
@@ -106,6 +112,13 @@ AIDOCS may still log, select, and expose it, but it does not replace or wrap the
 - `executing-plans`
 
 These are the critical mismatch skills because they define execution architecture itself.
+
+Recent Superpowers changes reinforce this split rather than weakening it:
+
+- execution choice between `subagent-driven-development` and `executing-plans` is user-visible again
+- plan/spec review is now inline self-review instead of subagent review loops
+
+AIDOCS should therefore override the execution architecture while remaining compatible with the updated skill content and terminology.
 
 ## Resolution Order
 

@@ -6,33 +6,49 @@ $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $RootPath -or $RootPath.Trim() -eq "") {
-  $RootPath = Split-Path -Parent $scriptDir
+  $RootPath = Split-Path -Parent (Split-Path -Parent $scriptDir)
 }
 
-$root = (Resolve-Path $RootPath).Path
-$projectRoot = $root
-$sourceRoot = $root
-$buildCandidate = Join-Path $root "build"
-if (Test-Path (Join-Path $buildCandidate ".MEMORY\.aidocs\index.aidocs")) {
-  $sourceRoot = (Resolve-Path $buildCandidate).Path
-}
-elseif ($root -like "*\build" -and (Test-Path (Join-Path (Split-Path -Parent $root) "mcp\server"))) {
-  $projectRoot = (Resolve-Path (Split-Path -Parent $root)).Path
-}
+function Resolve-RepoAndCoreRoots {
+  param([string]$CandidateRoot)
 
-if (-not (Test-Path (Join-Path $projectRoot "mcp\server"))) {
-  $candidateParent = Split-Path -Parent $root
-  if ($candidateParent -and (Test-Path (Join-Path $candidateParent "mcp\server"))) {
-    $projectRoot = (Resolve-Path $candidateParent).Path
+  $resolved = (Resolve-Path $CandidateRoot).Path
+  $parent = Split-Path -Parent $resolved
+  $candidates = @($resolved)
+  if ($parent) {
+    $candidates += $parent
   }
+
+  foreach ($candidate in $candidates) {
+    $coreCandidate = Join-Path $candidate "core"
+    if ((Test-Path (Join-Path $candidate "mcp\server")) -and (Test-Path (Join-Path $coreCandidate "plugins\aidocs.js"))) {
+      return [pscustomobject]@{
+        ProjectRoot = (Resolve-Path $candidate).Path
+        CoreRoot = (Resolve-Path $coreCandidate).Path
+      }
+    }
+  }
+
+  if ((Test-Path (Join-Path $resolved "plugins\aidocs.js")) -and $parent -and (Test-Path (Join-Path $parent "mcp\server"))) {
+    return [pscustomobject]@{
+      ProjectRoot = (Resolve-Path $parent).Path
+      CoreRoot = (Resolve-Path $resolved).Path
+    }
+  }
+
+  throw "Could not resolve repo root and core root from: $CandidateRoot"
 }
 
-$indexFile = Join-Path $sourceRoot ".MEMORY\.aidocs\index.aidocs"
+$roots = Resolve-RepoAndCoreRoots -CandidateRoot $RootPath
+$projectRoot = $roots.ProjectRoot
+$coreRoot = $roots.CoreRoot
+
+$indexFile = Join-Path $projectRoot ".MEMORY\.aidocs\index.aidocs"
 if (-not (Test-Path $indexFile)) {
-  throw ".MEMORY/.aidocs/index.aidocs not found at runtime root: $sourceRoot"
+  throw ".MEMORY/.aidocs/index.aidocs not found at repo root: $projectRoot"
 }
 
-$versionFile = Join-Path $sourceRoot ".MEMORY\.aidocs\command-pack.version"
+$versionFile = Join-Path $projectRoot ".MEMORY\.aidocs\command-pack.version"
 $commandPackVersion = "unknown"
 if (Test-Path $versionFile) {
   $rawVersion = (Get-Content -Path $versionFile -ErrorAction SilentlyContinue | Select-Object -First 1)
@@ -44,6 +60,7 @@ if (Test-Path $versionFile) {
 $opencodeDir = Join-Path $env:USERPROFILE ".config\opencode"
 $opencodeCommandsDir = Join-Path $opencodeDir "commands"
 $opencodePluginsDir = Join-Path $opencodeDir "plugins"
+$opencodeActionHooksDir = Join-Path $opencodeDir "action_hooks"
 $opencodeSettingsPath = if (Test-Path (Join-Path $opencodeDir "opencode.jsonc")) {
   Join-Path $opencodeDir "opencode.jsonc"
 } else {
@@ -56,6 +73,7 @@ $claudeSettingsPath = Join-Path $claudeDir "settings.json"
 New-Item -ItemType Directory -Force -Path $opencodeDir | Out-Null
 New-Item -ItemType Directory -Force -Path $opencodeCommandsDir | Out-Null
 New-Item -ItemType Directory -Force -Path $opencodePluginsDir | Out-Null
+New-Item -ItemType Directory -Force -Path $opencodeActionHooksDir | Out-Null
 New-Item -ItemType Directory -Force -Path $claudeDir | Out-Null
 New-Item -ItemType Directory -Force -Path $claudeCommandsDir | Out-Null
 
@@ -98,7 +116,7 @@ $header = [System.Char]::ConvertFromUtf32(0x1F6D1) + " STOP"
 $globalAgents = @"
 # Global AGENTS.md - Cross-Agent Bootstrap
 
-AIDOCS source: $sourceRoot
+AIDOCS source: $projectRoot
 
 Non-negotiables:
 - Do not operate outside the current project unless explicitly instructed.
@@ -117,13 +135,13 @@ Non-negotiables:
 Routing order:
 1) Project `AGENTS.md` or `CLAUDE.md` if present
 2) Follow the project router (`/.MEMORY/.aidocs/index.aidocs` -> `/.MEMORY/INDEX.md` -> selected `/.MEMORY/sessions/*/SESSION.md`)
-3) If project setup is missing, fall back to $sourceRoot\.MEMORY\.aidocs\index.aidocs
+3) If project setup is missing, fall back to $projectRoot\.MEMORY\.aidocs\index.aidocs
 "@
 
 $globalClaude = @"
 # Global CLAUDE.md - Cross-Agent Bootstrap
 
-AIDOCS source: $sourceRoot
+AIDOCS source: $projectRoot
 
 Non-negotiables:
 - Do not operate outside the current project unless explicitly instructed.
@@ -143,7 +161,7 @@ Non-negotiables:
 Routing order:
 1) Project `AGENTS.md` or `CLAUDE.md` if present
 2) Follow the project router (`/.MEMORY/.aidocs/index.aidocs` -> `/.MEMORY/INDEX.md` -> selected `/.MEMORY/sessions/*/SESSION.md`)
-3) If project setup is missing, fall back to $sourceRoot\.MEMORY\.aidocs\index.aidocs
+3) If project setup is missing, fall back to $projectRoot\.MEMORY\.aidocs\index.aidocs
 "@
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -170,7 +188,7 @@ function New-LinkOrCopy {
 [System.IO.File]::WriteAllText((Join-Path $opencodeDir "AGENTS.md"), $globalAgents, $utf8NoBom)
 [System.IO.File]::WriteAllText((Join-Path $claudeDir "CLAUDE.md"), $globalClaude, $utf8NoBom)
 
-$opencodePluginSource = Join-Path $sourceRoot "plugins\aidocs.js"
+$opencodePluginSource = Join-Path $coreRoot "plugins\aidocs.js"
 if (-not (Test-Path $opencodePluginSource)) {
   throw "Missing OpenCode plugin script: $opencodePluginSource"
 }
@@ -215,6 +233,15 @@ Get-ChildItem -Path $actionTokensRoot -Filter "*.yaml" -File | ForEach-Object {
   $opencodeActionTokenExports[$target] = $mode
 }
 
+$actionHooksRoot = Join-Path $projectRoot "action_hooks"
+if (Test-Path $actionHooksRoot) {
+  Get-ChildItem -Path $opencodeActionHooksDir -Filter "*.toml" -File -ErrorAction SilentlyContinue | Remove-Item -Force
+  Get-ChildItem -Path $actionHooksRoot -Filter "*.toml" -File | ForEach-Object {
+    $target = Join-Path $opencodeActionHooksDir $_.Name
+    Copy-Item -Path $_.FullName -Destination $target -Force
+  }
+}
+
 if (Test-Path $opencodeSettingsPath) {
   $opencodeSettingsRaw = [System.IO.File]::ReadAllText($opencodeSettingsPath)
   $opencodeSettings = if ($opencodeSettingsRaw.Trim()) { $opencodeSettingsRaw | ConvertFrom-Json } else { [pscustomobject]@{} }
@@ -256,7 +283,7 @@ $opencodeSettings.mcp | Add-Member -Force -NotePropertyName aidocs -NoteProperty
 $opencodeSettingsJson = $opencodeSettings | ConvertTo-Json -Depth 20
 [System.IO.File]::WriteAllText($opencodeSettingsPath, $opencodeSettingsJson, $utf8NoBom)
 
-$claudeHookScript = Join-Path $sourceRoot "scripts\claude-hook.ps1"
+$claudeHookScript = Join-Path $coreRoot "scripts\claude-hook.ps1"
 if (-not (Test-Path $claudeHookScript)) {
   throw "Missing Claude hook script: $claudeHookScript"
 }
@@ -321,7 +348,7 @@ $claudeSettingsJson = $claudeSettings | ConvertTo-Json -Depth 20
 
 $skipGlobalCommands = @("doctor.md")
 
-$sharedCommandsDir = Join-Path $sourceRoot ".commands"
+$sharedCommandsDir = Join-Path $coreRoot ".commands"
 
 # Clean target command dirs before copying (removes stale/renamed commands)
 Get-ChildItem -Path $opencodeCommandsDir -Filter "*.md" -File -ErrorAction SilentlyContinue | Remove-Item -Force
@@ -360,6 +387,11 @@ Write-Host "Installed global routing files:"
 Write-Host "-" (Join-Path $opencodeDir "AGENTS.md")
 Write-Host "-" $opencodeSettingsPath
 Write-Host "-" $opencodePluginTarget
+if (Test-Path $actionHooksRoot) {
+  Get-ChildItem -Path $opencodeActionHooksDir -Filter "*.toml" -File | ForEach-Object {
+    Write-Host "-" $_.FullName
+  }
+}
 Write-Host "-" (Join-Path $claudeDir "CLAUDE.md")
 Write-Host "-" $claudeSettingsPath
 foreach ($k in $copied.Keys) {
@@ -381,7 +413,8 @@ if ($currentAidocsPath -ne $projectRoot) {
   Write-Host "AIDOCS_PATH already set to $projectRoot"
 }
 
-Write-Host "AIDOCS source wired to:" $sourceRoot
+Write-Host "AIDOCS source wired to:" $projectRoot
+Write-Host "AIDOCS core assets wired to:" $coreRoot
 Write-Host "Command pack version:" $commandPackVersion
 
 $requiredCommandFiles = @(

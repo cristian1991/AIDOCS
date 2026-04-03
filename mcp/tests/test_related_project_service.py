@@ -38,14 +38,30 @@ def test_related_project_path_resolution(tmp_path: Path) -> None:
     config = project_root / ".MEMORY" / "config"
     config.mkdir(parents=True, exist_ok=True)
     (config / "related-projects.md").write_text(
-        "# Related Projects\n\n"
-        f"## DentalApp\n- Path: `{related_root}`\n",
+        f"# Related Projects\n\n## DentalApp\n- Path: `{related_root}`\n",
         encoding="utf-8",
     )
 
     resolved = service.resolve_related_project_path(project_root, "DentalApp")
 
     assert resolved == related_root
+
+
+def test_related_project_relative_path_resolution(tmp_path: Path) -> None:
+    service = RelatedProjectService()
+    project_root = tmp_path / "project"
+    related_root = project_root / ".." / "DentalApp"
+    related_root.mkdir(parents=True, exist_ok=True)
+    config = project_root / ".MEMORY" / "config"
+    config.mkdir(parents=True, exist_ok=True)
+    (config / "related-projects.md").write_text(
+        "# Related Projects\n\n## DentalApp\n- Path: `../DentalApp`\n",
+        encoding="utf-8",
+    )
+
+    resolved = service.resolve_related_project_path(project_root, "DentalApp")
+
+    assert resolved == related_root.resolve()
 
 
 def test_related_project_compare_concept_shape(tmp_path: Path) -> None:

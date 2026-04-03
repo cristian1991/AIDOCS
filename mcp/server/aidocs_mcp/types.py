@@ -82,12 +82,95 @@ class PlanConductorGraph:
 
 
 @dataclass(slots=True)
+class LaneSignal:
+    kind: str
+    target_lane_id: str
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "target_lane_id": self.target_lane_id,
+            "detail": self.detail,
+        }
+
+
+@dataclass(slots=True)
 class RunnableLaneResult:
     runnable_lane_ids: list[str] = field(default_factory=list)
     blocked_reasons: dict[str, list[str]] = field(default_factory=dict)
     waiting_on: dict[str, list[str]] = field(default_factory=dict)
     lane_agent_limits: dict[str, int] = field(default_factory=dict)
+    lane_signals: dict[str, list[LaneSignal]] = field(default_factory=dict)
     query_first_conflict_analysis: bool = True
+
+
+@dataclass(slots=True)
+class ExecutionModeSelection:
+    session_id: str
+    mode: str
+    reason: str
+    lane_count: int
+    runnable_lane_count: int
+    blocked_lane_count: int
+    has_lanes: bool
+    has_contract_lanes: bool
+    overlap_risk: str
+    dependency_pressure: str
+    runnable_lane_ids: list[str] = field(default_factory=list)
+    blocked_reasons: dict[str, list[str]] = field(default_factory=dict)
+    query_first_conflict_analysis: bool = True
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "mode": self.mode,
+            "reason": self.reason,
+            "lane_count": self.lane_count,
+            "runnable_lane_count": self.runnable_lane_count,
+            "blocked_lane_count": self.blocked_lane_count,
+            "has_lanes": self.has_lanes,
+            "has_contract_lanes": self.has_contract_lanes,
+            "overlap_risk": self.overlap_risk,
+            "dependency_pressure": self.dependency_pressure,
+            "runnable_lane_ids": list(self.runnable_lane_ids),
+            "blocked_reasons": {
+                str(key): list(value) for key, value in self.blocked_reasons.items()
+            },
+            "query_first_conflict_analysis": self.query_first_conflict_analysis,
+        }
+
+
+@dataclass(slots=True)
+class SubagentTaskPacket:
+    session_id: str
+    lane_id: str
+    task_id: str
+    goal: str
+    allowed_files: list[str] = field(default_factory=list)
+    required_reads: list[str] = field(default_factory=list)
+    required_symbols: list[str] = field(default_factory=list)
+    constraints: list[str] = field(default_factory=list)
+    verification_commands: list[str] = field(default_factory=list)
+    done_definition: list[str] = field(default_factory=list)
+    must_not: list[str] = field(default_factory=list)
+    output_schema: dict[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "lane_id": self.lane_id,
+            "task_id": self.task_id,
+            "goal": self.goal,
+            "allowed_files": list(self.allowed_files),
+            "required_reads": list(self.required_reads),
+            "required_symbols": list(self.required_symbols),
+            "constraints": list(self.constraints),
+            "verification_commands": list(self.verification_commands),
+            "done_definition": list(self.done_definition),
+            "must_not": list(self.must_not),
+            "output_schema": dict(self.output_schema),
+        }
 
 
 @dataclass(slots=True)
@@ -137,6 +220,8 @@ class SkillRecord:
     origin: str
     source: str
     tags: list[str] = field(default_factory=list)
+    content: str = ""
+    skill_kind: str = "helper"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -148,6 +233,8 @@ class SkillRecord:
             "origin": self.origin,
             "source": self.source,
             "tags": list(self.tags),
+            "content": self.content,
+            "skill_kind": self.skill_kind,
         }
 
 
@@ -157,6 +244,7 @@ class SkillOverrideRule:
     skill_id: str
     mode: str
     reason: str
+    runtime_capability_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -164,6 +252,7 @@ class SkillOverrideRule:
             "skill_id": self.skill_id,
             "mode": self.mode,
             "reason": self.reason,
+            "runtime_capability_id": self.runtime_capability_id,
         }
 
 
@@ -174,6 +263,7 @@ class SkillOverrideDecision:
     provider_match: str
     mode: str
     reason: str
+    runtime_capability_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -182,6 +272,27 @@ class SkillOverrideDecision:
             "provider_match": self.provider_match,
             "mode": self.mode,
             "reason": self.reason,
+            "runtime_capability_id": self.runtime_capability_id,
+        }
+
+
+@dataclass(slots=True)
+class RuntimeOwnedCapability:
+    capability_id: str
+    source: str
+    reason: str
+    mode: str
+    selected_skill_id: str | None = None
+    provider: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "capability_id": self.capability_id,
+            "source": self.source,
+            "reason": self.reason,
+            "mode": self.mode,
+            "selected_skill_id": self.selected_skill_id,
+            "provider": self.provider,
         }
 
 
@@ -193,6 +304,7 @@ class SkillTriggerDecision:
     override_mode: str
     why: str
     rank: int
+    runtime_owned_capability: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -202,6 +314,7 @@ class SkillTriggerDecision:
             "override_mode": self.override_mode,
             "why": self.why,
             "rank": self.rank,
+            "runtime_owned_capability": self.runtime_owned_capability,
         }
 
 
@@ -228,4 +341,3 @@ class SkillTriggerState:
 def lines_to_text(lines: Iterable[str]) -> str:
     text = "\n".join(lines).rstrip()
     return text + "\n"
-

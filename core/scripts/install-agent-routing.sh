@@ -4,34 +4,42 @@ set -euo pipefail
 ROOT_PATH="${1:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -z "$ROOT_PATH" ]]; then
-  ROOT_PATH="$(cd "$SCRIPT_DIR/.." && pwd)"
+  ROOT_PATH="$(cd "$SCRIPT_DIR/../.." && pwd)"
 fi
 
 ROOT="$(cd "$ROOT_PATH" && pwd)"
-PROJECT_ROOT="$ROOT"
-SOURCE_ROOT="$ROOT"
-BUILD_CANDIDATE="$ROOT/build"
 
-if [[ -f "$BUILD_CANDIDATE/.MEMORY/.aidocs/index.aidocs" ]]; then
-  SOURCE_ROOT="$(cd "$BUILD_CANDIDATE" && pwd)"
-elif [[ "$ROOT" == */build && -d "$(dirname "$ROOT")/mcp/server" ]]; then
-  PROJECT_ROOT="$(cd "$(dirname "$ROOT")" && pwd)"
-fi
-
-if [[ ! -d "$PROJECT_ROOT/mcp/server" ]]; then
-  CANDIDATE_PARENT="$(dirname "$ROOT")"
-  if [[ -n "$CANDIDATE_PARENT" && -d "$CANDIDATE_PARENT/mcp/server" ]]; then
-    PROJECT_ROOT="$(cd "$CANDIDATE_PARENT" && pwd)"
+resolve_repo_and_core_roots() {
+  local candidate="$1"
+  local parent="$(dirname "$candidate")"
+  for root in "$candidate" "$parent"; do
+    if [[ -d "$root/mcp/server" && -f "$root/core/plugins/aidocs.js" ]]; then
+      printf '%s\n%s\n' "$(cd "$root" && pwd)" "$(cd "$root/core" && pwd)"
+      return 0
+    fi
+  done
+  if [[ -f "$candidate/plugins/aidocs.js" && -d "$parent/mcp/server" ]]; then
+    printf '%s\n%s\n' "$(cd "$parent" && pwd)" "$(cd "$candidate" && pwd)"
+    return 0
   fi
-fi
+  return 1
+}
 
-INDEX_FILE="$SOURCE_ROOT/.MEMORY/.aidocs/index.aidocs"
-if [[ ! -f "$INDEX_FILE" ]]; then
-  echo ".MEMORY/.aidocs/index.aidocs not found at runtime root: $SOURCE_ROOT" >&2
+if ! mapfile -t ROOTS < <(resolve_repo_and_core_roots "$ROOT"); then
+  echo "Could not resolve repo root and core root from: $ROOT" >&2
   exit 1
 fi
 
-VERSION_FILE="$SOURCE_ROOT/.MEMORY/.aidocs/command-pack.version"
+PROJECT_ROOT="${ROOTS[0]}"
+CORE_ROOT="${ROOTS[1]}"
+
+INDEX_FILE="$PROJECT_ROOT/.MEMORY/.aidocs/index.aidocs"
+if [[ ! -f "$INDEX_FILE" ]]; then
+  echo ".MEMORY/.aidocs/index.aidocs not found at repo root: $PROJECT_ROOT" >&2
+  exit 1
+fi
+
+VERSION_FILE="$PROJECT_ROOT/.MEMORY/.aidocs/command-pack.version"
 COMMAND_PACK_VERSION="unknown"
 if [[ -f "$VERSION_FILE" ]]; then
   COMMAND_PACK_VERSION="$(head -n 1 "$VERSION_FILE" | tr -d '\r')"
@@ -40,6 +48,7 @@ fi
 OPENCODE_DIR="$HOME/.config/opencode"
 OPENCODE_COMMANDS_DIR="$OPENCODE_DIR/commands"
 OPENCODE_PLUGINS_DIR="$OPENCODE_DIR/plugins"
+OPENCODE_ACTION_HOOKS_DIR="$OPENCODE_DIR/action_hooks"
 if [[ -f "$OPENCODE_DIR/opencode.jsonc" ]]; then
   OPENCODE_SETTINGS_PATH="$OPENCODE_DIR/opencode.jsonc"
 else
@@ -49,14 +58,14 @@ CLAUDE_DIR="$HOME/.claude"
 CLAUDE_COMMANDS_DIR="$CLAUDE_DIR/commands"
 CLAUDE_SETTINGS_PATH="$CLAUDE_DIR/settings.json"
 
-mkdir -p "$OPENCODE_COMMANDS_DIR" "$OPENCODE_PLUGINS_DIR" "$CLAUDE_COMMANDS_DIR"
+mkdir -p "$OPENCODE_COMMANDS_DIR" "$OPENCODE_PLUGINS_DIR" "$OPENCODE_ACTION_HOOKS_DIR" "$CLAUDE_COMMANDS_DIR"
 
 HEADER="$(printf '\U1F6D1') STOP"
 
 cat > "$OPENCODE_DIR/AGENTS.md" <<EOF
 # Global AGENTS.md - Cross-Agent Bootstrap
 
-AIDOCS source: $SOURCE_ROOT
+AIDOCS source: $PROJECT_ROOT
 
 Non-negotiables:
 - Do not operate outside the current project unless explicitly instructed.
@@ -75,13 +84,13 @@ Non-negotiables:
 Routing order:
 1) Project \`AGENTS.md\` or \`CLAUDE.md\` if present
 2) Follow the project router (\`/.MEMORY/.aidocs/index.aidocs\` -> \`/.MEMORY/INDEX.md\` -> selected \`/.MEMORY/sessions/*/SESSION.md\`)
-3) If project setup is missing, fall back to $SOURCE_ROOT/.MEMORY/.aidocs/index.aidocs
+3) If project setup is missing, fall back to $PROJECT_ROOT/.MEMORY/.aidocs/index.aidocs
 EOF
 
 cat > "$CLAUDE_DIR/CLAUDE.md" <<EOF
 # Global CLAUDE.md - Cross-Agent Bootstrap
 
-AIDOCS source: $SOURCE_ROOT
+AIDOCS source: $PROJECT_ROOT
 
 Non-negotiables:
 - Do not operate outside the current project unless explicitly instructed.
@@ -101,10 +110,10 @@ Non-negotiables:
 Routing order:
 1) Project \`AGENTS.md\` or \`CLAUDE.md\` if present
 2) Follow the project router (\`/.MEMORY/.aidocs/index.aidocs\` -> \`/.MEMORY/INDEX.md\` -> selected \`/.MEMORY/sessions/*/SESSION.md\`)
-3) If project setup is missing, fall back to $SOURCE_ROOT/.MEMORY/.aidocs/index.aidocs
+3) If project setup is missing, fall back to $PROJECT_ROOT/.MEMORY/.aidocs/index.aidocs
 EOF
 
-OPENCODE_PLUGIN_SOURCE="$SOURCE_ROOT/plugins/aidocs.js"
+OPENCODE_PLUGIN_SOURCE="$CORE_ROOT/plugins/aidocs.js"
 if [[ ! -f "$OPENCODE_PLUGIN_SOURCE" ]]; then
   echo "Missing OpenCode plugin script: $OPENCODE_PLUGIN_SOURCE" >&2
   exit 1
@@ -162,6 +171,15 @@ for token_file in "$ACTION_TOKENS_ROOT"/*.yaml; do
   link_or_copy "$token_file" "$OPENCODE_ACTION_TOKENS_DIR/$(basename "$token_file")"
 done
 
+ACTION_HOOKS_ROOT="$PROJECT_ROOT/action_hooks"
+if [[ -d "$ACTION_HOOKS_ROOT" ]]; then
+  find "$OPENCODE_ACTION_HOOKS_DIR" -maxdepth 1 -type f -name '*.toml' -delete
+  for hook_file in "$ACTION_HOOKS_ROOT"/*.toml; do
+    [[ -f "$hook_file" ]] || continue
+    cp "$hook_file" "$OPENCODE_ACTION_HOOKS_DIR/$(basename "$hook_file")"
+  done
+fi
+
 PYTHON_BIN=""
 for candidate in python3 python py; do
   if command -v "$candidate" >/dev/null 2>&1; then
@@ -174,7 +192,7 @@ if [[ -z "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
-export OPENCODE_SETTINGS_PATH PROJECT_ROOT PYTHON_BIN CLAUDE_SETTINGS_PATH SOURCE_ROOT
+export OPENCODE_SETTINGS_PATH PROJECT_ROOT PYTHON_BIN CLAUDE_SETTINGS_PATH CORE_ROOT
 
 "$PYTHON_BIN" - <<'PY'
 import json
@@ -202,7 +220,7 @@ data["mcp"]["aidocs"] = {
 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
 
-CLAUDE_HOOK_SCRIPT="$SOURCE_ROOT/scripts/claude-hook.sh"
+CLAUDE_HOOK_SCRIPT="$CORE_ROOT/scripts/claude-hook.sh"
 if [[ ! -f "$CLAUDE_HOOK_SCRIPT" ]]; then
   echo "Missing Claude hook script: $CLAUDE_HOOK_SCRIPT" >&2
   exit 1
@@ -244,7 +262,7 @@ def remove_aidocs_groups(groups):
             result.append(group)
     return result
 
-hook_command = f"bash '{Path(os.environ['SOURCE_ROOT']) / 'scripts' / 'claude-hook.sh'}'"
+hook_command = f"bash '{Path(os.environ['CORE_ROOT']) / 'scripts' / 'claude-hook.sh'}'"
 session_start_group = {
     "hooks": [
         {
@@ -287,7 +305,7 @@ hooks["PreToolUse"] = remove_aidocs_groups(hooks.get("PreToolUse")) + [pre_tool_
 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
 
-SHARED_COMMANDS_DIR="$SOURCE_ROOT/.commands"
+SHARED_COMMANDS_DIR="$CORE_ROOT/.commands"
 if [[ ! -d "$SHARED_COMMANDS_DIR" ]]; then
   echo "Missing shared command source folder: $SHARED_COMMANDS_DIR" >&2
   exit 1
@@ -347,6 +365,11 @@ done
 for export_file in "${OPENCODE_ACTION_TOKEN_EXPORTS[@]}"; do
   echo "- $export_file"
 done
+if [[ -d "$ACTION_HOOKS_ROOT" ]]; then
+  while IFS= read -r -d '' file; do
+    echo "- $file"
+  done < <(find "$OPENCODE_ACTION_HOOKS_DIR" -maxdepth 1 -type f -name '*.toml' -print0 | sort -z)
+fi
 # Set AIDOCS_PATH in shell profile
 AIDOCS_EXPORT_LINE="export AIDOCS_PATH=\"$PROJECT_ROOT\""
 SHELL_PROFILE=""
@@ -372,7 +395,8 @@ else
   echo "Add manually: $AIDOCS_EXPORT_LINE"
 fi
 
-echo "AIDOCS source wired to: $SOURCE_ROOT"
+echo "AIDOCS source wired to: $PROJECT_ROOT"
+echo "AIDOCS core assets wired to: $CORE_ROOT"
 echo "Command pack version: $COMMAND_PACK_VERSION"
 
 REQUIRED_COMMAND_FILES=(aidocs.md reingest.md archive.md personality.md clean.md)

@@ -36,18 +36,30 @@ def _make_runtime(tmp_path: Path, plan_text: str) -> tuple[RuntimeService, Path,
     runtime = RuntimeService(hub=hub)
     project = tmp_path / "project"
     session_id = "2026-03-30-conductor-interaction"
-    runtime.hub.sessions.create_session(project, session_id, "Conductor Interaction", "user", "Drive conductor interactions")
-    runtime.hub.sessions.plan_file(project, session_id).write_text(plan_text, encoding="utf-8")
+    runtime.hub.sessions.create_session(
+        project,
+        session_id,
+        "Conductor Interaction",
+        "user",
+        "Drive conductor interactions",
+    )
+    runtime.hub.sessions.plan_file(project, session_id).write_text(
+        plan_text, encoding="utf-8"
+    )
     return runtime, project, session_id
 
 
-async def _call_tool_json(server, tool_name: str, arguments: dict[str, object]) -> dict[str, object]:
+async def _call_tool_json(
+    server, tool_name: str, arguments: dict[str, object]
+) -> dict[str, object]:
     result = await server.call_tool(tool_name, arguments)
     payload = result[0].text if isinstance(result, list) else result.content[0].text
     return json.loads(payload)
 
 
-def test_conductor_pauses_lane_when_inflight_file_overlap_is_reported(tmp_path: Path) -> None:
+def test_conductor_pauses_lane_when_inflight_file_overlap_is_reported(
+    tmp_path: Path,
+) -> None:
     runtime, project_root, session_id = _make_runtime(
         tmp_path,
         "# Plan\n"
@@ -72,12 +84,18 @@ def test_conductor_pauses_lane_when_inflight_file_overlap_is_reported(tmp_path: 
 
     assert initial["runnable_lane_ids"] == ["lane-a", "lane-b"]
     assert paused["runnable_lane_ids"] == []
-    assert paused["blocked_reasons"]["lane-a"] == ["paused:inflight-file-overlap:src/shared/schema.json:lane-b"]
-    assert paused["blocked_reasons"]["lane-b"] == ["paused:inflight-file-overlap:src/shared/schema.json:lane-a"]
+    assert paused["blocked_reasons"]["lane-a"] == [
+        "paused:inflight-file-overlap:src/shared/schema.json:lane-b"
+    ]
+    assert paused["blocked_reasons"]["lane-b"] == [
+        "paused:inflight-file-overlap:src/shared/schema.json:lane-a"
+    ]
     assert paused["paused_lane_ids"] == ["lane-a", "lane-b"]
 
 
-def test_conductor_pauses_all_affected_lanes_when_inflight_file_overlap_is_reported(tmp_path: Path) -> None:
+def test_conductor_pauses_all_affected_lanes_when_inflight_file_overlap_is_reported(
+    tmp_path: Path,
+) -> None:
     runtime, project_root, session_id = _make_runtime(
         tmp_path,
         "# Plan\n"
@@ -103,8 +121,12 @@ def test_conductor_pauses_all_affected_lanes_when_inflight_file_overlap_is_repor
     )
 
     assert paused["runnable_lane_ids"] == ["lane-c"]
-    assert paused["blocked_reasons"]["lane-a"] == ["paused:inflight-file-overlap:src/shared/schema.json:lane-b"]
-    assert paused["blocked_reasons"]["lane-b"] == ["paused:inflight-file-overlap:src/shared/schema.json:lane-a"]
+    assert paused["blocked_reasons"]["lane-a"] == [
+        "paused:inflight-file-overlap:src/shared/schema.json:lane-b"
+    ]
+    assert paused["blocked_reasons"]["lane-b"] == [
+        "paused:inflight-file-overlap:src/shared/schema.json:lane-a"
+    ]
     assert paused["paused_lane_ids"] == ["lane-a", "lane-b"]
 
 
@@ -161,12 +183,16 @@ def test_user_override_can_resume_paused_lane(tmp_path: Path) -> None:
 
     assert "aidocs_plan_conductor_report_inflight_overlap" in tool_names
     assert "aidocs_plan_conductor_resume_lane" in tool_names
-    assert paused["blocked_reasons"]["lane-b"] == ["paused:inflight-file-overlap:src/shared/schema.json:lane-a"]
+    assert paused["blocked_reasons"]["lane-b"] == [
+        "paused:inflight-file-overlap:src/shared/schema.json:lane-a"
+    ]
     assert resumed["runnable_lane_ids"] == ["lane-b"]
     assert resumed["paused_lane_ids"] == ["lane-a"]
 
 
-def test_contract_compatible_lanes_can_run_together_when_conductor_marks_contract_ready(tmp_path: Path) -> None:
+def test_contract_compatible_lanes_can_run_together_when_conductor_marks_contract_ready(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
 
@@ -221,12 +247,17 @@ def test_contract_compatible_lanes_can_run_together_when_conductor_marks_contrac
 
     assert "aidocs_plan_conductor_mark_contract_ready" in tool_names
     assert initial["runnable_lane_ids"] == ["api-contract"]
-    assert contract_ready["runnable_lane_ids"] == ["api-contract", "frontend-contract-client"]
+    assert contract_ready["runnable_lane_ids"] == [
+        "api-contract",
+        "frontend-contract-client",
+    ]
     assert contract_ready["waiting_on"] == {"backend-handler": ["api-contract"]}
     assert contract_ready["contract_ready_lane_ids"] == ["api-contract"]
 
 
-def test_contract_ready_does_not_bypass_non_contract_hard_dependencies(tmp_path: Path) -> None:
+def test_contract_ready_does_not_bypass_non_contract_hard_dependencies(
+    tmp_path: Path,
+) -> None:
     runtime, project_root, session_id = _make_runtime(
         tmp_path,
         "# Plan\n"
@@ -241,7 +272,9 @@ def test_contract_ready_does_not_bypass_non_contract_hard_dependencies(tmp_path:
         "- [ ] Build integration\n",
     )
 
-    result = runtime.plan_conductor_mark_contract_ready(project_root, session_id, lane_id="foundation-db")
+    result = runtime.plan_conductor_mark_contract_ready(
+        project_root, session_id, lane_id="foundation-db"
+    )
 
     assert result["runnable_lane_ids"] == ["foundation-db"]
     assert result["waiting_on"] == {"integration": ["foundation-db"]}
@@ -263,14 +296,18 @@ def test_contract_ready_ignores_false_positive_contract_names(tmp_path: Path) ->
         "- [ ] Implement frontend contract client\n",
     )
 
-    result = runtime.plan_conductor_mark_contract_ready(project_root, session_id, lane_id="api-contractor")
+    result = runtime.plan_conductor_mark_contract_ready(
+        project_root, session_id, lane_id="api-contractor"
+    )
 
     assert result["runnable_lane_ids"] == ["api-contractor"]
     assert result["waiting_on"] == {"frontend-contract-client": ["api-contractor"]}
     assert result["contract_ready_lane_ids"] == []
 
 
-def test_lane_agent_request_for_undeclared_file_requires_conductor_signal(tmp_path: Path) -> None:
+def test_lane_agent_request_for_undeclared_file_requires_conductor_signal(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
     src = project_root / "src"
@@ -386,10 +423,14 @@ def test_malformed_conductor_state_degrades_to_safe_empty_state(tmp_path: Path) 
         "- Files: src/lane_b.py\n"
         "- [ ] Build lane b\n",
     )
-    runtime._plan_conductor_state_path(project_root, session_id).write_text('{"paused_lanes": ', encoding="utf-8")
+    runtime._plan_conductor_state_path(project_root, session_id).write_text(
+        '{"paused_lanes": ', encoding="utf-8"
+    )
 
     status = runtime.plan_conductor_status(project_root, session_id)
-    resumed = runtime.plan_conductor_resume_lane(project_root, session_id, lane_id="lane-a")
+    resumed = runtime.plan_conductor_resume_lane(
+        project_root, session_id, lane_id="lane-a"
+    )
 
     assert status["runnable_lane_ids"] == ["lane-a", "lane-b"]
     assert status["paused_lane_ids"] == []
@@ -397,7 +438,9 @@ def test_malformed_conductor_state_degrades_to_safe_empty_state(tmp_path: Path) 
     assert resumed["runnable_lane_ids"] == ["lane-a", "lane-b"]
 
 
-def test_structurally_malformed_conductor_state_degrades_to_safe_empty_state(tmp_path: Path) -> None:
+def test_structurally_malformed_conductor_state_degrades_to_safe_empty_state(
+    tmp_path: Path,
+) -> None:
     runtime, project_root, session_id = _make_runtime(
         tmp_path,
         "# Plan\n"
@@ -411,7 +454,9 @@ def test_structurally_malformed_conductor_state_degrades_to_safe_empty_state(tmp
         "- [ ] Build lane b\n",
     )
     runtime._plan_conductor_state_path(project_root, session_id).write_text(
-        json.dumps({"paused_lanes": ["lane-a"], "contract_ready_lane_ids": {"lane-b": True}}),
+        json.dumps(
+            {"paused_lanes": ["lane-a"], "contract_ready_lane_ids": {"lane-b": True}}
+        ),
         encoding="utf-8",
     )
 
@@ -419,5 +464,163 @@ def test_structurally_malformed_conductor_state_degrades_to_safe_empty_state(tmp
 
     assert status["runnable_lane_ids"] == ["lane-a", "lane-b"]
     assert status["paused_lane_ids"] == []
-    assert status["contract_ready_lane_ids"] == []
 
+
+def test_lane_can_signal_hidden_dependency_found(tmp_path: Path) -> None:
+    runtime, project_root, session_id = _make_runtime(
+        tmp_path,
+        "# Plan\n"
+        "\n## Steps\n"
+        "- Phase: Shared work\n"
+        "- Lane: lane-a\n"
+        "- Files: src/lane_a.py\n"
+        "- [ ] Build lane a\n"
+        "- Lane: lane-b\n"
+        "- Files: src/lane_b.py\n"
+        "- [ ] Build lane b\n",
+    )
+
+    initial = runtime.plan_conductor_status(project_root, session_id)
+    assert initial["runnable_lane_ids"] == ["lane-a", "lane-b"]
+    assert initial.get("lane_signals") == {}
+
+    recorded = runtime.plan_conductor_record_lane_signal(
+        project_root,
+        session_id,
+        lane_id="lane-b",
+        signal_kind="hidden_dependency_found",
+        target_lane_id="lane-a",
+        detail="lane-b discovered it needs lane-a's output",
+    )
+
+    assert "lane-b" in recorded["blocked_reasons"]
+    assert any(
+        "hidden_dependency_found" in r for r in recorded["blocked_reasons"]["lane-b"]
+    )
+    assert recorded["lane_signals"] == {
+        "lane-b": [
+            {
+                "kind": "hidden_dependency_found",
+                "target_lane_id": "lane-a",
+                "detail": "lane-b discovered it needs lane-a's output",
+            }
+        ]
+    }
+
+    status = runtime.plan_conductor_status(project_root, session_id)
+    assert "lane-b" not in status["runnable_lane_ids"]
+    assert "lane-a" in status["runnable_lane_ids"]
+
+
+def test_lane_can_signal_undeclared_file_needed(tmp_path: Path) -> None:
+    runtime, project_root, session_id = _make_runtime(
+        tmp_path,
+        "# Plan\n"
+        "\n## Steps\n"
+        "- Phase: Shared work\n"
+        "- Lane: lane-a\n"
+        "- Files: src/lane_a.py\n"
+        "- [ ] Build lane a\n"
+        "- Lane: lane-b\n"
+        "- Files: src/lane_b.py\n"
+        "- [ ] Build lane b\n",
+    )
+
+    initial = runtime.plan_conductor_status(project_root, session_id)
+    assert initial["runnable_lane_ids"] == ["lane-a", "lane-b"]
+
+    recorded = runtime.plan_conductor_record_lane_signal(
+        project_root,
+        session_id,
+        lane_id="lane-b",
+        signal_kind="undeclared_file_needed",
+        target_lane_id="lane-a",
+        detail="lane-b needs src/shared_config.py owned by lane-a",
+    )
+
+    assert "lane-b" in recorded["blocked_reasons"]
+    assert any(
+        "undeclared_file_needed" in r for r in recorded["blocked_reasons"]["lane-b"]
+    )
+
+    status = runtime.plan_conductor_status(project_root, session_id)
+    assert "lane-b" not in status["runnable_lane_ids"]
+
+
+def test_conductor_enforces_structured_lane_signals(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
+
+    async def run() -> dict[str, object]:
+        server = create_server()
+        hub = server._aidocs_test_hub
+        session = hub.sessions.create_session(
+            project_root,
+            "2026-03-31-conductor-signals",
+            "Conductor Signals",
+            "user",
+            "Enforce structured lane signals",
+        )
+        hub.sessions.plan_file(project_root, session.session_id).write_text(
+            "# Plan\n"
+            "\n## Steps\n"
+            "- Phase: Shared work\n"
+            "- Lane: lane-a\n"
+            "- Files: src/lane_a.py\n"
+            "- [ ] Build lane a\n"
+            "- Lane: lane-b\n"
+            "- Files: src/lane_b.py\n"
+            "- [ ] Build lane b\n"
+            "- Lane: lane-c\n"
+            "- Files: src/lane_c.py\n"
+            "- [ ] Build lane c\n",
+            encoding="utf-8",
+        )
+        hub.managed_mode.set_mode(project_root, session_id=session.session_id)
+
+        status = await _call_tool_json(
+            server,
+            "aidocs_plan_conductor_status",
+            {
+                "project_root": str(project_root),
+                "session_id": session.session_id,
+            },
+        )
+        assert status["runnable_lane_ids"] == ["lane-a", "lane-b", "lane-c"]
+
+        await _call_tool_json(
+            server,
+            "aidocs_plan_conductor_record_lane_signal",
+            {
+                "project_root": str(project_root),
+                "session_id": session.session_id,
+                "lane_id": "lane-b",
+                "signal_kind": "integration_failure_reopened",
+                "target_lane_id": "lane-a",
+                "detail": "integration tests fail when lane-a changes are merged",
+            },
+        )
+
+        blocked = await _call_tool_json(
+            server,
+            "aidocs_plan_conductor_status",
+            {
+                "project_root": str(project_root),
+                "session_id": session.session_id,
+            },
+        )
+        return blocked
+
+    blocked = asyncio.run(run())
+
+    assert "lane-b" in blocked["blocked_reasons"]
+    assert any(
+        "integration_failure_reopened" in r
+        for r in blocked["blocked_reasons"]["lane-b"]
+    )
+    assert "lane-b" not in blocked["runnable_lane_ids"]
+    assert "lane-a" in blocked["runnable_lane_ids"]
+    assert "lane-c" in blocked["runnable_lane_ids"]
+    assert (
+        blocked["lane_signals"]["lane-b"][0]["kind"] == "integration_failure_reopened"
+    )

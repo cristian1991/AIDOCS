@@ -72,6 +72,7 @@ In practice, that means agents can resume work, follow session context, and use 
 - **Routed memory** — agents follow a startup chain instead of dumping the whole repo into context
 - **Session isolation** — parallel workstreams with their own plans, context, and artifacts
 - **Unified retrieval** — broad “start here”, find, trace, bundle, and schema entry points
+- **Runtime-owned orchestration** — planning, execution mode, dispatch, and completion truth live in MCP/runtime code, not skill prose
 - **Multilingual classification** — public benchmarked language support via `action_tokens`
 - **Monorepo-aware indexing** — multiple modules/projects without changing the memory model
 - **Operator tooling** — CLI, install scripts, benchmark mode, and host/runtime documentation
@@ -166,8 +167,25 @@ Edit these files to customize behavior:
 | File | Format | Controls |
 |------|--------|----------|
 | `aidocs.toml` | TOML | Journal limits, index skip dirs, module hints, JSON size limit, language filtering |
+| `action_hooks/*.toml` | TOML | Default interaction text templates for host/runtime user-facing guidance |
 | `aidocs-plugin.json` | JSON | OpenCode directive injection, directive style |
-| `action_tokens/*.yaml` | YAML | Add/remove/edit classification languages |
+| `action_tokens/*.yaml` | YAML | Per-language user-intent descriptors for action classification and runtime interpretation |
+
+You can override shipped interaction text templates in `aidocs.toml` under `interaction.*` tables when you need project- or session-specific wording.
+
+`action_tokens/en.yaml` now contains two kinds of entries:
+
+- normal keys like `edit`, `trace`, `understand`: these map user wording to internal action kinds
+- reserved keys starting with `__`: these are runtime interpretation groups, not action kinds
+
+Reserved key meanings:
+
+- `__plan_validation_vague_patterns`
+  phrases that make `plan_validate` reject a step as too vague
+- `__skill_trigger_<name>_intent`
+  user wording that should activate or route toward that helper/runtime capability
+- `__skill_trigger_<name>_workflow`
+  internal workflow-state words that keep that helper/runtime capability relevant
 
 Example — English-only classification for fastest startup:
 ```toml
@@ -176,8 +194,66 @@ Example — English-only classification for fastest startup:
 enabled = "en"
 ```
 
+## Skills
+
+AIDOCS also has a skills system for reusable behavior packs.
+
+What that means in practice:
+
+- some skills are bundled with AIDOCS itself
+- some skills can come from external local providers
+- skills are session-scoped, so one session can have different active skills than another
+- hosts may surface active/imported skills as part of the agent context
+
+This is a more advanced part of AIDOCS than basic `/aidocs` usage, but it is already integrated into the runtime.
+
+The important distinction is:
+
+- memory stores durable project knowledge
+- skills store reusable operating patterns or guidance
+- workflow authority stays in runtime/conductor code, not in skills
+
+Current helper-only bundled skills:
+
+- `deep-retrieval`
+- `test-driven-validation`
+- `systematic-debugging`
+- `brainstorming`
+
+Current runtime-owned capability areas:
+
+- planning
+- execution mode selection
+- execution loop / dispatch
+- completion verification
+
+## Advanced Features
+
+If you go beyond basic `/aidocs` usage, AIDOCS also supports:
+
+- session handoffs and resume bundles for continuing work cleanly
+- plan-based execution support, including lane-aware conductor logic
+- deterministic spec-to-plan creation and plan validation
+- execution mode selection: `inline`, `delegated_serial`, `delegated_parallel`
+- strict subagent task packets with explicit scope and verification commands
+- execution-loop state that can continue, block, reopen, or complete from runtime data
+- execution evidence and workflow follow-through reporting
+- related-project comparison/search when you configure related repos in `/.MEMORY/config/related-projects.md`
+- extensible indexing through language descriptor files
+- query/read gating so raw reads happen after narrowed retrieval instead of before
+
+These are real shipped features, but they are more advanced than the normal quick-start flow.
+
+## Honest Support Boundaries
+
+- Claude Code support is real and currently stronger than other host adapters.
+- OpenCode support is real, but it still relies more on plugin-side context shaping than on full route-time MCP classification for every prompt.
+- Cursor is intentionally minimal for now.
+- GitHub Copilot CLI support is not shipped yet.
+
 ## Documentation
 
+- [Developer README](README_DEV.md) — deeper architecture, settings, host boundaries, and flaw-finding guide
 - [Install Guide](README_INSTALL.md) — global routing, plugin, hook, and MCP install paths
 - [MCP Runtime](mcp/README.md) — runtime model, tool model, host caveats, CLI usage
 - [Host Integration](mcp/HOST_INTEGRATION.md) — Claude/OpenCode contract and routing behavior

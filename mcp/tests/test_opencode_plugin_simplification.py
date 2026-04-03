@@ -39,22 +39,40 @@ def _write_templates(root: Path) -> None:
         encoding="utf-8",
     )
     (root / "context.md").write_text("# Context\n", encoding="utf-8")
-    (root.parent / "index.aidocs").write_text("# AIDOCS Session Entry\n\nRead /.MEMORY/INDEX.md next.\n", encoding="utf-8")
-    (root.parent / "global-instructions.aidocs").write_text("# Global Instructions\n", encoding="utf-8")
-    (root.parent / "coding-standards.aidocs").write_text("# Coding Standards\n", encoding="utf-8")
-    (root.parent / "memory-system.aidocs").write_text("# Memory System\n", encoding="utf-8")
-    (root.parent / "research-safety.aidocs").write_text("# Research Safety\n", encoding="utf-8")
+    (root.parent / "index.aidocs").write_text(
+        "# AIDOCS Session Entry\n\nRead /.MEMORY/INDEX.md next.\n", encoding="utf-8"
+    )
+    (root.parent / "global-instructions.aidocs").write_text(
+        "# Global Instructions\n", encoding="utf-8"
+    )
+    (root.parent / "coding-standards.aidocs").write_text(
+        "# Coding Standards\n", encoding="utf-8"
+    )
+    (root.parent / "memory-system.aidocs").write_text(
+        "# Memory System\n", encoding="utf-8"
+    )
+    (root.parent / "research-safety.aidocs").write_text(
+        "# Research Safety\n", encoding="utf-8"
+    )
     (root.parent / "personalities").mkdir(parents=True, exist_ok=True)
-    (root.parent / "personalities" / "default.aidocs").write_text("# Default Personality\n", encoding="utf-8")
+    (root.parent / "personalities" / "default.aidocs").write_text(
+        "# Default Personality\n", encoding="utf-8"
+    )
     memory_template = root / "memory"
     memory_template.mkdir(parents=True, exist_ok=True)
     (memory_template / "INDEX.md").write_text("# Memory Index\n", encoding="utf-8")
     (memory_template / "rules").mkdir(parents=True, exist_ok=True)
-    (memory_template / "rules" / "workflow-rules.md").write_text("# Workflow Rules\n\n## Workflow Rules\n", encoding="utf-8")
-    (memory_template / "rules" / "workflow-actions.md").write_text("# Workflow Actions\n\n## Workflow Actions\n", encoding="utf-8")
+    (memory_template / "rules" / "workflow-rules.md").write_text(
+        "# Workflow Rules\n\n## Workflow Rules\n", encoding="utf-8"
+    )
+    (memory_template / "rules" / "workflow-actions.md").write_text(
+        "# Workflow Actions\n\n## Workflow Actions\n", encoding="utf-8"
+    )
 
 
-def _register_superpowers_provider(runtime: RuntimeService, project_root: Path, tmp_path: Path) -> None:
+def _register_superpowers_provider(
+    runtime: RuntimeService, project_root: Path, tmp_path: Path
+) -> None:
     provider_root = tmp_path / "superpowers-external"
     provider_root.mkdir(parents=True, exist_ok=True)
     (provider_root / "provider.json").write_text(
@@ -82,17 +100,28 @@ def _register_superpowers_provider(runtime: RuntimeService, project_root: Path, 
     )
 
 
-def _make_runtime_project(tmp_path: Path, *, selected_skills: list[str]) -> tuple[RuntimeService, Path, str]:
+def _make_runtime_project(
+    tmp_path: Path, *, selected_skills: list[str]
+) -> tuple[RuntimeService, Path, str]:
     templates = tmp_path / "templates"
     _write_templates(templates)
     runtime = RuntimeService(AidocsServiceHub(templates_root=templates))
     project_root = tmp_path / "project"
     runtime.project_init(project_root, init_git=False, create_remote=False)
-    session = runtime.hub.sessions.create_session(project_root, "2026-03-30-plugin-simplification", "A", "Agent", "Goal A")
+    session = runtime.hub.sessions.create_session(
+        project_root, "2026-03-30-plugin-simplification", "A", "Agent", "Goal A"
+    )
     runtime.hub.managed_mode.set_mode(project_root, session.session_id)
     _register_superpowers_provider(runtime, project_root, tmp_path)
-    runtime.hub.skills.set_selected_skills(project_root, session.session_id, selected_skills)
-    runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
+    runtime.hub.skills.set_selected_skills(
+        project_root, session.session_id, selected_skills
+    )
+    runtime.project_bootstrap_or_resume(
+        project_root,
+        session_id=session.session_id,
+        include_code_bundle=False,
+        include_tests=False,
+    )
     return runtime, project_root, session.session_id
 
 
@@ -219,7 +248,8 @@ def _run_plugin_continuation_transform(tmp_path: Path) -> dict:
         tmp_path,
         selected_skills=["superpowers_external/brainstorming"],
     )
-    plan_root = project_root / ".MEMORY" / "sessions" / session_id
+    plan_root = project_root / ".MEMORY" / "sessions" / session_id / "plans"
+    plan_root.mkdir(parents=True, exist_ok=True)
     (plan_root / "PLAN.md").write_text(
         "# Plan\n\n- [ ] Implement the continuation branch\n",
         encoding="utf-8",
@@ -245,7 +275,9 @@ def test_opencode_plugin_consumes_runtime_host_state_payload(tmp_path: Path) -> 
     assert state["active_skills"] == ["superpowers_external/brainstorming"]
 
 
-def test_opencode_plugin_does_not_reconstruct_prompt_state_from_startup_snapshot(tmp_path: Path) -> None:
+def test_opencode_plugin_does_not_reconstruct_prompt_state_from_startup_snapshot(
+    tmp_path: Path,
+) -> None:
     state = _run_plugin_with_route_failure_and_stale_snapshot(tmp_path)
 
     assert state["first_source"] == "runtime_host_state"
@@ -263,7 +295,9 @@ def test_opencode_plugin_thins_mode_reconstruction_logic(tmp_path: Path) -> None
     }
 
 
-def test_opencode_plugin_message_flow_does_not_inject_stale_startup_skill_context(tmp_path: Path) -> None:
+def test_opencode_plugin_message_flow_does_not_inject_stale_startup_skill_context(
+    tmp_path: Path,
+) -> None:
     result = _run_plugin_message_flow(tmp_path, prompt="explain the database flow")
 
     assert len(result["system"]) == 1
@@ -271,13 +305,19 @@ def test_opencode_plugin_message_flow_does_not_inject_stale_startup_skill_contex
     assert "superpowers_external/brainstorming" not in result["system"][0]
 
 
-def test_opencode_plugin_message_flow_uses_single_runtime_host_state_call(tmp_path: Path) -> None:
-    result = _run_plugin_message_flow_with_spawn_count(tmp_path, prompt="brainstorm homepage")
+def test_opencode_plugin_message_flow_uses_single_runtime_host_state_call(
+    tmp_path: Path,
+) -> None:
+    result = _run_plugin_message_flow_with_spawn_count(
+        tmp_path, prompt="brainstorm homepage"
+    )
 
     assert result["python_calls"] == 1
 
 
-def test_opencode_plugin_continuation_transform_uses_current_runtime_state(tmp_path: Path) -> None:
+def test_opencode_plugin_continuation_transform_uses_current_runtime_state(
+    tmp_path: Path,
+) -> None:
     result = _run_plugin_continuation_transform(tmp_path)
 
     rendered = result["messages"][-1]["parts"][-1]["text"]

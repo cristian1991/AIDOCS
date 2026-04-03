@@ -28,7 +28,12 @@ def _write_templates(root: Path) -> None:
 def _seed_project(project_root: Path) -> None:
     mem = project_root / ".MEMORY"
     (mem / ".aidocs").mkdir(parents=True, exist_ok=True)
-    for name in ["index.aidocs", "global-instructions.aidocs", "coding-standards.aidocs", "memory-system.aidocs"]:
+    for name in [
+        "index.aidocs",
+        "global-instructions.aidocs",
+        "coding-standards.aidocs",
+        "memory-system.aidocs",
+    ]:
         (mem / ".aidocs" / name).write_text(f"# {name}\n", encoding="utf-8")
     (mem / "INDEX.md").write_text("# Memory Index\n", encoding="utf-8")
     (project_root / "AGENTS.md").write_text("routing\n", encoding="utf-8")
@@ -51,7 +56,9 @@ def test_claude_hook_consumes_runtime_host_state_contract_for_session_start(
     handler, project_root = _make_handler(tmp_path)
     calls: list[tuple[Path, str | None, str | None]] = []
 
-    def fake_host_state(root: Path, session_id: str | None = None, prompt_text: str | None = None) -> dict[str, object]:
+    def fake_host_state(
+        root: Path, session_id: str | None = None, prompt_text: str | None = None
+    ) -> dict[str, object]:
         calls.append((root, session_id, prompt_text))
         return {
             "session_state": {
@@ -107,26 +114,35 @@ def test_claude_hook_consumes_runtime_host_state_contract_for_session_start(
             },
             "host_actions": {
                 "inject_context": ["Use AIDOCS MCP tools first."],
-                "recommended_mcp_flow": ["runtime_preflight", "session_start"],
+                "recommended_mcp_flow": ["runtime_preflight", "plan_conductor_status"],
                 "show_imported_skills": True,
             },
         }
 
     monkeypatch.setattr(handler.runtime, "host_state", fake_host_state)
 
-    def unexpected_session_start_state(*_args: object, **_kwargs: object) -> dict[str, object]:
+    def unexpected_session_start_state(
+        *_args: object, **_kwargs: object
+    ) -> dict[str, object]:
         raise AssertionError("session_start_state should not be used directly")
 
-    monkeypatch.setattr(handler.runtime, "session_start_state", unexpected_session_start_state)
+    monkeypatch.setattr(
+        handler.runtime, "session_start_state", unexpected_session_start_state
+    )
 
-    result = handler.handle({"hook_event_name": "SessionStart", "cwd": str(project_root)})
+    result = handler.handle(
+        {"hook_event_name": "SessionStart", "cwd": str(project_root)}
+    )
 
     assert calls == [(project_root, None, None)]
     assert result is not None
     payload = result["hookSpecificOutput"]
     assert payload["hookEventName"] == "SessionStart"
-    assert "AIDOCS startup check: startup state is ready." in payload["additionalContext"]
+    assert (
+        "AIDOCS startup check: startup state is ready." in payload["additionalContext"]
+    )
     assert "Continue with session `session-a`." in payload["additionalContext"]
+    assert "Stay in the bound AIDOCS session" in payload["additionalContext"]
     assert "Imported skills: `brainstorming`." in payload["additionalContext"]
 
 
@@ -148,7 +164,9 @@ def test_claude_hook_consumes_runtime_host_state_contract_for_user_prompt_submit
         },
     )
 
-    def fake_host_state(root: Path, session_id: str | None = None, prompt_text: str | None = None) -> dict[str, object]:
+    def fake_host_state(
+        root: Path, session_id: str | None = None, prompt_text: str | None = None
+    ) -> dict[str, object]:
         calls.append((root, session_id, prompt_text))
         return {
             "session_state": {
@@ -222,7 +240,11 @@ def test_claude_hook_consumes_runtime_host_state_contract_for_user_prompt_submit
     monkeypatch.setattr(handler.runtime, "host_state", fake_host_state)
 
     result = handler.handle(
-        {"hook_event_name": "UserPromptSubmit", "cwd": str(project_root), "prompt": prompt}
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(project_root),
+            "prompt": prompt,
+        }
     )
 
     assert calls == [(project_root, None, prompt)]
@@ -230,7 +252,10 @@ def test_claude_hook_consumes_runtime_host_state_contract_for_user_prompt_submit
     payload = result["hookSpecificOutput"]
     assert payload["hookEventName"] == "UserPromptSubmit"
     assert "Action: `understand`." in payload["additionalContext"]
-    assert "Imported skills: `superpowers_external/brainstorming`." in payload["additionalContext"]
+    assert (
+        "Imported skills: `superpowers_external/brainstorming`."
+        in payload["additionalContext"]
+    )
     assert (
         "Imported skill modes: `superpowers_external/brainstorming=provider_content_aidocs_runtime`."
         in payload["additionalContext"]
@@ -285,16 +310,30 @@ def test_claude_hook_consumes_prompt_level_override_metadata_from_runtime_host_s
                 "prompt_activation": {
                     "source": "live_prompt",
                     "session_id": "session-a",
-                    "active_skills": ["superpowers_external/brainstorming", "writing-plans"],
+                    "active_skills": [
+                        "superpowers_external/brainstorming",
+                    ],
                     "triggered": [
                         {"skill_id": "superpowers_external/brainstorming"},
                         {"skill_id": "writing-plans"},
                     ],
+                    "runtime_owned_capabilities": [
+                        {
+                            "capability_id": "planning",
+                            "source": "aidocs_runtime",
+                            "reason": "planning orchestration stays AIDOCS-native",
+                            "mode": "aidocs_runtime_owned",
+                            "selected_skill_id": "superpowers_external/writing-plans",
+                            "provider": "superpowers_external",
+                        }
+                    ],
                     "mode_metadata": {
                         "active_skill_modes": {
                             "superpowers_external/brainstorming": "provider_content_aidocs_runtime",
-                            "writing-plans": "aidocs_native_override",
-                        }
+                        },
+                        "selected_skill_modes": {
+                            "superpowers_external/writing-plans": "aidocs_runtime_owned",
+                        },
                     },
                     "activation_succeeded": True,
                 },
@@ -304,17 +343,33 @@ def test_claude_hook_consumes_prompt_level_override_metadata_from_runtime_host_s
                 "prompt_text": prompt_text,
                 "action_kind": "edit",
                 "intent": "planning",
-                "triggered_skills": ["superpowers_external/brainstorming", "writing-plans"],
-                "active_skills": ["superpowers_external/brainstorming", "writing-plans"],
+                "triggered_skills": [
+                    "superpowers_external/brainstorming",
+                    "writing-plans",
+                ],
+                "active_skills": [
+                    "superpowers_external/brainstorming",
+                ],
+                "runtime_owned_capabilities": [
+                    {
+                        "capability_id": "planning",
+                        "source": "aidocs_runtime",
+                        "reason": "planning orchestration stays AIDOCS-native",
+                        "mode": "aidocs_runtime_owned",
+                        "selected_skill_id": "superpowers_external/writing-plans",
+                        "provider": "superpowers_external",
+                    }
+                ],
                 "override_modes": {
                     "superpowers_external/brainstorming": "provider_content_aidocs_runtime",
-                    "writing-plans": "aidocs_native_override",
                 },
                 "mode_metadata": {
                     "active_skill_modes": {
                         "superpowers_external/brainstorming": "provider_content_aidocs_runtime",
-                        "writing-plans": "aidocs_native_override",
-                    }
+                    },
+                    "selected_skill_modes": {
+                        "superpowers_external/writing-plans": "aidocs_runtime_owned",
+                    },
                 },
                 "activation_succeeded": True,
             },
@@ -338,11 +393,18 @@ def test_claude_hook_consumes_prompt_level_override_metadata_from_runtime_host_s
     )
 
     result = handler.handle(
-        {"hook_event_name": "UserPromptSubmit", "cwd": str(project_root), "prompt": prompt}
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": str(project_root),
+            "prompt": prompt,
+        }
     )
 
     assert result is not None
     context = result["hookSpecificOutput"]["additionalContext"]
-    assert "Imported skills: `superpowers_external/brainstorming`, `writing-plans`." in context
-    assert "`superpowers_external/brainstorming=provider_content_aidocs_runtime`" in context
-    assert "`writing-plans=aidocs_native_override`" in context
+    assert "Imported skills: `superpowers_external/brainstorming`." in context
+    assert (
+        "`superpowers_external/brainstorming=provider_content_aidocs_runtime`"
+        in context
+    )
+    assert "Runtime-owned workflow capabilities: `planning`." in context

@@ -10,7 +10,7 @@ from typing import Literal, TypedDict
 
 
 SettingType = Literal["integer", "boolean", "string", "string_list"]
-SettingScope = Literal["project", "global"]
+SettingScope = Literal["project", "global", "session", "user"]
 ConfigEditMode = Literal["explicit_user_permitted"]
 
 
@@ -34,11 +34,16 @@ def _setting(
     allowed_values: list[str] | None = None,
     value_descriptions: dict[str, str] | None = None,
     security_sensitive: bool = False,
-    scope: SettingScope = "project",
+    scope: SettingScope | list[SettingScope] = "project",
 ) -> SettingMetadata:
-    allowed_scopes: list[SettingScope] = [scope]
+    allowed_scopes: list[SettingScope] = (
+        list(scope) if isinstance(scope, list) else [scope]
+    )
     agent_editable_scopes: list[SettingScope] = (
-        [] if scope == "global" or security_sensitive else ["project"]
+        []
+        if "global" in allowed_scopes and len(allowed_scopes) == 1
+        or security_sensitive
+        else [s for s in allowed_scopes if s not in ("global", "user")]
     )
     return {
         "type": type,
@@ -58,66 +63,79 @@ SETTINGS_CATALOG: dict[str, SettingMetadata] = {
         type="integer",
         default=100,
         description="Maximum journal entries kept per session before eviction starts.",
+        scope=["project", "session"],
     ),
     "journal.evict_batch": _setting(
         type="integer",
         default=20,
         description="How many oldest journal entries to archive when the journal is full.",
+        scope=["project", "session"],
     ),
     "journal.trivial_actions": _setting(
         type="string_list",
         default=["task_begin", "task_update", "project_update"],
         description="Action kinds that are too trivial to journal.",
+        scope=["project", "session"],
     ),
     "journal.min_intent_length": _setting(
         type="integer",
         default=10,
         description="Minimum intent length required before a journal entry is recorded.",
+        scope=["project", "session"],
     ),
     "index.extra_skip_dirs": _setting(
         type="string_list",
         default=[],
         description="Extra directories to skip during indexing.",
+        scope=["user", "project"],
     ),
     "index.extra_module_hints": _setting(
         type="string_list",
         default=[],
         description="Extra directory names that hint at project modules.",
+        scope=["user", "project"],
     ),
     "index.max_json_size": _setting(
         type="integer",
         default=100_000,
         description="Maximum JSON file size in bytes before the indexer skips the file.",
+        scope=["user", "project"],
     ),
     "index.enabled_languages": _setting(
         type="string",
         default="all",
         description="Language set used by index-side language filtering.",
+        scope=["user", "project"],
     ),
     "languages.enabled": _setting(
         type="string",
         default="all",
         description="Comma-separated language descriptors to load for prompt classification.",
+        scope=["user", "project"],
     ),
     "tools.tool_call_timeout": _setting(
         type="integer",
         default=10,
         description="Default timeout in seconds for general MCP tool calls.",
+        scope=["user", "project", "session"],
     ),
     "tools.sync_functions_timeout": _setting(
         type="integer",
         default=30,
         description="Default timeout in seconds for sync and indexing operations.",
+        scope=["user", "project", "session"],
     ),
     "tools.git_functions_timeout": _setting(
         type="integer",
         default=30,
         description="Default timeout in seconds for git-related operations.",
+        scope=["user", "project", "session"],
     ),
     "tools.max_timeout": _setting(
         type="integer",
         default=120,
         description="Maximum timeout in seconds allowed for any tool call.",
+        scope=["user", "project"],
     ),
     "agent.directive_style": _setting(
         type="string",
@@ -128,16 +146,19 @@ SETTINGS_CATALOG: dict[str, SettingMetadata] = {
             "short": "Inject concise agent-facing directives.",
             "detailed": "Inject the full directive payload when a host needs maximum detail.",
         },
+        scope=["user", "project", "session"],
     ),
     "agent.inject_message_directives": _setting(
         type="boolean",
         default=True,
         description="Whether tool directives are injected into user messages for supported hosts.",
+        scope=["user", "project", "session"],
     ),
     "agent.inject_rules_on_bootstrap": _setting(
         type="boolean",
         default=True,
         description="Whether project workflow and standards rules are loaded during bootstrap.",
+        scope=["user", "project", "session"],
     ),
     "global.aidocs_core_version": _setting(
         type="string",
@@ -150,6 +171,7 @@ SETTINGS_CATALOG: dict[str, SettingMetadata] = {
         default=False,
         description="Allows agents to edit AIDOCS MCP source files through guarded edit tools.",
         security_sensitive=True,
+        scope=["project"],
     ),
     "code_quality.comment_enforcement": _setting(
         type="string",
@@ -161,36 +183,43 @@ SETTINGS_CATALOG: dict[str, SettingMetadata] = {
             "advisory": "Remind agents about comment-quality rules without blocking edits.",
             "off": "Disable comment-quality rule reminders and enforcement.",
         },
+        scope=["user", "project", "session"],
     ),
     "presentation.helper_skill_excerpt_lines": _setting(
         type="integer",
         default=12,
         description="Maximum non-empty lines injected from a helper skill into host context.",
+        scope=["user", "project"],
     ),
     "presentation.helper_skill_excerpt_chars": _setting(
         type="integer",
         default=1200,
         description="Maximum characters injected from a helper skill into host context.",
+        scope=["user", "project"],
     ),
     "presentation.workflow_summary_limit": _setting(
         type="integer",
         default=3,
         description="Maximum workflow actions shown in compact workflow summaries.",
+        scope=["user", "project"],
     ),
     "presentation.resume_journal_last_n": _setting(
         type="integer",
         default=10,
         description="Default journal entry count returned by session resume bundles.",
+        scope=["user", "project", "session"],
     ),
     "presentation.handoff_stale_after_hours": _setting(
         type="integer",
         default=24,
         description="Hours after which handoff freshness is considered stale.",
+        scope=["user", "project"],
     ),
     "presentation.handoff_recent_hours": _setting(
         type="integer",
         default=24,
         description="Hours during which a handoff step counts as recently changed.",
+        scope=["user", "project"],
     ),
 }
 
@@ -223,7 +252,8 @@ def is_setting_agent_editable(
         return False
     if scope not in metadata["allowed_scopes"]:
         return False
-    if scope == "global":
+    # Agents must never write to global or user configs — those are human-owned
+    if scope in ("global", "user"):
         return False
 
     editable_scopes = metadata["agent_editable_scopes"] or [

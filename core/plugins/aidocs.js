@@ -8,6 +8,7 @@ const COMMANDS_DIR = path.join(__dirname, "..", ".commands")
 
 let _cachedActionTokens = null
 let _pluginConfig = null
+let _pluginConfigHasProject = false
 let _runtimeHostStateCache = new Map()
 
 const HOST_STATE_SUCCESS_TTL_MS = 3000
@@ -18,8 +19,26 @@ function aidocsMemoryConfigPath(projectRoot, fileName) {
   return path.join(projectRoot, ".MEMORY", "config", fileName)
 }
 
-function loadPluginConfig() {
-  if (_pluginConfig) {
+function loadResolvedConfig(projectRoot) {
+  if (!projectRoot) return null
+  const resolvedPath = aidocsMemoryConfigPath(projectRoot, "resolved-config.json")
+  try {
+    if (fsSync.existsSync(resolvedPath)) {
+      const payload = JSON.parse(fsSync.readFileSync(resolvedPath, "utf8"))
+      if (payload && payload.resolved) {
+        return payload.resolved
+      }
+    }
+  } catch {
+    // MCP hasn't written resolved-config yet — fall through to legacy
+  }
+  return null
+}
+
+function loadPluginConfig(projectRoot) {
+  // Re-resolve when a projectRoot becomes available after an earlier no-project call,
+  // because resolved-config.json lives under the project and wasn't reachable before.
+  if (_pluginConfig && (!projectRoot || _pluginConfigHasProject)) {
     return _pluginConfig
   }
   const defaults = {
@@ -28,6 +47,19 @@ function loadPluginConfig() {
     disregard_compaction: false,
     startup_context_once: true,
   }
+
+  const resolved = loadResolvedConfig(projectRoot)
+  if (resolved) {
+    const agent = resolved.agent || {}
+    _pluginConfig = {
+      ...defaults,
+      inject_message_directives: agent.inject_message_directives ?? defaults.inject_message_directives,
+      directive_style: agent.directive_style ?? defaults.directive_style,
+    }
+    _pluginConfigHasProject = !!projectRoot
+    return _pluginConfig
+  }
+
   const candidates = [
     path.join(__dirname, "aidocs-plugin.json"),
     path.join(__dirname, "..", "..", "aidocs-plugin.json"),
@@ -41,6 +73,7 @@ function loadPluginConfig() {
       if (fsSync.existsSync(candidate)) {
         const raw = JSON.parse(fsSync.readFileSync(candidate, "utf8"))
         _pluginConfig = { ...defaults, ...raw }
+        _pluginConfigHasProject = !!projectRoot
         return _pluginConfig
       }
     } catch {
@@ -48,6 +81,7 @@ function loadPluginConfig() {
     }
   }
   _pluginConfig = defaults
+  _pluginConfigHasProject = !!projectRoot
   return _pluginConfig
 }
 
@@ -432,6 +466,32 @@ function normalizeGatePath(filePath) {
   }
   const normalized = filePath.replace(/\\/g, "/").trim()
   return normalized || null
+}
+
+function toProjectRelativeGatePath(projectRoot, filePath) {
+  const normalized = normalizeGatePath(filePath)
+  if (!normalized || !projectRoot) {
+    return null
+  }
+
+  const rootResolved = path.resolve(projectRoot)
+  const candidateResolved = path.isAbsolute(normalized)
+    ? path.resolve(normalized)
+    : path.resolve(rootResolved, normalized)
+  const relativeToRoot = path.relative(rootResolved, candidateResolved)
+  const relativeNormalized = normalizeGatePath(relativeToRoot)
+
+  if (
+    !relativeNormalized ||
+    relativeNormalized === "." ||
+    relativeNormalized === ".." ||
+    relativeNormalized.startsWith("../") ||
+    /^[A-Za-z]:\//.test(relativeNormalized)
+  ) {
+    return null
+  }
+
+  return relativeNormalized
 }
 
 async function getQueryGateState(projectRoot, sessionID) {
@@ -1096,7 +1156,7 @@ async function AIDOCSPlugin(input) {
         const context = buildPromptContext(state, promptText, activeCommand, activeCommandMeta, promptHostState)
       if (context) {
         let finalContext = context
-        const config = loadPluginConfig()
+        const config = loadPluginConfig(projectRoot)
           const shouldInjectStartup = config.startup_context_once && state.startupState === "ready" && state.sessionID && !startupInjectedSessions.has(sessionID)
         if (shouldInjectStartup) {
           const startupBlocks = await buildSessionStartContext(projectRoot, state)
@@ -1129,7 +1189,7 @@ async function AIDOCSPlugin(input) {
     },
 
     "experimental.session.compacting": async ({ sessionID }, output) => {
-      const config = loadPluginConfig()
+      const config = loadPluginConfig(projectRoot)
       if (!config.disregard_compaction) {
         return
       }
@@ -1167,7 +1227,7 @@ async function AIDOCSPlugin(input) {
 
       // Inject action-specific tool directive into the last user message.
       // Inject into user message (not system prompt) — models weight recent user-turn content higher.
-      const config = loadPluginConfig()
+      const config = loadPluginConfig(projectRoot)
       if (!config.inject_message_directives) {
         return
       }
@@ -1270,9 +1330,8 @@ async function AIDOCSPlugin(input) {
       }
 
       // Only gate files inside the project — temp files, system files, other projects are unguarded
-      const normalizedRoot = projectRoot.replace(/\\/g, "/").toLowerCase()
-      const normalizedCandidate = candidatePath.replace(/\\/g, "/").toLowerCase()
-      if (!normalizedCandidate.startsWith(normalizedRoot)) {
+      const gatePath = toProjectRelativeGatePath(projectRoot, candidatePath)
+      if (!gatePath) {
         return
       }
 
@@ -1281,11 +1340,11 @@ async function AIDOCSPlugin(input) {
       if (!gate) {
         return
       }
-      if (hasGrantedReadAccess(gate, candidatePath)) {
+      if (hasGrantedReadAccess(gate, gatePath)) {
         return
       }
 
-      throw new Error(`AIDOCS indexed-read gate: "${candidatePath}" has not been discovered via code_investigate, code_find, code_trace, or code_bundle. Use AIDOCS indexed tools first before raw Read.`)
+      throw new Error(`AIDOCS indexed-read gate: "${gatePath}" has not been discovered via code_investigate, code_find, code_trace, or code_bundle. Use AIDOCS indexed tools first before raw Read.`)
     },
 
     "tool.execute.after": async (input, output) => {

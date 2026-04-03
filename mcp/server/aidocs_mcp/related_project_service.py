@@ -27,19 +27,23 @@ class RelatedProjectService:
                 continue
             body = line[1:].strip()
             key, value = body.split(":", 1)
-            current[key.strip().lower().replace(" ", "_")] = value.strip().strip('`')
+            current[key.strip().lower().replace(" ", "_")] = value.strip().strip("`")
         if current:
             entries.append(current)
         return entries
 
-    def get_related_project(self, project_root: Path, name: str) -> dict[str, str] | None:
+    def get_related_project(
+        self, project_root: Path, name: str
+    ) -> dict[str, str] | None:
         needle = name.strip().lower()
         for entry in self.list_related_projects(project_root):
             if entry.get("name", "").strip().lower() == needle:
                 return entry
         return None
 
-    def resolve_related_project_path(self, project_root: Path, name: str) -> Path | None:
+    def resolve_related_project_path(
+        self, project_root: Path, name: str
+    ) -> Path | None:
         entry = self.get_related_project(project_root, name)
         if not entry:
             return None
@@ -47,4 +51,6 @@ class RelatedProjectService:
         if not raw:
             return None
         candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = (project_root / candidate).resolve()
         return candidate if candidate.exists() else None

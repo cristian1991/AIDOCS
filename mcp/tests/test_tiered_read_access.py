@@ -38,7 +38,9 @@ def test_discovery_read_still_requires_indexed_query(tmp_path: Path) -> None:
     assert "Indexed-query prerequisite" in str(data["error"])
 
 
-def test_exact_known_relative_read_skips_discovery_gate(tmp_path: Path) -> None:
+def test_exact_known_relative_read_still_requires_explicit_grant(
+    tmp_path: Path,
+) -> None:
     project = tmp_path / "project"
     (project / ".MEMORY").mkdir(parents=True, exist_ok=True)
     (project / "src").mkdir(parents=True, exist_ok=True)
@@ -62,14 +64,17 @@ def test_exact_known_relative_read_skips_discovery_gate(tmp_path: Path) -> None:
 
     data = _payload_json(asyncio.run(run()))
 
-    assert data["path"] == "src/module.py"
-    assert data["content"] == "value = 1"
+    assert "Indexed-query prerequisite" in data["error"]
 
 
-def test_protected_path_stays_blocked_even_with_known_exact_path(tmp_path: Path) -> None:
+def test_protected_path_stays_blocked_even_with_known_exact_path(
+    tmp_path: Path,
+) -> None:
     project = tmp_path / "project"
     (project / ".MEMORY").mkdir(parents=True, exist_ok=True)
-    (project / "aidocs.toml").write_text("[agent]\ndirective_style = \"normal\"\n", encoding="utf-8")
+    (project / "aidocs.toml").write_text(
+        '[agent]\ndirective_style = "normal"\n', encoding="utf-8"
+    )
 
     async def run() -> object:
         server = create_server()
@@ -92,11 +97,13 @@ def test_protected_path_stays_blocked_even_with_known_exact_path(tmp_path: Path)
     assert "Indexed-query prerequisite" in str(data["error"])
 
 
-def test_protected_path_followup_read_stays_blocked_after_allowed_edit(tmp_path: Path) -> None:
+def test_protected_path_followup_read_stays_blocked_after_allowed_edit(
+    tmp_path: Path,
+) -> None:
     project = tmp_path / "project"
     (project / ".MEMORY").mkdir(parents=True, exist_ok=True)
     (project / "aidocs.toml").write_text(
-        "[agent]\ndirective_style = \"short\"\n",
+        '[agent]\ndirective_style = "short"\n',
         encoding="utf-8",
     )
 

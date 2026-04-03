@@ -1,5 +1,10 @@
 # Skill Override Policy Implementation Plan
 
+> Historical implementation plan.
+>
+> This plan targets an older override model and test naming scheme (`aidocs_native_override`) that has since been replaced.
+> The current runtime-owned workflow model is documented in `README_DEV.md` and reflected in the live tests under `mcp/tests/`.
+
 > **For AIDOCS session work:** Execute from the active AIDOCS session using session plans, indexed retrieval, and targeted verification after each phase. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an explicit AIDOCS skill override policy so orchestration-critical skills use AIDOCS-native implementations, provider-content/runtime-controlled skills use external content under AIDOCS authority, and provider-native skills continue to work normally.
@@ -138,6 +143,8 @@ Initial override set should include:
 - `writing-plans`
 - `subagent-driven-development`
 - `executing-plans`
+
+Note: this remains correct even after Superpowers restored execution choice, because AIDOCS override is about workflow authority when a managed session is active, not about hiding the provider's terminology.
 
 - [ ] **Step 4: Run tests to verify they pass**
 

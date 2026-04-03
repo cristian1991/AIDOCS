@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+
+_GRANT_TTL_MINUTES = 30
 
 
 class QueryGateStore:
@@ -56,10 +58,23 @@ class QueryGateStore:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             payload = {}
+
+        allow_read = bool(payload.get("allow_read", False))
+        granted_at = payload.get("granted_at")
+        if allow_read and granted_at:
+            try:
+                granted_time = datetime.strptime(granted_at, "%Y-%m-%d %H:%M:%S")
+                if datetime.now() - granted_time > timedelta(
+                    minutes=_GRANT_TTL_MINUTES
+                ):
+                    allow_read = False
+            except (ValueError, TypeError):
+                pass
+
         return {
             "session_id": session_id,
             "path": str(path),
-            "allow_read": bool(payload.get("allow_read", False)),
+            "allow_read": allow_read,
             "last_tool": payload.get("last_tool"),
             "known_exact_paths": self._normalize_known_exact_paths(payload),
             "current_lane_id": self._normalize_current_lane_id(payload),
@@ -80,13 +95,29 @@ class QueryGateStore:
         path = self.gate_path(project_root, session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         current = self.get(project_root, session_id)
+        now = datetime.now()
         payload = {
             "allow_read": allow_read,
             "last_tool": last_tool,
-            "known_exact_paths": list(dict.fromkeys(current["known_exact_paths"] if known_exact_paths is self._KEEP else (known_exact_paths or []))),
-            "current_lane_id": current.get("current_lane_id") if current_lane_id is self._KEEP else (str(current_lane_id).strip() if current_lane_id else None),
-            "lane_exact_paths": list(dict.fromkeys(current.get("lane_exact_paths", []) if lane_exact_paths is self._KEEP else (lane_exact_paths or []))),
-            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "granted_at": now.strftime("%Y-%m-%d %H:%M:%S") if allow_read else None,
+            "known_exact_paths": list(
+                dict.fromkeys(
+                    current["known_exact_paths"]
+                    if known_exact_paths is self._KEEP
+                    else (known_exact_paths or [])
+                )
+            ),
+            "current_lane_id": current.get("current_lane_id")
+            if current_lane_id is self._KEEP
+            else (str(current_lane_id).strip() if current_lane_id else None),
+            "lane_exact_paths": list(
+                dict.fromkeys(
+                    current.get("lane_exact_paths", [])
+                    if lane_exact_paths is self._KEEP
+                    else (lane_exact_paths or [])
+                )
+            ),
+            "updated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         }
         path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         return self.get(project_root, session_id)

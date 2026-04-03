@@ -1,5 +1,10 @@
 # Bundled Provider Completion Implementation Plan
 
+> Historical implementation plan.
+>
+> This document predates the final runtime-owned workflow split and the current helper-only skill model.
+> Keep it as historical context, but use the current runtime code, tests, and `README_DEV.md` for present behavior.
+
 > **For AIDOCS session work:** Execute from the active AIDOCS session using session plans, indexed retrieval, and targeted verification after each phase. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the bundled curated skill provider the default AIDOCS experience so bundled skills are available out of the box, use clean canonical names, and no external `superpowers` plugin/runtime is required for normal OpenCode/Claude operation.

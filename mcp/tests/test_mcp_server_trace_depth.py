@@ -71,9 +71,13 @@ def test_known_exact_path_grant_stays_narrow(tmp_path: Path) -> None:
     (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
     hub.managed_mode.set_mode(project_root, session_id="s1")
 
-    _grant_known_exact_path_read(hub, project_root, "aidocs_code_create_file", "src/new.txt")
+    _grant_known_exact_path_read(
+        hub, project_root, "aidocs_code_create_file", "src/new.txt"
+    )
 
-    assert _require_indexed_read_gate(hub, project_root, exact_path="src/new.txt") is None
+    assert (
+        _require_indexed_read_gate(hub, project_root, exact_path="src/new.txt") is None
+    )
     blocked = _require_indexed_read_gate(hub, project_root)
     assert blocked is not None
     gate = hub.query_gate.get(project_root, "s1")
@@ -82,14 +86,19 @@ def test_known_exact_path_grant_stays_narrow(tmp_path: Path) -> None:
     assert gate["known_exact_paths"] == ["src/new.txt"]
 
 
-def test_exact_known_relative_code_path_skips_discovery_gate(tmp_path: Path) -> None:
+def test_exact_known_relative_code_path_still_requires_explicit_grant(
+    tmp_path: Path,
+) -> None:
     server = create_server()
     hub = server._aidocs_test_hub
     project_root = tmp_path / "project"
     (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
     hub.managed_mode.set_mode(project_root, session_id="s1")
 
-    assert _require_indexed_read_gate(hub, project_root, exact_path="src/module.py") is None
+    result = _require_indexed_read_gate(hub, project_root, exact_path="src/module.py")
+
+    assert result is not None
+    assert "Indexed-query prerequisite" in result["error"]
 
 
 def test_protected_exact_path_does_not_skip_discovery_gate(tmp_path: Path) -> None:
@@ -123,7 +132,9 @@ def test_protected_exact_path_cannot_be_granted(tmp_path: Path) -> None:
     assert gate["last_tool"] is None
 
 
-def test_second_server_grant_in_different_project_does_not_unlock_first_server_gate(tmp_path: Path) -> None:
+def test_second_server_grant_in_different_project_does_not_unlock_first_server_gate(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project-a"
     other_project_root = tmp_path / "project-b"
     (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
@@ -151,7 +162,9 @@ def test_second_server_grant_in_different_project_does_not_unlock_first_server_g
     assert gate2["last_tool"] == "code_find"
 
 
-def test_indexed_read_gate_resets_on_task_begin_and_task_complete(tmp_path: Path) -> None:
+def test_indexed_read_gate_resets_on_task_begin_and_task_complete(
+    tmp_path: Path,
+) -> None:
     from aidocs_mcp.runtime_service import RuntimeService
     from aidocs_mcp.service_hub import AidocsServiceHub
 
@@ -184,17 +197,38 @@ def test_indexed_read_gate_resets_on_task_begin_and_task_complete(tmp_path: Path
     hub2 = AidocsServiceHub(templates_root=templates)
     runtime = RuntimeService(hub2)
     (project_root / ".MEMORY" / ".aidocs").mkdir(parents=True, exist_ok=True)
-    for name in ["index.aidocs", "global-instructions.aidocs", "coding-standards.aidocs", "memory-system.aidocs"]:
-        (project_root / ".MEMORY" / ".aidocs" / name).write_text(f"# {name}\n", encoding="utf-8")
-    (project_root / ".MEMORY" / "INDEX.md").write_text("# Memory Index\n", encoding="utf-8")
+    for name in [
+        "index.aidocs",
+        "global-instructions.aidocs",
+        "coding-standards.aidocs",
+        "memory-system.aidocs",
+    ]:
+        (project_root / ".MEMORY" / ".aidocs" / name).write_text(
+            f"# {name}\n", encoding="utf-8"
+        )
+    (project_root / ".MEMORY" / "INDEX.md").write_text(
+        "# Memory Index\n", encoding="utf-8"
+    )
     hub2.sessions.create_session(project_root, "2026-03-23-a", "A", "Agent", "Goal A")
-    runtime.task_begin(project_root, "2026-03-23-a", goal="Do work", include_code_bundle=False)
+    runtime.task_begin(
+        project_root, "2026-03-23-a", goal="Do work", include_code_bundle=False
+    )
     gate = hub2.query_gate.get(project_root, "2026-03-23-a")
     assert gate["allow_read"] is False
     assert gate["last_tool"] == "task_begin"
-    hub2.query_gate.set(project_root, "2026-03-23-a", allow_read=True, last_tool="code_find")
-    runtime.task_complete(project_root, "2026-03-23-a", result_summary="Done", include_code_bundle=False)
+    hub2.query_gate.set(
+        project_root, "2026-03-23-a", allow_read=True, last_tool="code_find"
+    )
+    runtime.task_complete(
+        project_root,
+        "2026-03-23-a",
+        result_summary="Done",
+        verification_evidence={
+            "commands_run": ["pytest tests/test_trace_depth.py -q"],
+            "command_results": ["1 passed"],
+        },
+        include_code_bundle=False,
+    )
     gate = hub2.query_gate.get(project_root, "2026-03-23-a")
     assert gate["allow_read"] is False
     assert gate["last_tool"] == "task_complete"
-

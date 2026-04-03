@@ -40,31 +40,54 @@ def _write_templates(root: Path) -> None:
         encoding="utf-8",
     )
     (root / "context.md").write_text("# Context\n", encoding="utf-8")
-    (root.parent / "index.aidocs").write_text("# AIDOCS Session Entry\n\nRead /.MEMORY/INDEX.md next.\n", encoding="utf-8")
-    (root.parent / "global-instructions.aidocs").write_text("# Global Instructions\n", encoding="utf-8")
-    (root.parent / "coding-standards.aidocs").write_text("# Coding Standards\n", encoding="utf-8")
-    (root.parent / "memory-system.aidocs").write_text("# Memory System\n", encoding="utf-8")
-    (root.parent / "research-safety.aidocs").write_text("# Research Safety\n", encoding="utf-8")
+    (root.parent / "index.aidocs").write_text(
+        "# AIDOCS Session Entry\n\nRead /.MEMORY/INDEX.md next.\n", encoding="utf-8"
+    )
+    (root.parent / "global-instructions.aidocs").write_text(
+        "# Global Instructions\n", encoding="utf-8"
+    )
+    (root.parent / "coding-standards.aidocs").write_text(
+        "# Coding Standards\n", encoding="utf-8"
+    )
+    (root.parent / "memory-system.aidocs").write_text(
+        "# Memory System\n", encoding="utf-8"
+    )
+    (root.parent / "research-safety.aidocs").write_text(
+        "# Research Safety\n", encoding="utf-8"
+    )
     (root.parent / "personalities").mkdir(parents=True, exist_ok=True)
-    (root.parent / "personalities" / "default.aidocs").write_text("# Default Personality\n", encoding="utf-8")
+    (root.parent / "personalities" / "default.aidocs").write_text(
+        "# Default Personality\n", encoding="utf-8"
+    )
     memory_template = root / "memory"
     memory_template.mkdir(parents=True, exist_ok=True)
     (memory_template / "INDEX.md").write_text("# Memory Index\n", encoding="utf-8")
     (memory_template / "rules").mkdir(parents=True, exist_ok=True)
-    (memory_template / "rules" / "workflow-rules.md").write_text("# Workflow Rules\n\n## Workflow Rules\n", encoding="utf-8")
-    (memory_template / "rules" / "workflow-actions.md").write_text("# Workflow Actions\n\n## Workflow Actions\n", encoding="utf-8")
+    (memory_template / "rules" / "workflow-rules.md").write_text(
+        "# Workflow Rules\n\n## Workflow Rules\n", encoding="utf-8"
+    )
+    (memory_template / "rules" / "workflow-actions.md").write_text(
+        "# Workflow Actions\n\n## Workflow Actions\n", encoding="utf-8"
+    )
 
 
 def _seed_project(project_root: Path) -> None:
     mem = project_root / ".MEMORY"
     (mem / ".aidocs").mkdir(parents=True, exist_ok=True)
-    for name in ["index.aidocs", "global-instructions.aidocs", "coding-standards.aidocs", "memory-system.aidocs"]:
+    for name in [
+        "index.aidocs",
+        "global-instructions.aidocs",
+        "coding-standards.aidocs",
+        "memory-system.aidocs",
+    ]:
         (mem / ".aidocs" / name).write_text(f"# {name}\n", encoding="utf-8")
     (mem / "INDEX.md").write_text("# Memory Index\n", encoding="utf-8")
     (project_root / "AGENTS.md").write_text("routing\n", encoding="utf-8")
 
 
-def _register_superpowers_provider(runtime: RuntimeService, project_root: Path, tmp_path: Path) -> None:
+def _register_superpowers_provider(
+    runtime: RuntimeService, project_root: Path, tmp_path: Path
+) -> None:
     provider_root = tmp_path / "superpowers-external"
     provider_root.mkdir(parents=True, exist_ok=True)
     (provider_root / "provider.json").write_text(
@@ -112,22 +135,38 @@ def _make_managed_project(tmp_path: Path, name: str) -> Path:
     runtime = RuntimeService(AidocsServiceHub(templates_root=templates))
     project_root = tmp_path / f"project-{name}"
     runtime.project_init(project_root, init_git=False, create_remote=False)
-    session = runtime.hub.sessions.create_session(project_root, f"2026-03-30-{name}", "A", "Agent", "Goal A")
+    session = runtime.hub.sessions.create_session(
+        project_root, f"2026-03-30-{name}", "A", "Agent", "Goal A"
+    )
     runtime.hub.managed_mode.set_mode(project_root, session.session_id)
-    runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
+    runtime.project_bootstrap_or_resume(
+        project_root,
+        session_id=session.session_id,
+        include_code_bundle=False,
+        include_tests=False,
+    )
     return project_root
 
 
-def _make_runtime_with_selected_bundled_skill(tmp_path: Path, name: str, skill_id: str) -> tuple[RuntimeService, Path, str]:
+def _make_runtime_with_selected_bundled_skill(
+    tmp_path: Path, name: str, skill_id: str
+) -> tuple[RuntimeService, Path, str]:
     templates = tmp_path / f"templates-{name}"
     _write_templates(templates)
     runtime = RuntimeService(AidocsServiceHub(templates_root=templates))
     project_root = tmp_path / f"project-{name}"
     runtime.project_init(project_root, init_git=False, create_remote=False)
-    session = runtime.hub.sessions.create_session(project_root, f"2026-03-31-{name}", "A", "Agent", "Goal A")
+    session = runtime.hub.sessions.create_session(
+        project_root, f"2026-03-31-{name}", "A", "Agent", "Goal A"
+    )
     runtime.hub.managed_mode.set_mode(project_root, session.session_id)
     runtime.hub.skills.set_selected_skills(project_root, session.session_id, [skill_id])
-    runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
+    runtime.project_bootstrap_or_resume(
+        project_root,
+        session_id=session.session_id,
+        include_code_bundle=False,
+        include_tests=False,
+    )
     return runtime, project_root, session.session_id
 
 
@@ -150,25 +189,74 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
     result = _run_node_json(script)
 
     assert result["state"]["importedSkillState"]["source"] == "cached_session"
-    assert result["state"]["importedSkillState"]["selected_skills"] == ["deep-retrieval"]
+    assert result["state"]["importedSkillState"]["selected_skills"] == [
+        "deep-retrieval"
+    ]
     assert result["state"]["importedSkillState"]["active_skills"] == ["deep-retrieval"]
+    assert (
+        result["state"]["importedSkillState"]["helper_skill_guidance"][0]["name"]
+        == "deep-retrieval"
+    )
     assert "Imported skills" in result["context"]
     assert "`deep-retrieval`" in result["context"]
+    assert "Active AIDOCS helper skill guidance" in result["context"]
+    assert "exact signatures" in result["context"]
     assert "aidocs_bundled_superpowers/deep-retrieval" not in result["context"]
 
 
-def test_opencode_plugin_surfaces_imported_skill_state_without_superpowers_plugin(tmp_path: Path) -> None:
+def test_opencode_prompt_context_surfaces_bundled_helper_skill_guidance(
+    tmp_path: Path,
+) -> None:
+    _runtime, project_root, _session_id = _make_runtime_with_selected_bundled_skill(
+        tmp_path,
+        "bundled-opencode-prompt",
+        "deep-retrieval",
+    )
+
+    script = f"""
+const plugin = require({json.dumps(str(PLUGIN_PATH))});
+(async () => {{
+  const state = await plugin._internal.resolveAidocsState({json.dumps(str(project_root))});
+  const promptHostState = await plugin._internal.resolvePromptHostState({json.dumps(str(project_root))}, state, "investigate exact method signatures before editing");
+  const context = plugin._internal.buildPromptContext(state, "investigate exact method signatures before editing", "", null, promptHostState);
+  console.log(JSON.stringify({{ state, promptHostState, context }}));
+}})().catch((err) => {{ console.error(err); process.exit(1); }});
+"""
+
+    result = _run_node_json(script)
+
+    assert result["promptHostState"]["payload"]["prompt_state"]["active_skills"] == [
+        "deep-retrieval"
+    ]
+    assert "Active AIDOCS helper skill guidance" in result["context"]
+    assert "exact signatures" in result["context"]
+
+
+def test_opencode_plugin_surfaces_imported_skill_state_without_superpowers_plugin(
+    tmp_path: Path,
+) -> None:
     templates = tmp_path / "templates"
     _write_templates(templates)
     runtime = RuntimeService(AidocsServiceHub(templates_root=templates))
     project_root = tmp_path / "project"
     runtime.project_init(project_root, init_git=False, create_remote=False)
-    session = runtime.hub.sessions.create_session(project_root, "2026-03-30-a", "A", "Agent", "Goal A")
+    session = runtime.hub.sessions.create_session(
+        project_root, "2026-03-30-a", "A", "Agent", "Goal A"
+    )
     runtime.hub.managed_mode.set_mode(project_root, session.session_id)
     _register_superpowers_provider(runtime, project_root, tmp_path)
-    runtime.hub.skills.set_selected_skills(project_root, session.session_id, ["superpowers_external/brainstorming"])
-    runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
-    runtime.aidocs_route_prompt(project_root, user_request="brainstorm app ideas", action_kind="understand")
+    runtime.hub.skills.set_selected_skills(
+        project_root, session.session_id, ["superpowers_external/brainstorming"]
+    )
+    runtime.project_bootstrap_or_resume(
+        project_root,
+        session_id=session.session_id,
+        include_code_bundle=False,
+        include_tests=False,
+    )
+    runtime.aidocs_route_prompt(
+        project_root, user_request="brainstorm app ideas", action_kind="understand"
+    )
 
     script = f"""
 const plugin = require({json.dumps(str(PLUGIN_PATH))});
@@ -184,23 +272,38 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
 
     assert result["state"]["importedSkillState"]["source"] == "cached_session"
     assert result["state"]["importedSkillState"]["session_id"] == session.session_id
-    assert result["state"]["importedSkillState"]["active_skills"] == ["superpowers_external/brainstorming"]
+    assert result["state"]["importedSkillState"]["active_skills"] == [
+        "superpowers_external/brainstorming"
+    ]
     assert result["promptHostState"]["source"] == "runtime_host_state"
     assert "Imported skills" in result["context"]
     assert "superpowers_external/brainstorming" in result["context"]
 
 
-def test_opencode_plugin_surfaces_override_resolved_host_skill_state(tmp_path: Path) -> None:
+def test_opencode_plugin_surfaces_override_resolved_host_skill_state(
+    tmp_path: Path,
+) -> None:
     templates = tmp_path / "templates-override"
     _write_templates(templates)
     runtime = RuntimeService(AidocsServiceHub(templates_root=templates))
     project_root = tmp_path / "project-override"
     runtime.project_init(project_root, init_git=False, create_remote=False)
-    session = runtime.hub.sessions.create_session(project_root, "2026-03-30-override", "A", "Agent", "Goal A")
+    session = runtime.hub.sessions.create_session(
+        project_root, "2026-03-30-override", "A", "Agent", "Goal A"
+    )
     runtime.hub.managed_mode.set_mode(project_root, session.session_id)
-    _register_superpowers_provider(runtime, project_root, tmp_path / "override-provider")
-    runtime.hub.skills.set_selected_skills(project_root, session.session_id, ["superpowers_external/writing-plans"])
-    runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
+    _register_superpowers_provider(
+        runtime, project_root, tmp_path / "override-provider"
+    )
+    runtime.hub.skills.set_selected_skills(
+        project_root, session.session_id, ["superpowers_external/writing-plans"]
+    )
+    runtime.project_bootstrap_or_resume(
+        project_root,
+        session_id=session.session_id,
+        include_code_bundle=False,
+        include_tests=False,
+    )
 
     script = f"""
 const plugin = require({json.dumps(str(PLUGIN_PATH))});
@@ -212,20 +315,37 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
 
     result = _run_node_json(script)
 
-    assert result["importedSkillState"]["active_skills"] == ["writing-plans"]
+    assert result["importedSkillState"]["active_skills"] == []
+    assert (
+        result["importedSkillState"]["runtime_owned_capabilities"][0]["capability_id"]
+        == "planning"
+    )
 
 
-def test_opencode_runtime_state_can_include_override_mode_metadata(tmp_path: Path) -> None:
+def test_opencode_runtime_state_can_include_override_mode_metadata(
+    tmp_path: Path,
+) -> None:
     templates = tmp_path / "templates-override-metadata"
     _write_templates(templates)
     runtime = RuntimeService(AidocsServiceHub(templates_root=templates))
     project_root = tmp_path / "project-override-metadata"
     runtime.project_init(project_root, init_git=False, create_remote=False)
-    session = runtime.hub.sessions.create_session(project_root, "2026-03-30-override-metadata", "A", "Agent", "Goal A")
+    session = runtime.hub.sessions.create_session(
+        project_root, "2026-03-30-override-metadata", "A", "Agent", "Goal A"
+    )
     runtime.hub.managed_mode.set_mode(project_root, session.session_id)
-    _register_superpowers_provider(runtime, project_root, tmp_path / "override-metadata-provider")
-    runtime.hub.skills.set_selected_skills(project_root, session.session_id, ["superpowers_external/writing-plans"])
-    runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
+    _register_superpowers_provider(
+        runtime, project_root, tmp_path / "override-metadata-provider"
+    )
+    runtime.hub.skills.set_selected_skills(
+        project_root, session.session_id, ["superpowers_external/writing-plans"]
+    )
+    runtime.project_bootstrap_or_resume(
+        project_root,
+        session_id=session.session_id,
+        include_code_bundle=False,
+        include_tests=False,
+    )
 
     script = f"""
 const plugin = require({json.dumps(str(PLUGIN_PATH))});
@@ -239,24 +359,43 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
 
     result = _run_node_json(script)
 
-    assert result["state"]["importedSkillState"]["mode_metadata"]["active_skill_modes"] == {
-        "writing-plans": "aidocs_native_override"
-    }
-    assert result["promptHostState"]["payload"]["prompt_state"]["override_modes"]["writing-plans"] == "aidocs_native_override"
-    assert "aidocs_native_override" in result["context"]
+    assert result["state"]["importedSkillState"]["mode_metadata"][
+        "selected_skill_modes"
+    ] == {"superpowers_external/writing-plans": "aidocs_runtime_owned"}
+    assert result["promptHostState"]["payload"]["prompt_state"]["override_modes"] == {}
+    assert (
+        result["promptHostState"]["payload"]["prompt_state"][
+            "runtime_owned_capabilities"
+        ][0]["capability_id"]
+        == "planning"
+    )
+    assert "Runtime-owned workflow capabilities: `planning`." in result["context"]
 
 
-def test_opencode_runtime_state_surfaces_provider_content_override_mode_metadata(tmp_path: Path) -> None:
+def test_opencode_runtime_state_surfaces_provider_content_override_mode_metadata(
+    tmp_path: Path,
+) -> None:
     templates = tmp_path / "templates-provider-content-metadata"
     _write_templates(templates)
     runtime = RuntimeService(AidocsServiceHub(templates_root=templates))
     project_root = tmp_path / "project-provider-content-metadata"
     runtime.project_init(project_root, init_git=False, create_remote=False)
-    session = runtime.hub.sessions.create_session(project_root, "2026-03-30-provider-content-metadata", "A", "Agent", "Goal A")
+    session = runtime.hub.sessions.create_session(
+        project_root, "2026-03-30-provider-content-metadata", "A", "Agent", "Goal A"
+    )
     runtime.hub.managed_mode.set_mode(project_root, session.session_id)
-    _register_superpowers_provider(runtime, project_root, tmp_path / "provider-content-metadata-provider")
-    runtime.hub.skills.set_selected_skills(project_root, session.session_id, ["superpowers_external/brainstorming"])
-    runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
+    _register_superpowers_provider(
+        runtime, project_root, tmp_path / "provider-content-metadata-provider"
+    )
+    runtime.hub.skills.set_selected_skills(
+        project_root, session.session_id, ["superpowers_external/brainstorming"]
+    )
+    runtime.project_bootstrap_or_resume(
+        project_root,
+        session_id=session.session_id,
+        include_code_bundle=False,
+        include_tests=False,
+    )
 
     script = f"""
 const plugin = require({json.dumps(str(PLUGIN_PATH))});
@@ -270,26 +409,39 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
 
     result = _run_node_json(script)
 
-    assert result["state"]["importedSkillState"]["mode_metadata"]["active_skill_modes"] == {
-        "superpowers_external/brainstorming": "provider_content_aidocs_runtime"
-    }
+    assert result["state"]["importedSkillState"]["mode_metadata"][
+        "active_skill_modes"
+    ] == {"superpowers_external/brainstorming": "provider_content_aidocs_runtime"}
     assert result["promptHostState"]["payload"]["prompt_state"]["override_modes"] == {
         "superpowers_external/brainstorming": "provider_content_aidocs_runtime"
     }
     assert "provider_content_aidocs_runtime" in result["context"]
 
 
-def test_opencode_plugin_mode_metadata_source_is_runtime_host_state(tmp_path: Path) -> None:
+def test_opencode_plugin_mode_metadata_source_is_runtime_host_state(
+    tmp_path: Path,
+) -> None:
     templates = tmp_path / "templates-provider-content-runtime"
     _write_templates(templates)
     runtime = RuntimeService(AidocsServiceHub(templates_root=templates))
     project_root = tmp_path / "project-provider-content-runtime"
     runtime.project_init(project_root, init_git=False, create_remote=False)
-    session = runtime.hub.sessions.create_session(project_root, "2026-03-30-provider-content-runtime", "A", "Agent", "Goal A")
+    session = runtime.hub.sessions.create_session(
+        project_root, "2026-03-30-provider-content-runtime", "A", "Agent", "Goal A"
+    )
     runtime.hub.managed_mode.set_mode(project_root, session.session_id)
-    _register_superpowers_provider(runtime, project_root, tmp_path / "provider-content-runtime-provider")
-    runtime.hub.skills.set_selected_skills(project_root, session.session_id, ["superpowers_external/brainstorming"])
-    runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
+    _register_superpowers_provider(
+        runtime, project_root, tmp_path / "provider-content-runtime-provider"
+    )
+    runtime.hub.skills.set_selected_skills(
+        project_root, session.session_id, ["superpowers_external/brainstorming"]
+    )
+    runtime.project_bootstrap_or_resume(
+        project_root,
+        session_id=session.session_id,
+        include_code_bundle=False,
+        include_tests=False,
+    )
 
     script = f"""
 const plugin = require({json.dumps(str(PLUGIN_PATH))});
@@ -322,12 +474,25 @@ def test_opencode_plugin_ignores_other_session_trigger_snapshot(tmp_path: Path) 
     runtime = RuntimeService(AidocsServiceHub(templates_root=templates))
     project_root = tmp_path / "project"
     runtime.project_init(project_root, init_git=False, create_remote=False)
-    session_a = runtime.hub.sessions.create_session(project_root, "2026-03-30-a", "A", "Agent", "Goal A")
-    session_b = runtime.hub.sessions.create_session(project_root, "2026-03-30-b", "B", "Agent", "Goal B")
+    session_a = runtime.hub.sessions.create_session(
+        project_root, "2026-03-30-a", "A", "Agent", "Goal A"
+    )
+    session_b = runtime.hub.sessions.create_session(
+        project_root, "2026-03-30-b", "B", "Agent", "Goal B"
+    )
     _register_superpowers_provider(runtime, project_root, tmp_path)
-    runtime.hub.skills.set_selected_skills(project_root, session_a.session_id, ["superpowers_external/brainstorming"])
-    runtime.project_bootstrap_or_resume(project_root, session_id=session_a.session_id, include_code_bundle=False, include_tests=False)
-    runtime.aidocs_route_prompt(project_root, user_request="brainstorm app ideas", action_kind="understand")
+    runtime.hub.skills.set_selected_skills(
+        project_root, session_a.session_id, ["superpowers_external/brainstorming"]
+    )
+    runtime.project_bootstrap_or_resume(
+        project_root,
+        session_id=session_a.session_id,
+        include_code_bundle=False,
+        include_tests=False,
+    )
+    runtime.aidocs_route_prompt(
+        project_root, user_request="brainstorm app ideas", action_kind="understand"
+    )
     runtime.hub.managed_mode.set_mode(project_root, session_id=session_b.session_id)
 
     script = f"""
@@ -347,7 +512,9 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
     assert "superpowers_external/brainstorming" not in result["context"]
 
 
-def test_opencode_plugin_reflects_session_skill_changes_after_mcp_update(tmp_path: Path) -> None:
+def test_opencode_plugin_reflects_session_skill_changes_after_mcp_update(
+    tmp_path: Path,
+) -> None:
     templates = tmp_path / "templates"
     _write_templates(templates)
     project_root = tmp_path / "project-mcp"
@@ -357,7 +524,9 @@ def test_opencode_plugin_reflects_session_skill_changes_after_mcp_update(tmp_pat
         hub = server._aidocs_test_hub
         runtime = RuntimeService(hub)
         runtime.project_init(project_root, init_git=False, create_remote=False)
-        session = hub.sessions.create_session(project_root, "2026-03-30-a", "A", "Agent", "Goal A")
+        session = hub.sessions.create_session(
+            project_root, "2026-03-30-a", "A", "Agent", "Goal A"
+        )
         hub.managed_mode.set_mode(project_root, session_id=session.session_id)
         _register_superpowers_provider(runtime, project_root, tmp_path / "mcp-provider")
         await server.call_tool(
@@ -368,7 +537,9 @@ def test_opencode_plugin_reflects_session_skill_changes_after_mcp_update(tmp_pat
                 "selected_skills": ["superpowers_external/brainstorming"],
             },
         )
-        runtime.aidocs_route_prompt(project_root, user_request="brainstorm app ideas", action_kind="understand")
+        runtime.aidocs_route_prompt(
+            project_root, user_request="brainstorm app ideas", action_kind="understand"
+        )
         script = f"""
 const plugin = require({json.dumps(str(PLUGIN_PATH))});
 (async () => {{
@@ -380,56 +551,69 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
 
     result = __import__("asyncio").run(run())
 
-    assert result["importedSkillState"]["active_skills"] == ["superpowers_external/brainstorming"]
+    assert result["importedSkillState"]["active_skills"] == [
+        "superpowers_external/brainstorming"
+    ]
 
 
-def test_opencode_message_directive_uses_overview_tools_for_common_path(tmp_path: Path) -> None:
+def test_opencode_message_directive_uses_overview_tools_for_common_path(
+    tmp_path: Path,
+) -> None:
     project_root = _make_managed_project(tmp_path, "overview-directive")
 
     result = _run_plugin_message_transform(project_root, "explain the plugin path")
 
-    rendered = result["messages"][-1]["parts"][-1]["text"]
-    assert 'action="understand"' in rendered
-    assert "session_resume_bundle" in rendered
-    assert "action_surface_current_session_bundle" in rendered
-    assert "code_get_outline" not in rendered
+    parts = result["messages"][-1]["parts"]
+    assert len(parts) == 1
+    assert parts[0]["text"] == "explain the plugin path"
 
 
-def test_opencode_message_directive_uses_overview_tools_for_investigate_common_path(tmp_path: Path) -> None:
+def test_opencode_message_directive_uses_overview_tools_for_investigate_common_path(
+    tmp_path: Path,
+) -> None:
     project_root = _make_managed_project(tmp_path, "investigate-directive")
 
     result = _run_plugin_message_transform(project_root, "investigate the plugin path")
 
-    rendered = result["messages"][-1]["parts"][-1]["text"]
-    assert 'action="investigate"' in rendered
-    assert rendered.index("session_resume_bundle") < rendered.index("code_investigate(concept)")
-    assert rendered.index("action_surface_current_session_bundle") < rendered.index("code_investigate(concept)")
-    assert '<tool-directive action="investigate">\n`code_investigate(concept)`' not in rendered
+    parts = result["messages"][-1]["parts"]
+    assert len(parts) == 1
+    assert parts[0]["text"] == "investigate the plugin path"
 
 
-def test_opencode_message_directive_uses_overview_tools_for_inspect_common_path(tmp_path: Path) -> None:
+def test_opencode_message_directive_uses_overview_tools_for_inspect_common_path(
+    tmp_path: Path,
+) -> None:
     project_root = _make_managed_project(tmp_path, "inspect-directive")
 
     result = _run_plugin_message_transform(project_root, "inspect the plugin path")
 
-    rendered = result["messages"][-1]["parts"][-1]["text"]
-    assert 'action="inspect"' in rendered
-    assert "session_resume_bundle" in rendered
-    assert "action_surface_current_session_bundle" in rendered
-    assert "code_get_outline" not in rendered
+    parts = result["messages"][-1]["parts"]
+    assert len(parts) == 1
+    assert parts[0]["text"] == "inspect the plugin path"
 
 
-def test_opencode_prompt_runtime_state_activates_brainstorming_for_matching_prompt(tmp_path: Path) -> None:
+def test_opencode_prompt_runtime_state_activates_brainstorming_for_matching_prompt(
+    tmp_path: Path,
+) -> None:
     templates = tmp_path / "templates"
     _write_templates(templates)
     runtime = RuntimeService(AidocsServiceHub(templates_root=templates))
     project_root = tmp_path / "project-current-prompt"
     runtime.project_init(project_root, init_git=False, create_remote=False)
-    session = runtime.hub.sessions.create_session(project_root, "2026-03-30-a", "A", "Agent", "Goal A")
+    session = runtime.hub.sessions.create_session(
+        project_root, "2026-03-30-a", "A", "Agent", "Goal A"
+    )
     runtime.hub.managed_mode.set_mode(project_root, session.session_id)
     _register_superpowers_provider(runtime, project_root, tmp_path)
-    runtime.hub.skills.set_selected_skills(project_root, session.session_id, ["superpowers_external/brainstorming"])
-    runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
+    runtime.hub.skills.set_selected_skills(
+        project_root, session.session_id, ["superpowers_external/brainstorming"]
+    )
+    runtime.project_bootstrap_or_resume(
+        project_root,
+        session_id=session.session_id,
+        include_code_bundle=False,
+        include_tests=False,
+    )
 
     script = f"""
 const plugin = require({json.dumps(str(PLUGIN_PATH))});
@@ -445,22 +629,35 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
     result = _run_node_json(script)
 
     assert result["promptSkillState"]["source"] == "live_prompt"
-    assert result["promptSkillState"]["active_skills"] == ["superpowers_external/brainstorming"]
+    assert result["promptSkillState"]["active_skills"] == [
+        "superpowers_external/brainstorming"
+    ]
     assert result["promptHostState"]["source"] == "runtime_host_state"
     assert "Imported skills" in result["context"]
 
 
-def test_opencode_prompt_runtime_state_does_not_keep_stale_brainstorming_for_unrelated_prompt(tmp_path: Path) -> None:
+def test_opencode_prompt_runtime_state_does_not_keep_stale_brainstorming_for_unrelated_prompt(
+    tmp_path: Path,
+) -> None:
     templates = tmp_path / "templates"
     _write_templates(templates)
     runtime = RuntimeService(AidocsServiceHub(templates_root=templates))
     project_root = tmp_path / "project-stale-prompt"
     runtime.project_init(project_root, init_git=False, create_remote=False)
-    session = runtime.hub.sessions.create_session(project_root, "2026-03-30-a", "A", "Agent", "Goal A")
+    session = runtime.hub.sessions.create_session(
+        project_root, "2026-03-30-a", "A", "Agent", "Goal A"
+    )
     runtime.hub.managed_mode.set_mode(project_root, session.session_id)
     _register_superpowers_provider(runtime, project_root, tmp_path)
-    runtime.hub.skills.set_selected_skills(project_root, session.session_id, ["superpowers_external/brainstorming"])
-    runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
+    runtime.hub.skills.set_selected_skills(
+        project_root, session.session_id, ["superpowers_external/brainstorming"]
+    )
+    runtime.project_bootstrap_or_resume(
+        project_root,
+        session_id=session.session_id,
+        include_code_bundle=False,
+        include_tests=False,
+    )
 
     script = f"""
 const plugin = require({json.dumps(str(PLUGIN_PATH))});
@@ -481,17 +678,30 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
     assert "superpowers_external/brainstorming" not in result["context"]
 
 
-def test_opencode_prompt_runtime_state_does_not_fallback_to_stale_snapshot_when_route_fails(tmp_path: Path) -> None:
+def test_opencode_prompt_runtime_state_does_not_fallback_to_stale_snapshot_when_route_fails(
+    tmp_path: Path,
+) -> None:
     templates = tmp_path / "templates-route-failure"
     _write_templates(templates)
     runtime = RuntimeService(AidocsServiceHub(templates_root=templates))
     project_root = tmp_path / "project-route-failure"
     runtime.project_init(project_root, init_git=False, create_remote=False)
-    session = runtime.hub.sessions.create_session(project_root, "2026-03-30-route-failure", "A", "Agent", "Goal A")
+    session = runtime.hub.sessions.create_session(
+        project_root, "2026-03-30-route-failure", "A", "Agent", "Goal A"
+    )
     runtime.hub.managed_mode.set_mode(project_root, session.session_id)
-    _register_superpowers_provider(runtime, project_root, tmp_path / "route-failure-provider")
-    runtime.hub.skills.set_selected_skills(project_root, session.session_id, ["superpowers_external/brainstorming"])
-    runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
+    _register_superpowers_provider(
+        runtime, project_root, tmp_path / "route-failure-provider"
+    )
+    runtime.hub.skills.set_selected_skills(
+        project_root, session.session_id, ["superpowers_external/brainstorming"]
+    )
+    runtime.project_bootstrap_or_resume(
+        project_root,
+        session_id=session.session_id,
+        include_code_bundle=False,
+        include_tests=False,
+    )
 
     script = f"""
 const plugin = require({json.dumps(str(PLUGIN_PATH))});
@@ -518,17 +728,30 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
     assert "superpowers_external/brainstorming" not in result["context"]
 
 
-def test_opencode_prompt_context_explicit_null_prompt_state_suppresses_persisted_snapshot(tmp_path: Path) -> None:
+def test_opencode_prompt_context_explicit_null_prompt_state_suppresses_persisted_snapshot(
+    tmp_path: Path,
+) -> None:
     templates = tmp_path / "templates-explicit-null"
     _write_templates(templates)
     runtime = RuntimeService(AidocsServiceHub(templates_root=templates))
     project_root = tmp_path / "project-explicit-null"
     runtime.project_init(project_root, init_git=False, create_remote=False)
-    session = runtime.hub.sessions.create_session(project_root, "2026-03-30-explicit-null", "A", "Agent", "Goal A")
+    session = runtime.hub.sessions.create_session(
+        project_root, "2026-03-30-explicit-null", "A", "Agent", "Goal A"
+    )
     runtime.hub.managed_mode.set_mode(project_root, session.session_id)
-    _register_superpowers_provider(runtime, project_root, tmp_path / "explicit-null-provider")
-    runtime.hub.skills.set_selected_skills(project_root, session.session_id, ["superpowers_external/brainstorming"])
-    runtime.project_bootstrap_or_resume(project_root, session_id=session.session_id, include_code_bundle=False, include_tests=False)
+    _register_superpowers_provider(
+        runtime, project_root, tmp_path / "explicit-null-provider"
+    )
+    runtime.hub.skills.set_selected_skills(
+        project_root, session.session_id, ["superpowers_external/brainstorming"]
+    )
+    runtime.project_bootstrap_or_resume(
+        project_root,
+        session_id=session.session_id,
+        include_code_bundle=False,
+        include_tests=False,
+    )
 
     script = f"""
 const plugin = require({json.dumps(str(PLUGIN_PATH))});

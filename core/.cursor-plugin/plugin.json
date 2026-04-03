@@ -10,6 +10,5 @@
   "homepage": "https://github.com/cristian1991/AIDOCS",
   "repository": "https://github.com/cristian1991/AIDOCS",
   "license": "Apache-2.0",
-  "commands": "./commands/",
   "hooks": "./hooks/hooks-cursor.json"
 }

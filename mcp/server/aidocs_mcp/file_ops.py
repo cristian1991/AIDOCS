@@ -7,6 +7,7 @@ Three operations:
 
 All operations are line-based (1-indexed) and file-type agnostic.
 """
+
 from __future__ import annotations
 
 import os
@@ -33,6 +34,7 @@ from .config_schema import (
 @dataclass(slots=True)
 class LineRange:
     """A range of lines from a file."""
+
     path: str
     start_line: int
     end_line: int
@@ -51,6 +53,7 @@ class LineRange:
 @dataclass(slots=True)
 class EditResult:
     """Result of a line edit operation."""
+
     success: bool
     path: str
     start_line: int
@@ -65,6 +68,7 @@ class EditResult:
 @dataclass(slots=True)
 class BatchEditResult:
     """Result of a batch edit operation."""
+
     success: bool
     total_edits: int
     applied: int
@@ -84,10 +88,23 @@ SENSITIVE_PATTERNS = (".env", "credentials", "secrets", ".key", ".pem", ".pfx")
 
 # System/OS directories that are never valid project roots
 BLOCKED_ROOTS = {
-    "c:/windows", "c:/program files", "c:/program files (x86)",
-    "c:/programdata", "c:/users/public",
-    "/usr", "/bin", "/sbin", "/etc", "/var", "/boot", "/sys", "/proc",
-    "/lib", "/lib64", "/opt", "/root",
+    "c:/windows",
+    "c:/program files",
+    "c:/program files (x86)",
+    "c:/programdata",
+    "c:/users/public",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/etc",
+    "/var",
+    "/boot",
+    "/sys",
+    "/proc",
+    "/lib",
+    "/lib64",
+    "/opt",
+    "/root",
 }
 
 # The MCP server's own source — agents cannot edit the tool they're running on
@@ -95,9 +112,17 @@ _SELF_DIR: str = str(Path(__file__).resolve().parent).replace("\\", "/").lower()
 
 # Markers that indicate a directory is a valid project root
 PROJECT_MARKERS = (
-    ".git", ".MEMORY", "CLAUDE.md", "AGENTS.md",
-    "package.json", "pyproject.toml", "Cargo.toml",
-    "go.mod", "pom.xml", ".csproj", ".sln",
+    ".git",
+    ".MEMORY",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "package.json",
+    "pyproject.toml",
+    "Cargo.toml",
+    "go.mod",
+    "pom.xml",
+    ".csproj",
+    ".sln",
 )
 
 
@@ -125,16 +150,14 @@ def _validate_project_root(project_root: Path, *, write: bool = False) -> None:
 
     # Must have at least one project marker (git, package.json, .csproj, etc.)
     has_marker = any(
-        (resolved / marker).exists() or
-        any(resolved.glob(f"**/{marker}")) if marker.startswith(".") and not (resolved / marker).exists() else False
+        (resolved / marker).exists() or any(resolved.glob(f"**/{marker}"))
+        if marker.startswith(".") and not (resolved / marker).exists()
+        else False
         for marker in PROJECT_MARKERS[:4]  # Only check fast markers (first 4)
     )
     # Fallback: check if any file with common project extensions exists
     if not has_marker:
-        has_marker = any(
-            (resolved / marker).exists()
-            for marker in PROJECT_MARKERS
-        )
+        has_marker = any((resolved / marker).exists() for marker in PROJECT_MARKERS)
     if not has_marker:
         raise ValueError(
             f"Directory does not appear to be a project root: {resolved}. "
@@ -185,7 +208,9 @@ def _resolve_path(
                 f"Edit manually or via the installer."
             )
         if abs_path.name.lower() == "aidocs.toml":
-            canonical_project_config = (project_root.resolve() / "aidocs.toml").resolve()
+            canonical_project_config = (
+                project_root.resolve() / "aidocs.toml"
+            ).resolve()
             if abs_path != canonical_project_config:
                 raise ValueError(
                     f"Only the project-root aidocs.toml may be agent-edited: {relative_path}."
@@ -222,7 +247,9 @@ def _read_file_lines(abs_path: Path) -> list[str]:
 
     size = abs_path.stat().st_size
     if size > MAX_FILE_SIZE:
-        raise ValueError(f"File too large ({size:,} bytes, max {MAX_FILE_SIZE:,}): {abs_path.name}")
+        raise ValueError(
+            f"File too large ({size:,} bytes, max {MAX_FILE_SIZE:,}): {abs_path.name}"
+        )
 
     text = abs_path.read_text(encoding="utf-8", errors="replace")
     return text.splitlines()
@@ -267,10 +294,14 @@ def _diff_config_paths(before: object, after: object, prefix: str = "") -> set[s
         paths: set[str] = set()
         for key in sorted(set(before) | set(after)):
             next_prefix = f"{prefix}.{key}" if prefix else str(key)
-            paths.update(_diff_config_paths(before.get(key), after.get(key), next_prefix))
+            paths.update(
+                _diff_config_paths(before.get(key), after.get(key), next_prefix)
+            )
         return paths
     if isinstance(before, dict) or isinstance(after, dict):
-        return _flatten_config_paths(before, prefix) | _flatten_config_paths(after, prefix)
+        return _flatten_config_paths(before, prefix) | _flatten_config_paths(
+            after, prefix
+        )
     return {prefix} if before != after and prefix else set()
 
 
@@ -282,7 +313,9 @@ def _load_toml_text(text: str, *, path: str) -> dict[str, object]:
     except Exception as exc:
         raise ValueError(f"Invalid TOML for {path}: {exc}") from exc
     if not isinstance(loaded, dict):
-        raise ValueError(f"Invalid TOML root for {path}: expected a table at the document root.")
+        raise ValueError(
+            f"Invalid TOML root for {path}: expected a table at the document root."
+        )
     return loaded
 
 
@@ -302,15 +335,27 @@ def _validate_config_edit(
     for setting_path in sorted(_diff_config_paths(current_config, updated_config)):
         metadata = SETTINGS_CATALOG.get(setting_path)
         if metadata is None:
+            # Skip intermediate paths that have catalog entries below them.
+            # The leaf paths will be validated separately.
+            if any(key.startswith(setting_path + ".") for key in SETTINGS_CATALOG):
+                continue
             raise ValueError(f"Config setting is not agent-editable: {setting_path}.")
         if metadata["security_sensitive"]:
-            raise ValueError(f"Security-sensitive config cannot be agent-edited: {setting_path}.")
-        if not is_setting_agent_editable(setting_path, scope="project", edit_mode=config_edit_mode):
-            raise ValueError(f"Config setting requires controlled edit permission: {setting_path}.")
+            raise ValueError(
+                f"Security-sensitive config cannot be agent-edited: {setting_path}."
+            )
+        if not is_setting_agent_editable(
+            setting_path, scope="project", edit_mode=config_edit_mode
+        ):
+            raise ValueError(
+                f"Config setting requires controlled edit permission: {setting_path}."
+            )
         current_value: object = updated_config
         for part in setting_path.split("."):
             if not isinstance(current_value, dict) or part not in current_value:
-                raise ValueError(f"Config setting is not agent-editable: {setting_path}.")
+                raise ValueError(
+                    f"Config setting is not agent-editable: {setting_path}."
+                )
             current_value = current_value[part]
         validate_setting_value(setting_path, current_value)
 
@@ -398,7 +443,9 @@ def create_file(
     """
     try:
         _validate_project_root(project_root, write=True)
-        abs_path = _resolve_path(project_root, path, write=True, config_edit_mode=config_edit_mode)
+        abs_path = _resolve_path(
+            project_root, path, write=True, config_edit_mode=config_edit_mode
+        )
         _check_sensitive(path)
     except ValueError as exc:
         return {
@@ -503,7 +550,9 @@ def edit_lines(
     except ValueError as exc:
         return _edit_error(path, start_line, end_line, str(exc))
     try:
-        abs_path = _resolve_path(project_root, path, write=True, config_edit_mode=config_edit_mode)
+        abs_path = _resolve_path(
+            project_root, path, write=True, config_edit_mode=config_edit_mode
+        )
     except ValueError as exc:
         return _edit_error(path, start_line, end_line, str(exc))
     canonical_path = _canonical_relative_path(project_root, abs_path)
@@ -519,16 +568,25 @@ def edit_lines(
     if start_line < 1:
         return _edit_error(path, start_line, end_line, "start_line must be >= 1")
     if start_line > total + 1:
-        return _edit_error(path, start_line, end_line, f"start_line {start_line} exceeds file length ({total} lines)")
+        return _edit_error(
+            path,
+            start_line,
+            end_line,
+            f"start_line {start_line} exceeds file length ({total} lines)",
+        )
 
     mode_value = mode.strip().lower()
     if mode_value not in {"auto", "insert", "replace"}:
         return _edit_error(path, start_line, end_line, f"Unknown mode: {mode}")
 
     # Handle insert mode (end_line < start_line means "insert before start_line")
-    is_insert = mode_value == "insert" or (mode_value == "auto" and end_line < start_line)
+    is_insert = mode_value == "insert" or (
+        mode_value == "auto" and end_line < start_line
+    )
     if mode_value == "replace" and end_line < start_line:
-        return _edit_error(path, start_line, end_line, "replace mode requires end_line >= start_line")
+        return _edit_error(
+            path, start_line, end_line, "replace mode requires end_line >= start_line"
+        )
     if is_insert:
         old_lines: list[str] = []
         insert_at = start_line - 1  # 0-indexed position to insert before
@@ -564,7 +622,9 @@ def edit_lines(
     else:
         result_lines = all_lines[: start_line - 1] + new_lines + all_lines[end_line:]
 
-    touches_file_end = (is_insert and insert_at == total) or (not is_insert and end_line >= total)
+    touches_file_end = (is_insert and insert_at == total) or (
+        not is_insert and end_line >= total
+    )
     final_newline = original_final_newline
     if touches_file_end and new_content.endswith("\n"):
         final_newline = True
@@ -692,10 +752,14 @@ def batch_edit(
         mode = str(edit.get("mode", "auto")).strip().lower()
 
         try:
-            abs_path = _resolve_path(project_root, path, write=True, config_edit_mode=config_edit_mode)
+            abs_path = _resolve_path(
+                project_root, path, write=True, config_edit_mode=config_edit_mode
+            )
             _check_sensitive(path)
             if abs_path.name.lower() == "aidocs.toml":
-                raise ValueError("Use edit_lines for aidocs.toml so config policy can be validated safely.")
+                raise ValueError(
+                    "Use edit_lines for aidocs.toml so config policy can be validated safely."
+                )
             canonical_path = _canonical_relative_path(project_root, abs_path)
 
             if canonical_path not in file_cache:
@@ -707,15 +771,28 @@ def batch_edit(
             total = len(all_lines)
 
             if start < 1 or start > total + 1:
-                validations.append(_edit_error(path, start, end, f"Invalid start_line {start} (file has {total} lines)"))
+                validations.append(
+                    _edit_error(
+                        path,
+                        start,
+                        end,
+                        f"Invalid start_line {start} (file has {total} lines)",
+                    )
+                )
                 continue
 
             if mode not in {"auto", "insert", "replace"}:
-                validations.append(_edit_error(path, start, end, f"Unknown mode: {mode}"))
+                validations.append(
+                    _edit_error(path, start, end, f"Unknown mode: {mode}")
+                )
                 continue
             is_insert = mode == "insert" or (mode == "auto" and end < start)
             if mode == "replace" and end < start:
-                validations.append(_edit_error(path, start, end, "replace mode requires end_line >= start_line"))
+                validations.append(
+                    _edit_error(
+                        path, start, end, "replace mode requires end_line >= start_line"
+                    )
+                )
                 continue
             if is_insert:
                 old_lines: list[str] = []
@@ -728,33 +805,39 @@ def batch_edit(
             # Expect check
             if expect_str is not None:
                 if expect_str.strip() != old_content.strip():
-                    validations.append({
-                        "success": False,
-                        "path": path,
-                        "start_line": start,
-                        "end_line": end,
-                        "old_content": old_content,
-                        "new_content": new_content,
-                        "lines_removed": 0,
-                        "lines_added": 0,
-                        "dry_run": dry_run,
-                        "error": f"Content mismatch at {path}:{start}-{end}",
-                    })
+                    validations.append(
+                        {
+                            "success": False,
+                            "path": path,
+                            "start_line": start,
+                            "end_line": end,
+                            "old_content": old_content,
+                            "new_content": new_content,
+                            "lines_removed": 0,
+                            "lines_added": 0,
+                            "dry_run": dry_run,
+                            "error": f"Content mismatch at {path}:{start}-{end}",
+                        }
+                    )
                     continue
 
-            validations.append({
-                "success": True,
-                "path": path,
-                "canonical_path": canonical_path,
-                "start_line": start,
-                "end_line": end,
-                "old_content": old_content,
-                "new_content": new_content,
-                "lines_removed": len(old_lines),
-                "lines_added": len(new_content.split("\n")) if new_content.strip() else 0,
-                "dry_run": dry_run,
-                "error": None,
-            })
+            validations.append(
+                {
+                    "success": True,
+                    "path": path,
+                    "canonical_path": canonical_path,
+                    "start_line": start,
+                    "end_line": end,
+                    "old_content": old_content,
+                    "new_content": new_content,
+                    "lines_removed": len(old_lines),
+                    "lines_added": len(new_content.split("\n"))
+                    if new_content.strip()
+                    else 0,
+                    "dry_run": dry_run,
+                    "error": None,
+                }
+            )
 
         except Exception as exc:
             validations.append(_edit_error(path, start, end, str(exc)))

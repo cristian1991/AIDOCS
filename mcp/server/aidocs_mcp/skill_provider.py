@@ -28,6 +28,15 @@ def _unquote_scalar(value: str) -> str:
     return value
 
 
+def strip_frontmatter(text: str) -> str:
+    if not text.startswith("---\n"):
+        return text.strip()
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        return text.strip()
+    return text[end + 5 :].strip()
+
+
 def parse_external_frontmatter(
     text: str,
     parse_frontmatter: Callable[[str], dict[str, str]],
@@ -45,26 +54,42 @@ def parse_external_frontmatter(
         if not stripped or stripped.startswith("#"):
             continue
         if raw_line[:1].isspace() or stripped.startswith("- "):
-            raise ValueError(f"Unsupported external skill frontmatter in {file}: nested YAML values are not supported.")
+            raise ValueError(
+                f"Unsupported external skill frontmatter in {file}: nested YAML values are not supported."
+            )
         if ":" not in stripped:
-            raise ValueError(f"Unsupported external skill frontmatter in {file}: expected single-line key:value metadata.")
+            raise ValueError(
+                f"Unsupported external skill frontmatter in {file}: expected single-line key:value metadata."
+            )
         _, value = stripped.split(":", 1)
         plain_value = value.strip()
         if plain_value in {"", "[]", "{}"}:
             continue
         if plain_value[:1] in {"'", '"'}:
             if len(plain_value) < 2 or plain_value[-1] != plain_value[0]:
-                raise ValueError(f"Unsupported external skill frontmatter in {file}: unterminated quoted scalar value.")
+                raise ValueError(
+                    f"Unsupported external skill frontmatter in {file}: unterminated quoted scalar value."
+                )
             continue
         if plain_value.startswith(UNSUPPORTED_FRONTMATTER_PREFIXES):
-            raise ValueError(f"Unsupported external skill frontmatter in {file}: only plain single-line scalar values are supported.")
+            raise ValueError(
+                f"Unsupported external skill frontmatter in {file}: only plain single-line scalar values are supported."
+            )
 
-    return {key: _unquote_scalar(value) for key, value in parse_frontmatter(text).items()}
+    return {
+        key: _unquote_scalar(value) for key, value in parse_frontmatter(text).items()
+    }
 
 
-def resolve_external_provider(provider_name: str, raw_path: str, project_root: Path) -> ExternalSkillProvider:
+def resolve_external_provider(
+    provider_name: str, raw_path: str, project_root: Path
+) -> ExternalSkillProvider:
     provider_id = validate_provider_id(provider_name)
-    candidate = (project_root / raw_path).resolve() if not Path(raw_path).is_absolute() else Path(raw_path).resolve()
+    candidate = (
+        (project_root / raw_path).resolve()
+        if not Path(raw_path).is_absolute()
+        else Path(raw_path).resolve()
+    )
     if not raw_path or not raw_path.strip():
         raise ValueError("External skill providers require a local path.")
     if "://" in raw_path:
@@ -126,7 +151,13 @@ def load_bundled_provider_skills(
                 path=str(file),
                 origin=BUNDLED_PROVIDER_ORIGIN,
                 source=BUNDLED_PROVIDER_ORIGIN,
-                tags=[item.strip() for item in (meta.get("tags") or "").split(",") if item.strip()],
+                tags=[
+                    item.strip()
+                    for item in (meta.get("tags") or "").split(",")
+                    if item.strip()
+                ],
+                content=strip_frontmatter(text),
+                skill_kind=(meta.get("kind") or "helper").strip() or "helper",
             )
         )
     return records
@@ -181,7 +212,12 @@ def load_external_provider_skills(
                 path=str(file),
                 origin=EXTERNAL_PROVIDER_ORIGIN,
                 source=EXTERNAL_PROVIDER_ORIGIN,
-                tags=[item.strip() for item in (meta.get("tags") or "").split(",") if item.strip()],
+                tags=[
+                    item.strip()
+                    for item in (meta.get("tags") or "").split(",")
+                    if item.strip()
+                ],
+                skill_kind=(meta.get("kind") or "helper").strip() or "helper",
             )
         )
     return records, warnings

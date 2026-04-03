@@ -17,6 +17,8 @@
   - `writing-plans`
   - `subagent-driven-development`
   - `executing-plans`
+- Superpowers may still present a user-facing execution choice between `subagent-driven-development` and `executing-plans`, but this pilot stays inside the active AIDOCS managed session and conductor flow.
+- Review expectations should assume current Superpowers inline self-review behavior, not the older subagent review-loop model.
 - One agent owns one lane.
 - Lane review happens after lane completion.
 - Overlapping-file lanes must never run together.

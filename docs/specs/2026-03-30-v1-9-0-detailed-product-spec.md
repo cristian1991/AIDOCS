@@ -1,5 +1,11 @@
 # AIDOCS v1.9.0 Detailed Product Spec
 
+> Historical design document.
+>
+> Parts of this spec are superseded by the current runtime-owned orchestration model implemented after the April 2026 audit.
+> In particular, skill/orchestration behavior, override naming, and conductor/runtime ownership have evolved.
+> Use `README.md`, `README_DEV.md`, `mcp/HOST_INTEGRATION.md`, and the current runtime tests as the source of truth for current behavior.
+
 ## Goal
 
 Ship `v1.9.0` as the final major pre-`2.0.0` release: a deterministic, GUI-backed, single-project workflow system with bundled skills, hardened conductor execution, normalized config/state, and cleaner host/tool UX.
@@ -144,6 +150,8 @@ Bundle the full high-value set we need, but classify it:
 - `subagent-driven-development`
 - `dispatching-parallel-agents`
 - `finishing-a-development-branch`
+
+These remain the workflow-defining skills even though Superpowers now uses inline self-review for spec/plan quality checks and may present user-facing execution choice between subagent-driven and inline execution.
 
 #### Bootstrap/system skills
 - replace `using-superpowers` with an AIDOCS-native bootstrap/operating mode

@@ -330,7 +330,7 @@ console.log(JSON.stringify({{ context }}));
     result = _run_node_json(script)
 
     assert "Lifecycle follow-through" in result["context"]
-    assert "aidocs_task_update" in result["context"]
+    assert "task_update" in result["context"]
 
 
 def test_cursor_packaging_declares_session_start_hook() -> None:

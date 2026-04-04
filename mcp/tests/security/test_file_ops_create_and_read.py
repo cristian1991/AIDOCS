@@ -24,17 +24,17 @@ def test_known_exact_path_allows_followup_read_after_native_file_create(tmp_path
         hub.managed_mode.set_mode(project, session_id="s1")
 
         created = await server.call_tool(
-            "aidocs_code_create_file",
+            "code_create_file",
             {
-                "project_root": str(project),
+                "root": str(project),
                 "path": "src/created.txt",
                 "content": "one\ntwo\nthree\n",
             },
         )
         lines = await server.call_tool(
-            "aidocs_code_get_lines",
+            "code_get_lines",
             {
-                "project_root": str(project),
+                "root": str(project),
                 "path": "src/created.txt",
                 "start_line": 2,
                 "count": 1,
@@ -71,18 +71,18 @@ def test_known_exact_path_requires_project_relative_path_even_after_grant(tmp_pa
         hub.managed_mode.set_mode(project, session_id="s1")
 
         await server.call_tool(
-            "aidocs_code_create_file",
+            "code_create_file",
             {
-                "project_root": str(project),
+                "root": str(project),
                 "path": "src/created.txt",
                 "content": "one\ntwo\n",
             },
         )
         with _pytest.raises(ToolError, match="Absolute paths are not allowed"):
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": str(created_path),
                     "start_line": 1,
                     "count": 1,

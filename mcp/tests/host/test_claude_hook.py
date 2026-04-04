@@ -632,8 +632,8 @@ def test_short_prompt_with_action_keyword_gets_directives(tmp_path: Path) -> Non
     )
     assert result is not None
     context = result["hookSpecificOutput"]["additionalContext"]
-    assert "aidocs_code_get_lines" in context
-    assert "aidocs_code_edit_lines" in context
+    assert "code_get_lines" in context
+    assert "code_edit_lines" in context
     assert "code_get_outline" not in context
 
 
@@ -650,7 +650,7 @@ def test_user_prompt_submit_includes_task_complete_followthrough_nudge(
         event_kind="tool_call_completed",
         source_kind="mcp_call",
         session_id="2026-04-01-a",
-        capability_name="aidocs_task_begin",
+        capability_name="task_begin",
         action_kind="mcp_tool_call",
         status="completed",
     )
@@ -675,7 +675,7 @@ def test_user_prompt_submit_includes_task_complete_followthrough_nudge(
     assert result is not None
     context = result["hookSpecificOutput"]["additionalContext"]
     assert "Lifecycle follow-through" in context
-    assert "aidocs_task_complete" in context
+    assert "task_complete" in context
 
 
 # ── Comment enforcement tests ────────────────────────────────────────

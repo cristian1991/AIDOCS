@@ -159,9 +159,9 @@ def test_user_override_can_resume_paused_lane(tmp_path: Path) -> None:
         )
         paused = await _call_tool_json(
             server,
-            "aidocs_plan_conductor_report_inflight_overlap",
+            "plan_conductor_report_inflight_overlap",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
                 "paused_lane_id": "lane-b",
                 "conflicting_lane_id": "lane-a",
@@ -170,9 +170,9 @@ def test_user_override_can_resume_paused_lane(tmp_path: Path) -> None:
         )
         resumed = await _call_tool_json(
             server,
-            "aidocs_plan_conductor_resume_lane",
+            "plan_conductor_resume_lane",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
                 "lane_id": "lane-b",
             },
@@ -181,8 +181,8 @@ def test_user_override_can_resume_paused_lane(tmp_path: Path) -> None:
 
     tool_names, paused, resumed = asyncio.run(run())
 
-    assert "aidocs_plan_conductor_report_inflight_overlap" in tool_names
-    assert "aidocs_plan_conductor_resume_lane" in tool_names
+    assert "plan_conductor_report_inflight_overlap" in tool_names
+    assert "plan_conductor_resume_lane" in tool_names
     assert paused["blocked_reasons"]["lane-b"] == [
         "paused:inflight-file-overlap:src/shared/schema.json:lane-a"
     ]
@@ -226,17 +226,17 @@ def test_contract_compatible_lanes_can_run_together_when_conductor_marks_contrac
         )
         initial = await _call_tool_json(
             server,
-            "aidocs_plan_conductor_status",
+            "plan_conductor_status",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
             },
         )
         contract_ready = await _call_tool_json(
             server,
-            "aidocs_plan_conductor_mark_contract_ready",
+            "plan_conductor_mark_contract_ready",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
                 "lane_id": "api-contract",
             },
@@ -245,7 +245,7 @@ def test_contract_compatible_lanes_can_run_together_when_conductor_marks_contrac
 
     tool_names, initial, contract_ready = asyncio.run(run())
 
-    assert "aidocs_plan_conductor_mark_contract_ready" in tool_names
+    assert "plan_conductor_mark_contract_ready" in tool_names
     assert initial["runnable_lane_ids"] == ["api-contract"]
     assert contract_ready["runnable_lane_ids"] == [
         "api-contract",
@@ -339,17 +339,17 @@ def test_lane_agent_request_for_undeclared_file_requires_conductor_signal(
 
         graph = await _call_tool_json(
             server,
-            "aidocs_plan_conductor_graph",
+            "plan_conductor_graph",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
             },
         )
         blocked = await _call_tool_json(
             server,
-            "aidocs_code_get_lines",
+            "code_get_lines",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "path": "src/other.py",
                 "start_line": 1,
                 "count": 1,
@@ -581,9 +581,9 @@ def test_conductor_enforces_structured_lane_signals(tmp_path: Path) -> None:
 
         status = await _call_tool_json(
             server,
-            "aidocs_plan_conductor_status",
+            "plan_conductor_status",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
             },
         )
@@ -591,9 +591,9 @@ def test_conductor_enforces_structured_lane_signals(tmp_path: Path) -> None:
 
         await _call_tool_json(
             server,
-            "aidocs_plan_conductor_record_lane_signal",
+            "plan_conductor_record_lane_signal",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
                 "lane_id": "lane-b",
                 "signal_kind": "integration_failure_reopened",
@@ -604,9 +604,9 @@ def test_conductor_enforces_structured_lane_signals(tmp_path: Path) -> None:
 
         blocked = await _call_tool_json(
             server,
-            "aidocs_plan_conductor_status",
+            "plan_conductor_status",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
             },
         )

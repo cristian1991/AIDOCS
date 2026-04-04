@@ -37,9 +37,9 @@ def test_normalize_handoff_steps_converts_legacy_open_done_mix_deterministically
 
         return _payload_json(
             await server.call_tool(
-                "aidocs_session_handoff_steps_normalize",
+                "session_handoff_steps_normalize",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "session_id": session.session_id,
                 },
             )
@@ -96,9 +96,9 @@ def test_normalize_plan_feedback_sections_preserves_user_prose(tmp_path: Path) -
         )
         result = _payload_json(
             await server.call_tool(
-                "aidocs_plan_normalize_prose",
+                "plan_normalize_prose",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "session_id": session.session_id,
                 },
             )

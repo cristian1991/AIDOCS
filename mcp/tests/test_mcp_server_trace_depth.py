@@ -73,7 +73,7 @@ def test_known_exact_path_grant_stays_narrow(tmp_path: Path) -> None:
     hub.managed_mode.set_mode(project_root, session_id="s1")
 
     _grant_known_exact_path_read(
-        hub, project_root, "aidocs_code_create_file", "src/new.txt"
+        hub, project_root, "code_create_file", "src/new.txt"
     )
 
     assert (

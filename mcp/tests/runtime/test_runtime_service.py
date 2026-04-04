@@ -910,7 +910,7 @@ def test_session_resume_bundle_clears_logging_debt_after_task_update_journal(
         event_kind="tool_call_completed",
         source_kind="mcp_call",
         session_id=session.session_id,
-        capability_name="aidocs_code_get_lines",
+        capability_name="code_get_lines",
         action_kind="mcp_tool_call",
         status="completed",
         observed_at="2026-03-27 10:00:00",
@@ -1469,7 +1469,7 @@ def test_host_state_reports_task_complete_nudge_after_edit_activity(
         event_kind="tool_call_completed",
         source_kind="mcp_call",
         session_id="2026-04-01-a",
-        capability_name="aidocs_task_begin",
+        capability_name="task_begin",
         action_kind="mcp_tool_call",
         status="completed",
     )
@@ -1509,14 +1509,14 @@ def test_host_state_reports_task_update_nudge_after_meaningful_work(
         event_kind="tool_call_completed",
         source_kind="mcp_call",
         session_id="2026-04-01-b",
-        capability_name="aidocs_task_begin",
+        capability_name="task_begin",
         action_kind="mcp_tool_call",
         status="completed",
     )
     for capability_name in [
-        "aidocs_code_get_lines",
-        "aidocs_schema_query",
-        "aidocs_memory_capture",
+        "code_get_lines",
+        "schema_query",
+        "memory_capture",
     ]:
         hub.execution.record_event(
             project_root,
@@ -1627,7 +1627,7 @@ def test_aidocs_route_prompt_uses_managed_mode_and_preflight(tmp_path: Path) -> 
     assert result["requires_task_lifecycle"] is True
     assert "plan_conductor_status" in result["recommended_mcp_flow"]
     assert "session_start" not in result["recommended_mcp_flow"]
-    assert "aidocs_orchestrate" in result["recommended_mcp_flow"]
+    assert "orchestrate" in result["recommended_mcp_flow"]
 
 
 def test_classify_prompt_action_uses_deterministic_keyword_rules(
@@ -1974,9 +1974,9 @@ def test_mcp_code_investigate_returns_artifact_backed_summary(tmp_path: Path) ->
     async def run() -> dict[str, object]:
         server = create_server()
         result = await server.call_tool(
-            "aidocs_code_investigate",
+            "code_investigate",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "concept": "App",
                 "limit": 5,
                 "depth": "standard",
@@ -2005,13 +2005,13 @@ def test_mcp_code_bundle_returns_artifact_backed_summary(tmp_path: Path) -> None
     async def run() -> dict[str, object]:
         server = create_server()
         await server.call_tool(
-            "aidocs_code_index_sync",
-            {"project_root": str(project_root), "include_tests": False},
+            "code_index_sync",
+            {"root": str(project_root), "include_tests": False},
         )
         result = await server.call_tool(
-            "aidocs_code_bundle",
+            "code_bundle",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "target": "src/app.py",
                 "mode": "file",
             },
@@ -2036,9 +2036,9 @@ def test_mcp_capability_definitions_get_returns_artifact_backed_summary(
     async def run() -> dict[str, object]:
         server = create_server()
         result = await server.call_tool(
-            "aidocs_capability_definitions_get",
+            "capability_definitions_get",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "query": None,
                 "limit": 5,
             },
@@ -2063,9 +2063,9 @@ def test_mcp_execution_events_get_returns_artifact_backed_summary(
     async def run() -> dict[str, object]:
         server = create_server()
         await server.call_tool(
-            "aidocs_execution_event_record",
+            "execution_event_record",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "event_kind": "native_tool_use",
                 "source_kind": "claude_hook",
                 "session_id": "2026-04-01-a",
@@ -2075,9 +2075,9 @@ def test_mcp_execution_events_get_returns_artifact_backed_summary(
             },
         )
         result = await server.call_tool(
-            "aidocs_execution_events_get",
+            "execution_events_get",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": "2026-04-01-a",
                 "limit": 10,
             },
@@ -2105,21 +2105,21 @@ def test_mcp_code_get_lines_uses_smaller_default_count_but_keeps_explicit_count(
     async def run() -> tuple[dict[str, object], dict[str, object]]:
         server = create_server()
         await server.call_tool(
-            "aidocs_code_index_sync",
-            {"project_root": str(project_root), "include_tests": False},
+            "code_index_sync",
+            {"root": str(project_root), "include_tests": False},
         )
         default_result = await server.call_tool(
-            "aidocs_code_get_lines",
+            "code_get_lines",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "path": "src/many.txt",
                 "known_exact_path": True,
             },
         )
         explicit_result = await server.call_tool(
-            "aidocs_code_get_lines",
+            "code_get_lines",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "path": "src/many.txt",
                 "count": 45,
                 "known_exact_path": True,
@@ -2212,9 +2212,9 @@ def test_mcp_tool_returns_conductor_graph(tmp_path: Path) -> None:
             encoding="utf-8",
         )
         result = await server.call_tool(
-            "aidocs_plan_conductor_graph",
+            "plan_conductor_graph",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
             },
         )
@@ -2260,9 +2260,9 @@ def test_mcp_tool_returns_conductor_status(tmp_path: Path) -> None:
             encoding="utf-8",
         )
         result = await server.call_tool(
-            "aidocs_plan_conductor_status",
+            "plan_conductor_status",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
             },
         )
@@ -2271,7 +2271,7 @@ def test_mcp_tool_returns_conductor_status(tmp_path: Path) -> None:
 
     tool_names, result = asyncio.run(run())
 
-    assert "aidocs_plan_conductor_status" in tool_names
+    assert "plan_conductor_status" in tool_names
     assert result["phase_order"] == ["homepage-foundation"]
     assert [lane["lane_id"] for lane in result["lanes"]] == [
         "homepage-hero",
@@ -2317,9 +2317,9 @@ def test_mcp_skill_trigger_tool_returns_active_skills(tmp_path: Path) -> None:
         )
 
         result = await server.call_tool(
-            "aidocs_skill_trigger_state_get",
+            "skill_trigger_state_get",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": "session-a",
                 "intent": "brainstorming",
             },
@@ -2330,7 +2330,7 @@ def test_mcp_skill_trigger_tool_returns_active_skills(tmp_path: Path) -> None:
 
     tool_names, payload = asyncio.run(run())
 
-    assert "aidocs_skill_trigger_state_get" in tool_names
+    assert "skill_trigger_state_get" in tool_names
     assert payload["active_skills"] == ["superpowers_external/brainstorming"]
     assert payload["triggered"][0]["override_mode"] == "provider_content_aidocs_runtime"
 
@@ -2371,9 +2371,9 @@ def test_mcp_skill_trigger_tool_surfaces_override_modes(tmp_path: Path) -> None:
         )
 
         result = await server.call_tool(
-            "aidocs_skill_trigger_state_get",
+            "skill_trigger_state_get",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": "session-a",
                 "intent": "planning",
             },
@@ -2384,11 +2384,11 @@ def test_mcp_skill_trigger_tool_surfaces_override_modes(tmp_path: Path) -> None:
 
     tool_names, payload = asyncio.run(run())
 
-    assert "aidocs_skill_trigger_state_get" in tool_names
+    assert "skill_trigger_state_get" in tool_names
     assert payload["override_modes"] == {}
     assert payload["runtime_owned_capabilities"][0]["capability_id"] == "planning"
     assert payload["imported_skill_state"]["mode_metadata"]["selected_skill_modes"] == {
-        "superpowers_external/writing-plans": "aidocs_runtime_owned"
+        "superpowers_external/writing-plans": "runtime_owned"
     }
 
 
@@ -2397,14 +2397,14 @@ def test_config_edit_policy_reflects_dev_mode() -> None:
     async def run() -> tuple[list[str], dict[str, object]]:
         server = create_server()
         tool_names = [tool.name for tool in await server.list_tools()]
-        result = await server.call_tool("aidocs_config_edit_policy_get", {})
+        result = await server.call_tool("config_edit_policy_get", {})
         text = result[0].text if isinstance(result, list) else result.content[0].text
         return tool_names, json.loads(text)
 
     tool_names, payload = asyncio.run(run())
 
     from aidocs_mcp.config import DEV_MODE
-    assert "aidocs_config_edit_policy_get" in tool_names
+    assert "config_edit_policy_get" in tool_names
     assert payload["profile"] == "release"
     assert payload["available_modes"] == ["explicit_user_permitted"]
     assert payload["security"]["self_edit_available"] is DEV_MODE

@@ -361,7 +361,7 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
 
     assert result["state"]["importedSkillState"]["mode_metadata"][
         "selected_skill_modes"
-    ] == {"superpowers_external/writing-plans": "aidocs_runtime_owned"}
+    ] == {"superpowers_external/writing-plans": "runtime_owned"}
     assert result["promptHostState"]["payload"]["prompt_state"]["override_modes"] == {}
     assert (
         result["promptHostState"]["payload"]["prompt_state"][
@@ -530,9 +530,9 @@ def test_opencode_plugin_reflects_session_skill_changes_after_mcp_update(
         hub.managed_mode.set_mode(project_root, session_id=session.session_id)
         _register_superpowers_provider(runtime, project_root, tmp_path / "mcp-provider")
         await server.call_tool(
-            "aidocs_session_skills_set",
+            "session_skills_set",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
                 "selected_skills": ["superpowers_external/brainstorming"],
             },

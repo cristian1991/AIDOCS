@@ -155,7 +155,7 @@ def test_claude_hook_consumes_runtime_host_state_contract_for_user_prompt_submit
 
     monkeypatch.setattr(
         handler.runtime,
-        "aidocs_route_prompt",
+        "route_prompt",
         lambda *_args, **_kwargs: {
             "managed_mode": True,
             "session_id": "session-a",
@@ -232,7 +232,7 @@ def test_claude_hook_consumes_runtime_host_state_contract_for_user_prompt_submit
             },
             "host_actions": {
                 "inject_context": ["Use AIDOCS MCP tools first."],
-                "recommended_mcp_flow": ["runtime_preflight", "aidocs_orchestrate"],
+                "recommended_mcp_flow": ["runtime_preflight", "orchestrate"],
                 "show_imported_skills": True,
             },
         }
@@ -270,11 +270,11 @@ def test_claude_hook_consumes_prompt_level_override_metadata_from_runtime_host_s
 
     monkeypatch.setattr(
         handler.runtime,
-        "aidocs_route_prompt",
+        "route_prompt",
         lambda *_args, **_kwargs: {
             "managed_mode": True,
             "session_id": "session-a",
-            "recommended_mcp_flow": ["runtime_preflight", "aidocs_orchestrate"],
+            "recommended_mcp_flow": ["runtime_preflight", "orchestrate"],
             "imported_skill_state": {"active_skills": []},
         },
     )
@@ -322,7 +322,7 @@ def test_claude_hook_consumes_prompt_level_override_metadata_from_runtime_host_s
                             "capability_id": "planning",
                             "source": "aidocs_runtime",
                             "reason": "planning orchestration stays AIDOCS-native",
-                            "mode": "aidocs_runtime_owned",
+                            "mode": "runtime_owned",
                             "selected_skill_id": "superpowers_external/writing-plans",
                             "provider": "superpowers_external",
                         }
@@ -332,7 +332,7 @@ def test_claude_hook_consumes_prompt_level_override_metadata_from_runtime_host_s
                             "superpowers_external/brainstorming": "provider_content_aidocs_runtime",
                         },
                         "selected_skill_modes": {
-                            "superpowers_external/writing-plans": "aidocs_runtime_owned",
+                            "superpowers_external/writing-plans": "runtime_owned",
                         },
                     },
                     "activation_succeeded": True,
@@ -355,7 +355,7 @@ def test_claude_hook_consumes_prompt_level_override_metadata_from_runtime_host_s
                         "capability_id": "planning",
                         "source": "aidocs_runtime",
                         "reason": "planning orchestration stays AIDOCS-native",
-                        "mode": "aidocs_runtime_owned",
+                        "mode": "runtime_owned",
                         "selected_skill_id": "superpowers_external/writing-plans",
                         "provider": "superpowers_external",
                     }
@@ -368,7 +368,7 @@ def test_claude_hook_consumes_prompt_level_override_metadata_from_runtime_host_s
                         "superpowers_external/brainstorming": "provider_content_aidocs_runtime",
                     },
                     "selected_skill_modes": {
-                        "superpowers_external/writing-plans": "aidocs_runtime_owned",
+                        "superpowers_external/writing-plans": "runtime_owned",
                     },
                 },
                 "activation_succeeded": True,
@@ -386,7 +386,7 @@ def test_claude_hook_consumes_prompt_level_override_metadata_from_runtime_host_s
             },
             "host_actions": {
                 "inject_context": ["Use AIDOCS MCP tools first."],
-                "recommended_mcp_flow": ["runtime_preflight", "aidocs_orchestrate"],
+                "recommended_mcp_flow": ["runtime_preflight", "orchestrate"],
                 "show_imported_skills": True,
             },
         },

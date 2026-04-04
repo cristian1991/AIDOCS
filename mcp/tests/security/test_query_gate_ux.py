@@ -30,9 +30,9 @@ def test_edit_or_create_flow_can_grant_narrow_followup_read_without_unlocking_br
 
         created = _payload_json(
             await server.call_tool(
-                "aidocs_code_create_file",
+                "code_create_file",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/new.txt",
                     "content": "alpha\nbeta\n",
                 },
@@ -40,9 +40,9 @@ def test_edit_or_create_flow_can_grant_narrow_followup_read_without_unlocking_br
         )
         created_followup = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/new.txt",
                     "start_line": 2,
                     "count": 1,
@@ -53,9 +53,9 @@ def test_edit_or_create_flow_can_grant_narrow_followup_read_without_unlocking_br
         )
         edit = _payload_json(
             await server.call_tool(
-                "aidocs_code_edit_lines",
+                "code_edit_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/existing.txt",
                     "start_line": 1,
                     "end_line": 1,
@@ -65,9 +65,9 @@ def test_edit_or_create_flow_can_grant_narrow_followup_read_without_unlocking_br
         )
         edited_followup = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/existing.txt",
                     "start_line": 1,
                     "count": 1,
@@ -78,9 +78,9 @@ def test_edit_or_create_flow_can_grant_narrow_followup_read_without_unlocking_br
         )
         blocked_other_no_flag = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/other.txt",
                     "start_line": 1,
                     "count": 1,
@@ -90,9 +90,9 @@ def test_edit_or_create_flow_can_grant_narrow_followup_read_without_unlocking_br
         )
         blocked_same_without_flag = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/existing.txt",
                     "start_line": 1,
                     "count": 1,
@@ -139,9 +139,9 @@ def test_batch_edit_flow_can_grant_narrow_followup_reads_for_multiple_files(
 
         batch = _payload_json(
             await server.call_tool(
-                "aidocs_code_batch_edit",
+                "code_batch_edit",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "edits": [
                         {
                             "path": "src/first.txt",
@@ -161,9 +161,9 @@ def test_batch_edit_flow_can_grant_narrow_followup_reads_for_multiple_files(
         )
         first_followup = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/first.txt",
                     "start_line": 2,
                     "count": 1,
@@ -174,9 +174,9 @@ def test_batch_edit_flow_can_grant_narrow_followup_reads_for_multiple_files(
         )
         second_followup = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/second.txt",
                     "start_line": 2,
                     "count": 1,
@@ -187,9 +187,9 @@ def test_batch_edit_flow_can_grant_narrow_followup_reads_for_multiple_files(
         )
         blocked_other_no_flag = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/other.txt",
                     "start_line": 1,
                     "count": 1,
@@ -252,9 +252,9 @@ def test_lane_owned_file_read_is_granted_only_for_the_current_lane_context(
 
         lane_owned = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/lane_a.py",
                     "start_line": 1,
                     "count": 1,
@@ -265,9 +265,9 @@ def test_lane_owned_file_read_is_granted_only_for_the_current_lane_context(
         )
         blocked_other_lane = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/lane_b.py",
                     "start_line": 1,
                     "count": 1,
@@ -330,9 +330,9 @@ def test_lane_owned_protected_prefix_file_requires_matching_lane_context(
 
         lane_owned = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "mcp/server/aidocs_mcp/lane_owned.py",
                     "start_line": 1,
                     "count": 1,
@@ -343,9 +343,9 @@ def test_lane_owned_protected_prefix_file_requires_matching_lane_context(
         )
         blocked_undeclared = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "mcp/server/aidocs_mcp/undeclared.py",
                     "start_line": 1,
                     "count": 1,
@@ -380,26 +380,26 @@ def test_failed_service_api_lookup_does_not_unlock_broad_reads(tmp_path: Path) -
         hub.managed_mode.set_mode(project, session_id="s1")
 
         await server.call_tool(
-            "aidocs_code_index_sync",
+            "code_index_sync",
             {
-                "project_root": str(project),
+                "root": str(project),
                 "include_tests": False,
             },
         )
         missing = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_service_api",
+                "code_get_service_api",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "service_name": "AccountService",
                 },
             )
         )
         blocked_read = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "Services/FormPdfService.cs",
                     "start_line": 1,
                     "count": 1,
@@ -450,9 +450,9 @@ def test_task_begin_establishes_real_lane_scoped_reads(tmp_path: Path) -> None:
 
         begun = _payload_json(
             await server.call_tool(
-                "aidocs_task_begin",
+                "task_begin",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "session_id": session.session_id,
                     "goal": "Implement lane a",
                     "relevant_files": ["src/lane_a.py"],
@@ -462,9 +462,9 @@ def test_task_begin_establishes_real_lane_scoped_reads(tmp_path: Path) -> None:
         )
         lane_owned = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/lane_a.py",
                     "start_line": 1,
                     "count": 1,
@@ -475,9 +475,9 @@ def test_task_begin_establishes_real_lane_scoped_reads(tmp_path: Path) -> None:
         )
         blocked_other_lane = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/lane_b.py",
                     "start_line": 1,
                     "count": 1,
@@ -531,9 +531,9 @@ def test_task_complete_clears_lane_scoped_read_state(tmp_path: Path) -> None:
         hub.managed_mode.set_mode(project, session_id=session.session_id)
 
         await server.call_tool(
-            "aidocs_task_begin",
+            "task_begin",
             {
-                "project_root": str(project),
+                "root": str(project),
                 "session_id": session.session_id,
                 "goal": "Implement lane a",
                 "relevant_files": ["src/lane_a.py"],
@@ -543,9 +543,9 @@ def test_task_complete_clears_lane_scoped_read_state(tmp_path: Path) -> None:
         before_complete = hub.query_gate.get(project, session.session_id)
         completed = _payload_json(
             await server.call_tool(
-                "aidocs_task_complete",
+                "task_complete",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "session_id": session.session_id,
                     "result_summary": "Finished lane a",
                     "verification_evidence": {
@@ -558,9 +558,9 @@ def test_task_complete_clears_lane_scoped_read_state(tmp_path: Path) -> None:
         )
         blocked_after_complete = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/lane_a.py",
                     "start_line": 1,
                     "count": 1,
@@ -622,9 +622,9 @@ def test_lane_files_are_conductor_hints_not_hard_edit_locks(tmp_path: Path) -> N
 
         lane_owned = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/lane_a.py",
                     "start_line": 1,
                     "count": 1,
@@ -635,9 +635,9 @@ def test_lane_files_are_conductor_hints_not_hard_edit_locks(tmp_path: Path) -> N
         )
         blocked_other = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/other.py",
                     "start_line": 1,
                     "count": 1,
@@ -696,9 +696,9 @@ def test_conductor_can_delegate_small_fix_outside_current_lane_ownership(
 
         lane_owned = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/lane_a.py",
                     "start_line": 1,
                     "count": 1,
@@ -709,9 +709,9 @@ def test_conductor_can_delegate_small_fix_outside_current_lane_ownership(
         )
         delegated = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/other.py",
                     "start_line": 1,
                     "count": 1,
@@ -773,9 +773,9 @@ def test_lane_context_still_helps_with_read_scope_without_becoming_security_poli
 
         granted = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/lane_a.py",
                     "start_line": 1,
                     "count": 1,
@@ -786,9 +786,9 @@ def test_lane_context_still_helps_with_read_scope_without_becoming_security_poli
         )
         blocked = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/lane_b.py",
                     "start_line": 1,
                     "count": 1,
@@ -826,20 +826,20 @@ def test_precision_tools_do_not_grant_blanket_read_access(tmp_path: Path) -> Non
         hub.managed_mode.set_mode(project, session_id="s1")
 
         await server.call_tool(
-            "aidocs_code_index_sync",
-            {"project_root": str(project), "include_tests": False},
+            "code_index_sync",
+            {"root": str(project), "include_tests": False},
         )
 
         await server.call_tool(
-            "aidocs_code_get_method_signature",
-            {"project_root": str(project), "method": "bar"},
+            "code_get_method_signature",
+            {"root": str(project), "method": "bar"},
         )
 
         blocked_read = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "src/app.py",
                     "start_line": 1,
                     "count": 1,

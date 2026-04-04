@@ -209,9 +209,9 @@ def test_host_views_show_canonical_bundled_skill_names(tmp_path: Path) -> None:
         )
         host_state = runtime.host_state(project_root, session_id=session.session_id)
         tool_result = await server.call_tool(
-            "aidocs_session_start_state_get",
+            "session_start_state_get",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
             },
         )
@@ -321,9 +321,9 @@ def test_claude_runtime_state_can_include_override_mode_metadata(
             include_tests=False,
         )
         result = await server.call_tool(
-            "aidocs_session_start_state_get",
+            "session_start_state_get",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
             },
         )
@@ -332,9 +332,9 @@ def test_claude_runtime_state_can_include_override_mode_metadata(
 
     tool_names, result = asyncio.run(run())
 
-    assert "aidocs_session_start_state_get" in tool_names
+    assert "session_start_state_get" in tool_names
     assert result["imported_skill_state"]["mode_metadata"]["selected_skill_modes"] == {
-        "superpowers_external/writing-plans": "aidocs_runtime_owned"
+        "superpowers_external/writing-plans": "runtime_owned"
     }
 
 
@@ -414,9 +414,9 @@ def test_mcp_session_start_state_tool_can_include_imported_skill_state(
             include_tests=False,
         )
         result = await server.call_tool(
-            "aidocs_session_start_state_get",
+            "session_start_state_get",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
             },
         )
@@ -425,6 +425,6 @@ def test_mcp_session_start_state_tool_can_include_imported_skill_state(
 
     tool_names, result = asyncio.run(run())
 
-    assert "aidocs_session_start_state_get" in tool_names
+    assert "session_start_state_get" in tool_names
     assert "superpowers_external/brainstorming" in result.get("active_skills", [])
     assert result["imported_skill_state"]["source"] == "skill_trigger_state"

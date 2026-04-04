@@ -23,9 +23,9 @@ def test_discovery_read_still_requires_indexed_query(tmp_path: Path) -> None:
         hub = server._aidocs_test_hub
         hub.managed_mode.set_mode(project, session_id="s1")
         return await server.call_tool(
-            "aidocs_code_get_lines",
+            "code_get_lines",
             {
-                "project_root": str(project),
+                "root": str(project),
                 "path": "src/module.py",
                 "start_line": 1,
                 "count": 1,
@@ -52,9 +52,9 @@ def test_known_exact_path_bypasses_read_gate(
         hub = server._aidocs_test_hub
         hub.managed_mode.set_mode(project, session_id="s1")
         return await server.call_tool(
-            "aidocs_code_get_lines",
+            "code_get_lines",
             {
-                "project_root": str(project),
+                "root": str(project),
                 "path": "src/module.py",
                 "start_line": 1,
                 "count": 1,
@@ -83,9 +83,9 @@ def test_protected_path_stays_blocked_even_with_known_exact_path(
         hub = server._aidocs_test_hub
         hub.managed_mode.set_mode(project, session_id="s1")
         return await server.call_tool(
-            "aidocs_code_get_lines",
+            "code_get_lines",
             {
-                "project_root": str(project),
+                "root": str(project),
                 "path": "aidocs.toml",
                 "start_line": 1,
                 "count": 1,
@@ -116,9 +116,9 @@ def test_protected_path_followup_read_stays_blocked_after_allowed_edit(
 
         edited = _payload_json(
             await server.call_tool(
-                "aidocs_code_edit_lines",
+                "code_edit_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "aidocs.toml",
                     "start_line": 2,
                     "end_line": 2,
@@ -129,9 +129,9 @@ def test_protected_path_followup_read_stays_blocked_after_allowed_edit(
         )
         lines = _payload_json(
             await server.call_tool(
-                "aidocs_code_get_lines",
+                "code_get_lines",
                 {
-                    "project_root": str(project),
+                    "root": str(project),
                     "path": "aidocs.toml",
                     "start_line": 1,
                     "count": 1,

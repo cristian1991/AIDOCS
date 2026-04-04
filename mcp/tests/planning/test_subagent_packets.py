@@ -164,9 +164,9 @@ def test_mcp_plan_dispatch_next_tool_returns_packet(tmp_path: Path) -> None:
             encoding="utf-8",
         )
         result = await server.call_tool(
-            "aidocs_plan_dispatch_next",
+            "plan_dispatch_next",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
             },
         )
@@ -175,6 +175,6 @@ def test_mcp_plan_dispatch_next_tool_returns_packet(tmp_path: Path) -> None:
 
     tool_names, payload = asyncio.run(run())
 
-    assert "aidocs_plan_dispatch_next" in tool_names
+    assert "plan_dispatch_next" in tool_names
     assert payload["dispatch_state"] == "delegated"
     assert payload["packet"]["lane_id"] == "lane-a"

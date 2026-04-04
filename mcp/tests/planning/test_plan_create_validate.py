@@ -132,17 +132,17 @@ def test_mcp_plan_create_and_validate_tools_round_trip(tmp_path: Path) -> None:
             "Ship feature",
         )
         created = await server.call_tool(
-            "aidocs_plan_create_from_spec",
+            "plan_create_from_spec",
             {
-                "project_root": str(project),
+                "root": str(project),
                 "session_id": session.session_id,
                 "spec_text": "Purpose: Ship feature\n- Add API endpoint\nValidation:\n- pytest tests/test_feature.py -q",
             },
         )
         validated = await server.call_tool(
-            "aidocs_plan_validate",
+            "plan_validate",
             {
-                "project_root": str(project),
+                "root": str(project),
                 "session_id": session.session_id,
             },
         )
@@ -158,8 +158,8 @@ def test_mcp_plan_create_and_validate_tools_round_trip(tmp_path: Path) -> None:
 
     tool_names, created_payload, validated_payload = asyncio.run(run())
 
-    assert "aidocs_plan_create_from_spec" in tool_names
-    assert "aidocs_plan_validate" in tool_names
+    assert "plan_create_from_spec" in tool_names
+    assert "plan_validate" in tool_names
     step_lines = [line for line in created_payload["sections"]["Steps"] if line.strip()]
     assert step_lines == ["- [ ] Add API endpoint"]
     assert validated_payload["valid"] is True

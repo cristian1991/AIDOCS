@@ -238,9 +238,9 @@ def test_mcp_execution_loop_tools_round_trip(tmp_path: Path) -> None:
             encoding="utf-8",
         )
         next_result = await server.call_tool(
-            "aidocs_execution_loop_next",
+            "execution_loop_next",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
             },
         )
@@ -250,9 +250,9 @@ def test_mcp_execution_loop_tools_round_trip(tmp_path: Path) -> None:
             else next_result.content[0].text
         )
         report_result = await server.call_tool(
-            "aidocs_plan_dispatch_report",
+            "plan_dispatch_report",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
                 "packet_result": {
                     "lane_id": "lane-a",
@@ -269,7 +269,7 @@ def test_mcp_execution_loop_tools_round_trip(tmp_path: Path) -> None:
 
     tool_names, next_payload, report_payload = asyncio.run(run())
 
-    assert "aidocs_execution_loop_next" in tool_names
-    assert "aidocs_plan_dispatch_report" in tool_names
+    assert "execution_loop_next" in tool_names
+    assert "plan_dispatch_report" in tool_names
     assert next_payload["state"] == "delegated"
     assert report_payload["result"] == "blocked_missing_evidence"

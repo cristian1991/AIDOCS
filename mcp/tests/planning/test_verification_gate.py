@@ -131,9 +131,9 @@ def test_mcp_verification_gate_tool_returns_runtime_result(tmp_path: Path) -> No
             encoding="utf-8",
         )
         result = await server.call_tool(
-            "aidocs_verification_gate",
+            "verification_gate",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
                 "lane_id": "lane-a",
                 "verification_evidence": {
@@ -147,5 +147,5 @@ def test_mcp_verification_gate_tool_returns_runtime_result(tmp_path: Path) -> No
 
     tool_names, payload = asyncio.run(run())
 
-    assert "aidocs_verification_gate" in tool_names
+    assert "verification_gate" in tool_names
     assert payload["verified"] is True

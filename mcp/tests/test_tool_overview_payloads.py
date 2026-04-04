@@ -28,9 +28,9 @@ def test_project_bootstrap_tool_includes_overview_payloads(tmp_path: Path) -> No
         hub.skills.set_selected_skills(project_root, session.session_id, ["deep-retrieval"])
 
         result = await server.call_tool(
-            "aidocs_project_bootstrap_or_resume",
+            "project_bootstrap_or_resume",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
                 "include_code_bundle": False,
                 "include_tests": False,
@@ -82,9 +82,9 @@ def test_skill_trigger_tool_includes_skills_overview(tmp_path: Path) -> None:
         runtime.hub.skills.set_selected_skills(project_root, "session-a", ["superpowers_external/brainstorming"])
 
         result = await server.call_tool(
-            "aidocs_skill_trigger_state_get",
+            "skill_trigger_state_get",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": "session-a",
                 "intent": "brainstorming",
             },
@@ -139,9 +139,9 @@ def test_plan_connect_tool_includes_plan_overview_defaults(tmp_path: Path) -> No
         )
 
         result = await server.call_tool(
-            "aidocs_plan_connect",
+            "plan_connect",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
                 "run_preflight": False,
             },
@@ -175,9 +175,9 @@ def test_plan_connect_tool_fallback_includes_safe_plan_overview(tmp_path: Path) 
         hub.sessions.upsert_handoff_step(project_root, session.session_id, text="Follow up on the blocker", status="open")
 
         result = await server.call_tool(
-            "aidocs_plan_connect",
+            "plan_connect",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
                 "run_preflight": False,
             },

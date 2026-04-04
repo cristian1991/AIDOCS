@@ -320,21 +320,21 @@ def test_mcp_tools_surface_provider_status_override_and_structured_selection_blo
         _register_superpowers_provider(runtime, project_root, tmp_path, version="1.2.3")
 
         status_result = await server.call_tool(
-            "aidocs_skill_provider_status_get",
-            {"project_root": str(project_root), "provider_id": "superpowers_external"},
+            "skill_provider_status_get",
+            {"root": str(project_root), "provider_id": "superpowers_external"},
         )
         blocked_result = await server.call_tool(
-            "aidocs_session_skills_set",
+            "session_skills_set",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": "session-a",
                 "selected_skills": ["superpowers_external/brainstorming"],
             },
         )
         override_result = await server.call_tool(
-            "aidocs_skill_provider_override_set",
+            "skill_provider_override_set",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "provider_id": "superpowers_external",
                 "choice": "keep_enabled_anyway",
             },
@@ -348,8 +348,8 @@ def test_mcp_tools_surface_provider_status_override_and_structured_selection_blo
 
     tool_names, status_payload, blocked_payload, override_payload = asyncio.run(run())
 
-    assert "aidocs_skill_provider_status_get" in tool_names
-    assert "aidocs_skill_provider_override_set" in tool_names
+    assert "skill_provider_status_get" in tool_names
+    assert "skill_provider_override_set" in tool_names
     assert status_payload["provider_state"] == "detected_incompatible"
     assert blocked_payload["error"] == "incompatible_provider"
     assert blocked_payload["provider"]["provider_version"] == "1.2.3"

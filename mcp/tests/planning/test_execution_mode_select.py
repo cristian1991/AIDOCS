@@ -207,9 +207,9 @@ def test_mcp_execution_mode_select_tool_returns_runtime_decision(
             encoding="utf-8",
         )
         result = await server.call_tool(
-            "aidocs_execution_mode_select",
+            "execution_mode_select",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "session_id": session.session_id,
             },
         )
@@ -218,6 +218,6 @@ def test_mcp_execution_mode_select_tool_returns_runtime_decision(
 
     tool_names, payload = asyncio.run(run())
 
-    assert "aidocs_execution_mode_select" in tool_names
+    assert "execution_mode_select" in tool_names
     assert payload["mode"] == "delegated_parallel"
     assert payload["session_id"] == "2026-04-02-execution-mode-tool"

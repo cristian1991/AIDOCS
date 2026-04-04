@@ -557,7 +557,7 @@ def create_server() -> Any:
         project_root = arguments.get("project_root")
         if not isinstance(project_root, str) or not project_root.strip():
             return None
-        return Path(root)
+        return Path(project_root)
 
     def _capture_enabled(
         name: str, run_middleware: bool, arguments: dict[str, Any] | None

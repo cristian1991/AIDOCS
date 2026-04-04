@@ -87,12 +87,12 @@ def test_precision_tools_still_exist_for_exact_queries() -> None:
     tool_names = asyncio.run(run())
 
     assert {
-        "aidocs_code_find",
-        "aidocs_code_trace",
-        "aidocs_code_get_lines",
-        "aidocs_code_edit_lines",
-        "aidocs_session_resume_bundle",
-        "aidocs_action_surface_current_session_bundle",
+        "code_find",
+        "code_trace",
+        "code_get_lines",
+        "code_edit_lines",
+        "session_resume_bundle",
+        "action_surface_current_session_bundle",
     } <= tool_names
 
 
@@ -102,8 +102,8 @@ def test_opencode_edit_directive_keeps_precision_read_path(tmp_path: Path) -> No
     rendered = result["messages"][-1]["parts"][-1]["text"]
     assert 'action="edit"' in rendered
     assert "`code_get_lines`" not in rendered
-    assert "aidocs_code_get_lines" in rendered or "code_read" in rendered
-    assert "aidocs_code_edit_lines" in rendered
+    assert "code_get_lines" in rendered or "code_read" in rendered
+    assert "code_edit_lines" in rendered
     assert "session_resume_bundle" not in rendered
 
 

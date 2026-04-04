@@ -120,7 +120,7 @@ def test_runtime_uses_runtime_owned_capability_for_writing_plans(
     assert result["runtime_owned_capabilities"][0]["capability_id"] == "planning"
     assert result["triggered"][0]["provider"] == "superpowers_external"
     assert result["triggered"][0]["runtime_provider"] == "aidocs_runtime"
-    assert result["triggered"][0]["override_mode"] == "aidocs_runtime_owned"
+    assert result["triggered"][0]["override_mode"] == "runtime_owned"
 
 
 def test_runtime_uses_external_brainstorming_content_under_aidocs_runtime_control(

@@ -22,12 +22,12 @@ def test_precision_and_debug_tools_remain_distinct_in_taxonomy() -> None:
     tool_names = asyncio.run(run())
 
     assert {
-        "aidocs_code_get_lines",
-        "aidocs_code_edit_lines",
-        "aidocs_db_query",
-        "aidocs_execution_query_summary",
-        "aidocs_git_fork_status",
-        "aidocs_schema_query",
+        "code_get_lines",
+        "code_edit_lines",
+        "db_query",
+        "execution_query_summary",
+        "git_fork_status",
+        "schema_query",
     } <= tool_names
 
 
@@ -39,9 +39,9 @@ def test_execution_recorder_tools_do_not_self_instrument_under_aidocs_taxonomy(t
         hub = server._aidocs_test_hub
 
         await server.call_tool(
-            "aidocs_execution_run_record",
+            "execution_run_record",
             {
-                "project_root": str(project_root),
+                "root": str(project_root),
                 "run_kind": "manual_check",
                 "source_kind": "test",
                 "capability_name": "taxonomy-test",

@@ -12,23 +12,25 @@ class ExecutionIndexStore:
     """Derived SQLite index for execution runs and event evidence."""
 
     _LIFECYCLE_TOOLS = {
-        "aidocs_task_begin",
-        "aidocs_task_update",
-        "aidocs_task_complete",
+        "task_begin",
+        "task_update",
+        "task_complete",
     }
     _EDIT_LIKE_TOOLS = {
         "edit",
         "write",
         "bash",
-        "aidocs_code_edit_lines",
-        "aidocs_code_batch_edit",
-        "aidocs_code_create_file",
+        "code_edit_lines",
+        "code_batch_edit",
+        "code_create_file",
+        "code_str_replace",
+        "code_batch_str_replace",
     }
     _MEANINGFUL_MCP_PREFIXES = (
-        "aidocs_code_",
-        "aidocs_schema_",
-        "aidocs_memory_",
-        "aidocs_session_",
+        "code_",
+        "schema_",
+        "memory_",
+        "session_",
     )
 
     def index_root(self, project_root: Path) -> Path:

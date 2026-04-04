@@ -126,11 +126,11 @@ def test_mcp_tool_updates_roadmap_feedback_state(tmp_path: Path) -> None:
     async def run() -> object:
         server = create_server()
         tools = await server.list_tools()
-        assert any(item.name == "aidocs_roadmap_feedback_update" for item in tools)
+        assert any(item.name == "roadmap_feedback_update" for item in tools)
         return await server.call_tool(
-            "aidocs_roadmap_feedback_update",
+            "roadmap_feedback_update",
             {
-                "project_root": str(project),
+                "root": str(project),
                 "step_text": "Ship startup flow",
                 "feedback": "needs fixes",
             },

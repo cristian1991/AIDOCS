@@ -373,43 +373,19 @@ class ClaudeHookHandler:
 
     _MCP_ALTERNATIVES: dict[str, list[tuple[str, str]]] = {
         "grep": [
-            (
-                'aidocs_code_find(query, mode="symbols")',
-                "Find symbols by name, kind, or role",
-            ),
-            (
-                'aidocs_code_find(query, mode="references")',
-                "Find all usages of a symbol across the codebase",
-            ),
-            (
-                'aidocs_schema_query(query, mode="field")',
-                "Find a DB field/column across all entities",
-            ),
-            (
-                'aidocs_code_trace(query, mode="css_class")',
-                "Find CSS rules matching class names",
-            ),
+            ('code_find(query, mode="symbols")', "Find symbols by name, kind, or role"),
+            ('code_find(query, mode="references")', "Find all usages of a symbol"),
+            ('schema_query(query, mode="field")', "Find a DB field/column across all entities"),
+            ('code_trace(query, mode="css_class")', "Find CSS rules matching class names"),
         ],
         "read": [
-            (
-                'aidocs_code_bundle(path, mode="file")',
-                "Understand file structure without reading the whole file",
-            ),
-            (
-                "aidocs_code_get_symbol_snippet",
-                "Read just one symbol's code at a known location",
-            ),
-            (
-                'aidocs_code_find(query, mode="symbols")',
-                "Locate the exact symbol before reading code",
-            ),
+            ('code_bundle(path, mode="file")', "Understand file structure without reading the whole file"),
+            ("code_get_symbol_snippet", "Read just one symbol's code at a known location"),
+            ('code_find(query, mode="symbols")', "Locate the exact symbol before reading code"),
         ],
         "glob": [
-            ("aidocs_code_search", "Find files by path/summary keywords"),
-            (
-                'aidocs_code_find(query, mode="partial_group")',
-                "Find all partial class files for a C# type",
-            ),
+            ("code_search", "Find files by path/summary keywords"),
+            ('code_find(query, mode="partial_group")', "Find all partial class files for a C# type"),
         ],
     }
 

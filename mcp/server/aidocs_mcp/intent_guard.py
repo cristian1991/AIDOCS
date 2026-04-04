@@ -58,6 +58,7 @@ FREE_TOOLS: set[str] = {
     "code_find",
     "code_trace",
     "code_search",
+    "code_text_search",
     "code_investigate",
     "code_bundle",
     "code_index_sync",

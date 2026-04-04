@@ -69,7 +69,7 @@ instructions = "AIDOCS is your primary workflow for all code tasks. ALWAYS use A
 
 [interaction.raw_tool_replacements]
 read = "Use `code_get_lines`, `code_get_symbol_snippet`, or `code_bundle` instead."
-grep = "Use `code_find`, `code_search`, `code_trace`, or `schema_query` instead."
+grep = "Use `code_text_search` for literal text, `code_find` for symbols, `code_trace` for relationships."
 glob = "Use `code_search` or `code_find(mode=\"partial_group\")` instead."
 edit = "Use `code_str_replace` for small edits or `code_edit_lines` for large block replacements."
 write = "Use `code_create_file` instead."

@@ -920,6 +920,64 @@ class CodeIndexStore:
             for _, row, reasons in ranked[:limit]
         ]
 
+    def search_text(
+        self,
+        project_root: Path,
+        text: str,
+        *,
+        glob: str | None = None,
+        case_sensitive: bool = False,
+        limit: int = 50,
+        include_tests: bool = False,
+    ) -> list[dict[str, object]]:
+        """Search indexed file contents for literal text. Replaces grep for indexed projects."""
+        self.init_db(project_root)
+        needle = text if case_sensitive else text.lower()
+        if not needle.strip():
+            return []
+
+        with self.connect(project_root) as conn:
+            query_sql = "SELECT path FROM code_files"
+            params: list[object] = []
+            if not include_tests:
+                query_sql += " WHERE (role IS NULL OR role NOT IN ('test', 'fixture'))"
+            rows = conn.execute(query_sql, params).fetchall()
+
+        import fnmatch
+        matches: list[dict[str, object]] = []
+        for row in rows:
+            rel_path = str(row["path"])
+            if glob and not fnmatch.fnmatch(rel_path, glob):
+                continue
+            abs_path = project_root / rel_path
+            if not abs_path.is_file():
+                continue
+            try:
+                content = abs_path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            search_content = content if case_sensitive else content.lower()
+            if needle not in search_content:
+                continue
+            # Collect matching lines
+            lines_matched: list[dict[str, object]] = []
+            for i, line in enumerate(content.splitlines(), 1):
+                check_line = line if case_sensitive else line.lower()
+                if needle in check_line:
+                    lines_matched.append({"line_number": i, "line": line.rstrip()})
+                    if len(lines_matched) >= 5:
+                        break
+            matches.append({
+                "path": rel_path,
+                "match_count": search_content.count(needle),
+                "lines": lines_matched,
+            })
+            if len(matches) >= limit:
+                break
+
+        return matches
+
+
     def search_symbols(
         self,
         project_root: Path,

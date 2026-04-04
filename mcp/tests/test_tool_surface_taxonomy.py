@@ -4,14 +4,15 @@ from pathlib import Path
 from aidocs_mcp.mcp_server import create_server
 
 
-def test_public_tool_surface_uses_aidocs_taxonomy() -> None:
+def test_public_tool_surface_has_no_aidocs_prefix() -> None:
+    """Tools no longer have the aidocs_ prefix — hosts add their own branding."""
     async def run() -> list[str]:
         server = create_server()
         return sorted(tool.name for tool in await server.list_tools())
 
     tool_names = asyncio.run(run())
 
-    assert [name for name in tool_names if not name.startswith("aidocs_")] == []
+    assert [name for name in tool_names if name.startswith("aidocs_")] == []
 
 
 def test_precision_and_debug_tools_remain_distinct_in_taxonomy() -> None:

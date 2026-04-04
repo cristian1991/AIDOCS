@@ -2388,7 +2388,7 @@ def test_mcp_skill_trigger_tool_surfaces_override_modes(tmp_path: Path) -> None:
     assert payload["override_modes"] == {}
     assert payload["runtime_owned_capabilities"][0]["capability_id"] == "planning"
     assert payload["imported_skill_state"]["mode_metadata"]["selected_skill_modes"] == {
-        "superpowers_external/writing-plans": "runtime_owned"
+        "superpowers_external/writing-plans": "aidocs_runtime_owned"
     }
 
 

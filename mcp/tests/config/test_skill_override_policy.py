@@ -8,7 +8,7 @@ def test_override_registry_marks_writing_plans_as_aidocs_native(tmp_path: Path) 
 
     result = store.resolve("superpowers_external", "writing-plans")
 
-    assert result.mode == "runtime_owned"
+    assert result.mode == "aidocs_runtime_owned"
     assert result.runtime_capability_id == "planning"
 
 
@@ -19,7 +19,7 @@ def test_override_registry_marks_verification_before_completion_as_runtime_owned
 
     result = store.resolve("superpowers_external", "verification-before-completion")
 
-    assert result.mode == "runtime_owned"
+    assert result.mode == "aidocs_runtime_owned"
     assert result.runtime_capability_id == "completion_verification"
 
 

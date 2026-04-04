@@ -188,7 +188,7 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
   const promptHostState = await plugin._internal.resolvePromptHostState({json.dumps(str(project_root))}, state, "brainstorm product positioning");
   console.log(JSON.stringify({{
     source: promptHostState && promptHostState.source,
-    mode_metadata_source: promptHostState && promptHostState.payload ? "runtime" : null,
+    mode_metadata_source: promptHostState && promptHostState.payload ? "aidocs_runtime" : null,
     active_skill_modes: promptHostState && promptHostState.payload && promptHostState.payload.prompt_state && promptHostState.payload.prompt_state.override_modes,
   }}));
 }})().catch((err) => {{ console.error(err); process.exit(1); }});
@@ -289,7 +289,7 @@ def test_opencode_plugin_thins_mode_reconstruction_logic(tmp_path: Path) -> None
     state = _run_plugin_with_provider_content_override(tmp_path)
 
     assert state["source"] == "runtime_host_state"
-    assert state["mode_metadata_source"] == "runtime"
+    assert state["mode_metadata_source"] == "aidocs_runtime"
     assert state["active_skill_modes"] == {
         "superpowers_external/brainstorming": "provider_content_aidocs_runtime"
     }

@@ -334,7 +334,7 @@ def test_claude_runtime_state_can_include_override_mode_metadata(
 
     assert "session_start_state_get" in tool_names
     assert result["imported_skill_state"]["mode_metadata"]["selected_skill_modes"] == {
-        "superpowers_external/writing-plans": "runtime_owned"
+        "superpowers_external/writing-plans": "aidocs_runtime_owned"
     }
 
 

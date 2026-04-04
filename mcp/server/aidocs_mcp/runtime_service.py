@@ -2147,7 +2147,7 @@ class RuntimeService:
         }:
             recommended_flow.append("task_begin")
         if prompt_action_kind in {"understand", "trace", "edit", "code_bundle"}:
-            recommended_flow.append("aidocs_orchestrate")
+            recommended_flow.append("orchestrate")
 
         host_actions = {
             "inject_context": [
@@ -3762,7 +3762,7 @@ class RuntimeService:
         if requires_task_lifecycle:
             recommended.append("task_begin")
         if action_kind in {"understand", "trace", "edit", "code_bundle"}:
-            recommended.append("aidocs_orchestrate")
+            recommended.append("orchestrate")
 
         blocked_reason = None
         if managed.get("active") and preflight.get("allowed") is False:

@@ -361,7 +361,7 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
 
     assert result["state"]["importedSkillState"]["mode_metadata"][
         "selected_skill_modes"
-    ] == {"superpowers_external/writing-plans": "runtime_owned"}
+    ] == {"superpowers_external/writing-plans": "aidocs_runtime_owned"}
     assert result["promptHostState"]["payload"]["prompt_state"]["override_modes"] == {}
     assert (
         result["promptHostState"]["payload"]["prompt_state"][
@@ -451,7 +451,7 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
   const context = plugin._internal.buildPromptContext(state, "brainstorm app ideas", "", null, promptHostState);
   console.log(JSON.stringify({{
     source: promptHostState && promptHostState.source,
-    mode_metadata_source: promptHostState && promptHostState.payload ? "runtime" : null,
+    mode_metadata_source: promptHostState && promptHostState.payload ? "aidocs_runtime" : null,
     prompt_state: promptHostState && promptHostState.payload && promptHostState.payload.prompt_state,
     context,
   }}));
@@ -461,7 +461,7 @@ const plugin = require({json.dumps(str(PLUGIN_PATH))});
     result = _run_node_json(script)
 
     assert result["source"] == "runtime_host_state"
-    assert result["mode_metadata_source"] == "runtime"
+    assert result["mode_metadata_source"] == "aidocs_runtime"
     assert result["prompt_state"]["override_modes"] == {
         "superpowers_external/brainstorming": "provider_content_aidocs_runtime"
     }

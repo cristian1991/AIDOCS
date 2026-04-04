@@ -82,7 +82,7 @@ def test_known_exact_path_grant_stays_narrow(tmp_path: Path) -> None:
     blocked = _require_indexed_read_gate(hub, project_root)
     gate = hub.query_gate.get(project_root, "s1")
     assert gate["allow_read"] is False
-    assert gate["last_tool"] == "discovery:aidocs_code_create_file"
+    assert gate["last_tool"] == "discovery:code_create_file"
     assert gate["known_exact_paths"] == ["src/new.txt"]
     assert gate["known_exact_paths"] == ["src/new.txt"]
 

@@ -232,7 +232,7 @@ def test_runtime_logs_why_external_skill_was_triggered(tmp_path: Path) -> None:
     )
 
     assert result["triggered"][0]["provider"] == "superpowers_external"
-    assert result["triggered"][0]["override_mode"] == "runtime_owned"
+    assert result["triggered"][0]["override_mode"] == "aidocs_runtime_owned"
     assert result["triggered"][0]["why"]
 
 
@@ -334,10 +334,10 @@ def test_bundled_writing_plans_becomes_runtime_owned_capability(
     assert result["triggered"][0]["skill_id"] == "writing-plans"
     assert result["triggered"][0]["provider"] == "aidocs_bundled_superpowers"
     assert result["triggered"][0]["runtime_provider"] == "aidocs_runtime"
-    assert result["triggered"][0]["override_mode"] == "runtime_owned"
+    assert result["triggered"][0]["override_mode"] == "aidocs_runtime_owned"
     assert result["runtime_owned_capabilities"][0]["capability_id"] == "planning"
     assert result["imported_skill_state"]["mode_metadata"]["selected_skill_modes"] == {
-        "writing-plans": "runtime_owned"
+        "writing-plans": "aidocs_runtime_owned"
     }
     assert annotated["override_modes"] == {}
 

@@ -184,7 +184,7 @@ def test_batch_edit_flow_can_grant_narrow_followup_reads_for_multiple_files(
                 },
             )
         )
-        blocked_other_exact = _payload_json(
+        blocked_other_no_flag = _payload_json(
             await server.call_tool(
                 "aidocs_code_get_lines",
                 {
@@ -193,7 +193,6 @@ def test_batch_edit_flow_can_grant_narrow_followup_reads_for_multiple_files(
                     "start_line": 1,
                     "count": 1,
                     "show_line_numbers": False,
-                    "known_exact_path": True,
                 },
             )
         )
@@ -201,7 +200,7 @@ def test_batch_edit_flow_can_grant_narrow_followup_reads_for_multiple_files(
             "batch": batch,
             "first_followup": first_followup,
             "second_followup": second_followup,
-            "blocked_other_exact": blocked_other_exact,
+            "blocked_other_no_flag": blocked_other_no_flag,
         }
 
     data = asyncio.run(run())
@@ -209,7 +208,7 @@ def test_batch_edit_flow_can_grant_narrow_followup_reads_for_multiple_files(
     assert data["batch"]["success"] is True
     assert data["first_followup"]["content"] == "updated-one"
     assert data["second_followup"]["content"] == "updated-two"
-    assert "Indexed-query prerequisite" in str(data["blocked_other_exact"]["error"])
+    assert "Indexed-query prerequisite" in str(data["blocked_other_no_flag"]["error"])
 
 
 def test_lane_owned_file_read_is_granted_only_for_the_current_lane_context(

@@ -235,6 +235,8 @@ TOOL_INTENT_MAP: dict[str, str] = {
     "write": "write",
     "code_edit_lines": "edit",
     "code_batch_edit": "edit",
+    "code_str_replace": "edit",
+    "code_batch_str_replace": "edit",
     "memory_capture": "memory_capture",
     "session_journal_log": "memory_capture",
     "task_begin": "edit",

@@ -45,7 +45,7 @@ _RAW_TOOL_REPLACEMENTS: dict[str, str] = {
     "read": "Use `code_get_lines`, `code_get_symbol_snippet`, or `code_bundle` instead.",
     "grep": "Use `code_find`, `code_search`, `code_trace`, or `schema_query` instead.",
     "glob": "Use `code_search` or `code_find(mode=\"partial_group\")` instead.",
-    "edit": "Use `code_edit_lines` or `code_batch_edit` instead.",
+    "edit": "Use `code_str_replace` for small edits or `code_edit_lines` for large block replacements.",
     "write": "Use `code_create_file` instead.",
 }
 

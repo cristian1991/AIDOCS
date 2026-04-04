@@ -932,3 +932,205 @@ def _edit_error(path: str, start: int, end: int, error: str) -> dict[str, object
         "dry_run": False,
         "error": error,
     }
+
+
+_STR_REPLACE_MAX_OLD_CHARS = 500
+MAX_BATCH_STR_REPLACE = 20
+
+
+def str_replace(
+    project_root: Path,
+    path: str,
+    old_str: str,
+    new_str: str,
+    *,
+    replace_all: bool = False,
+    config_edit_mode: ConfigEditMode | None = None,
+) -> dict[str, object]:
+    """Replace a unique string in a file. For small, targeted edits.
+
+    Args:
+        project_root: Project root directory.
+        path: Relative path to the file.
+        old_str: Exact text to find (must be unique unless replace_all=True).
+        new_str: Replacement text.
+        replace_all: Replace every occurrence instead of requiring uniqueness.
+
+    Returns:
+        { "success": bool, "path": str, "lines_changed": int, "replacements": int, "error": str | None }
+    """
+    if len(old_str) > _STR_REPLACE_MAX_OLD_CHARS:
+        return {
+            "success": False,
+            "path": path,
+            "lines_changed": 0,
+            "replacements": 0,
+            "error": (
+                f"old_str is {len(old_str)} chars (limit {_STR_REPLACE_MAX_OLD_CHARS}). "
+                f"Use code_edit_lines with line numbers for large replacements."
+            ),
+        }
+
+    try:
+        _validate_project_root(project_root, write=True)
+    except ValueError as exc:
+        return {"success": False, "path": path, "lines_changed": 0, "replacements": 0, "error": str(exc)}
+    try:
+        abs_path = _resolve_path(project_root, path, write=True, config_edit_mode=config_edit_mode)
+    except ValueError as exc:
+        return {"success": False, "path": path, "lines_changed": 0, "replacements": 0, "error": str(exc)}
+    try:
+        _check_sensitive(path)
+    except ValueError as exc:
+        return {"success": False, "path": path, "lines_changed": 0, "replacements": 0, "error": str(exc)}
+
+    canonical_path = _canonical_relative_path(project_root, abs_path)
+
+    try:
+        content = abs_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"success": False, "path": path, "lines_changed": 0, "replacements": 0, "error": f"File not found: {path}"}
+
+    count = content.count(old_str)
+
+    if count == 0:
+        return {
+            "success": False,
+            "path": canonical_path,
+            "lines_changed": 0,
+            "replacements": 0,
+            "error": f"No match found for old_str in {canonical_path}.",
+        }
+
+    if count > 1 and not replace_all:
+        return {
+            "success": False,
+            "path": canonical_path,
+            "lines_changed": 0,
+            "replacements": 0,
+            "error": f"Found {count} matches for old_str in {canonical_path}. Use replace_all=True or provide more context to make old_str unique.",
+        }
+
+    old_lines = content.splitlines()
+    if replace_all:
+        new_content = content.replace(old_str, new_str)
+        replacements = count
+    else:
+        new_content = content.replace(old_str, new_str, 1)
+        replacements = 1
+
+    new_lines = new_content.splitlines()
+    lines_changed = sum(1 for a, b in zip(old_lines, new_lines) if a != b) + abs(len(new_lines) - len(old_lines))
+
+    abs_path.write_text(new_content, encoding="utf-8")
+
+    return {
+        "success": True,
+        "path": canonical_path,
+        "lines_changed": lines_changed,
+        "replacements": replacements,
+        "error": None,
+    }
+
+
+def batch_str_replace(
+    project_root: Path,
+    edits: list[dict[str, object]],
+    *,
+    atomic: bool = True,
+    config_edit_mode: ConfigEditMode | None = None,
+) -> dict[str, object]:
+    """Apply multiple string-match replacements atomically across files.
+
+    Each edit: { "path": str, "old_str": str, "new_str": str, "replace_all": bool? }
+
+    Args:
+        project_root: Project root directory.
+        edits: List of string-match edit operations.
+        atomic: All-or-nothing mode (default True).
+
+    Returns:
+        { "success": bool, "total_edits": int, "applied": int, "failed": int, "results": [...], "error": str | None }
+    """
+    try:
+        _validate_project_root(project_root, write=True)
+    except ValueError as exc:
+        return {"success": False, "total_edits": len(edits), "applied": 0, "failed": len(edits), "results": [], "error": str(exc)}
+
+    if len(edits) > MAX_BATCH_STR_REPLACE:
+        return {
+            "success": False,
+            "total_edits": len(edits),
+            "applied": 0,
+            "failed": len(edits),
+            "results": [],
+            "error": f"Too many edits ({len(edits)}). Maximum is {MAX_BATCH_STR_REPLACE}.",
+        }
+
+    # Phase 1: validate all edits and compute replacements
+    file_cache: dict[str, str] = {}
+    file_paths: dict[str, Path] = {}
+    validations: list[dict[str, object]] = []
+
+    for edit in edits:
+        path = str(edit.get("path", ""))
+        old_str = str(edit.get("old_str", ""))
+        new_str = str(edit.get("new_str", ""))
+        replace_all = bool(edit.get("replace_all", False))
+
+        try:
+            abs_path = _resolve_path(project_root, path, write=True, config_edit_mode=config_edit_mode)
+            _check_sensitive(path)
+            canonical_path = _canonical_relative_path(project_root, abs_path)
+
+            if canonical_path not in file_cache:
+                file_cache[canonical_path] = abs_path.read_text(encoding="utf-8")
+                file_paths[canonical_path] = abs_path
+
+            content = file_cache[canonical_path]
+            count = content.count(old_str)
+
+            if count == 0:
+                validations.append({"success": False, "path": canonical_path, "error": f"No match found for old_str in {canonical_path}."})
+                continue
+            if count > 1 and not replace_all:
+                validations.append({"success": False, "path": canonical_path, "error": f"Found {count} matches in {canonical_path}. Use replace_all=True or more context."})
+                continue
+
+            # Apply to cached content so subsequent edits on same file see prior changes
+            if replace_all:
+                file_cache[canonical_path] = content.replace(old_str, new_str)
+            else:
+                file_cache[canonical_path] = content.replace(old_str, new_str, 1)
+
+            validations.append({"success": True, "path": canonical_path, "error": None})
+
+        except (ValueError, FileNotFoundError) as exc:
+            validations.append({"success": False, "path": path, "error": str(exc)})
+
+    failures = [v for v in validations if not v["success"]]
+
+    if atomic and failures:
+        return {
+            "success": False,
+            "total_edits": len(edits),
+            "applied": 0,
+            "failed": len(failures),
+            "results": validations,
+            "error": f"{len(failures)} edit(s) failed validation. Atomic mode: no edits applied.",
+        }
+
+    # Phase 2: write modified files
+    for canonical_path, content in file_cache.items():
+        abs_path = file_paths[canonical_path]
+        abs_path.write_text(content, encoding="utf-8")
+
+    applied = len(validations) - len(failures)
+    return {
+        "success": len(failures) == 0,
+        "total_edits": len(edits),
+        "applied": applied,
+        "failed": len(failures),
+        "results": validations,
+        "error": None if not failures else f"{len(failures)} edit(s) failed.",
+    }

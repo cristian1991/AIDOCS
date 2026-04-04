@@ -26,6 +26,8 @@ from .file_ops import (
     edit_lines as _file_edit_lines,
     batch_edit as _file_batch_edit,
     create_file as _file_create_file,
+    str_replace as _file_str_replace,
+    batch_str_replace as _file_batch_str_replace,
 )
 from .language_descriptors import (
     descriptor_match_summary,
@@ -2604,6 +2606,73 @@ def create_server() -> Any:
                         str(item.get("canonical_path") or item.get("path") or ""),
                     )
         return result
+
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "String Replace",
+        }
+    )
+    def code_str_replace(
+        project_root: str,
+        path: str,
+        old_str: str,
+        new_str: str,
+        replace_all: bool = False,
+        config_edit_mode: Literal["explicit_user_permitted"] | None = None,
+    ) -> dict[str, Any]:
+        """Quick string-match edit for small changes (old_str under 500 chars, must be unique in file). For large block replacements use code_edit_lines with line numbers."""
+        root = Path(project_root)
+        result = _file_str_replace(
+            root,
+            path,
+            old_str,
+            new_str,
+            replace_all=replace_all,
+            config_edit_mode=config_edit_mode,
+        )
+        if result.get("success"):
+            _grant_known_exact_path_read(
+                hub,
+                root,
+                "code_str_replace",
+                str(result.get("path") or path),
+            )
+        return result
+
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Batch String Replace",
+        }
+    )
+    def code_batch_str_replace(
+        project_root: str,
+        edits: list[dict[str, Any]],
+        atomic: bool = True,
+        config_edit_mode: Literal["explicit_user_permitted"] | None = None,
+    ) -> dict[str, Any]:
+        """Multiple string-match replacements across files, atomic. Each edit: { "path": str, "old_str": str, "new_str": str, "replace_all": bool? }. Max 20 edits."""
+        root = Path(project_root)
+        result = _file_batch_str_replace(
+            root,
+            edits,
+            atomic=atomic,
+            config_edit_mode=config_edit_mode,
+        )
+        if result.get("success"):
+            for item in result.get("results", []):
+                if isinstance(item, dict) and item.get("success"):
+                    _grant_known_exact_path_read(
+                        hub,
+                        root,
+                        "code_batch_str_replace",
+                        str(item.get("path") or ""),
+                    )
+        return result
+
 
     @server.tool(
         annotations={

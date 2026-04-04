@@ -6692,9 +6692,17 @@ class CodeIndexStore:
         start = index
         base_indent = len(lines[start]) - len(lines[start].lstrip())
         end = start + 1
+        # For multi-line signatures (def/class), don't stop until we've seen the body
+        seen_body = lines[start].rstrip().endswith(":")
         while end < len(lines):
             line = lines[end]
             if not line.strip():
+                end += 1
+                continue
+            if not seen_body:
+                # Still in the signature — look for the colon
+                if line.rstrip().endswith(":"):
+                    seen_body = True
                 end += 1
                 continue
             indent = len(line) - len(line.lstrip())

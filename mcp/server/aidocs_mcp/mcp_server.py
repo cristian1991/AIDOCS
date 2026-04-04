@@ -3824,7 +3824,37 @@ def create_server() -> Any:
             mark("error")
             return {"error": str(exc), "debug": {"step": step, "times": times}}
 
+    # Patch tool descriptions from TOML — sync, runs before server starts
+    _patch_tool_descriptions_sync(server)
+
     return server
+
+
+def _patch_tool_descriptions_sync(server: FastMCP) -> None:
+    """Override tool docstrings with terse agent-facing descriptions from TOML."""
+    from .config import _ACTION_HOOK_DEFAULTS, _get_dotted
+
+    descriptions = _get_dotted(_ACTION_HOOK_DEFAULTS, "tool_descriptions")
+    if not isinstance(descriptions, dict):
+        return
+    prefix = "aidocs_"
+
+    provider = getattr(server, "_local_provider", None)
+    if provider is None:
+        return
+    components = getattr(provider, "_components", None)
+    if not isinstance(components, dict):
+        return
+
+    for short_name, desc in descriptions.items():
+        if not isinstance(desc, str):
+            continue
+        full_name = f"{prefix}{short_name}"
+        # FastMCP stores tools with key format "tool:{name}@"
+        key = f"tool:{full_name}@"
+        tool = components.get(key)
+        if tool is not None and hasattr(tool, "description"):
+            tool.description = desc
 
 
 def main() -> None:

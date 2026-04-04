@@ -1,0 +1,77 @@
+# AIDOCS Tool Descriptions — agent-facing, loaded at MCP startup.
+# Terse, action-oriented. Lead with WHEN to use, not WHAT it does.
+
+[tool_descriptions]
+
+# ── Code reading ──
+code_get_lines = "Read specific lines from a file. Use after indexed tools narrow the target. Supports known_exact_path=true to skip discovery gate."
+code_get_symbol_snippet = "Read exact code for one symbol at a known location. Faster than reading whole file."
+code_bundle = "Get structural overview of a file, service, component, or subsystem. Use before reading code to understand what's there."
+
+# ── Code search ──
+code_investigate = "START HERE for any new concept, feature, or bug area. Returns navigation guide + suggested next tools."
+code_find = "Find symbols, references, routes, hotspots, entrypoints, duplicates, and more. Many modes — use mode='symbols' for names, mode='references' for usages."
+code_search = "Find files by path or summary keywords. Use when you know the filename pattern."
+code_text_search = "Fast literal text search across indexed files. Use instead of grep. Supports | as OR. Glob filters by file pattern."
+code_trace = "Trace relationships: field flow, service usage, model usage, component tree, CSS classes, API-to-UI paths."
+
+# ── Code editing ──
+code_str_replace = "Quick string-match edit (old_str must be under 500 chars, unique in file). No line numbers needed. For large blocks use code_edit_lines."
+code_batch_str_replace = "Multiple string-match replacements across files, atomic. Max 20 edits. Use for scattered small changes."
+code_edit_lines = "Replace a line range with new content. Only sends new content (saves context). Use for large block replacements where you know the line numbers."
+code_batch_edit = "Multiple line-range edits atomically across files. Bottom-up application preserves line numbers. Max 20 edits."
+code_create_file = "Create a new file. Path must be relative to project root."
+
+# ── Code precision ──
+code_get_method_signature = "Get exact method signature without reading the whole file. Use before calling or editing methods."
+code_get_method_signatures = "Get multiple method signatures in one call."
+code_get_constructor_params = "Get constructor/record parameters for a type. Use before instantiation."
+code_get_constructor_params_batch = "Get constructor parameters for multiple types in one call."
+code_get_enum_values = "Get enum definitions with member values."
+code_get_entity_properties = "Get property list for an entity or DTO."
+code_get_service_api = "Get all public method signatures for a service class."
+code_get_dependencies = "Get dependency edges for one file."
+code_get_modules = "List project modules (workspaces, subprojects)."
+code_get_module_files = "List all indexed files in a module."
+
+# ── Indexing ──
+code_index_sync = "Rebuild code index. Run after external file changes. Edit tools auto-reindex the edited file."
+code_index_status = "Check if code index is current."
+
+# ── Schema ──
+schema_query = "Query database schema: entities, fields, relationships, trace paths."
+schema_index_sync = "Rebuild schema index from code and SQL files."
+
+# ── Memory ──
+memory_capture = "Save a durable fact/rule to project memory. Use target_hint for accurate routing (workflow, security, coding-standards, etc)."
+memory_read = "Read memory files by path."
+memory_search = "Search across all memory files by text."
+
+# ── Sessions ──
+session_list = "List all sessions."
+session_read = "Read a session's router file."
+session_select = "Select and return a session summary."
+session_start = "Start/resume a session with index sync."
+session_create = "Create a new session."
+session_update = "Update session metadata."
+session_journal_log = "Log a decision or outcome to the session journal."
+session_journal_read = "Read journal entries."
+session_resume_bundle = "Get full session context: project, session, skills, plan overview."
+
+# ── Task lifecycle ──
+task_begin = "Start work on a task. Sets up gate state and lane context."
+task_update = "Record progress on current task."
+task_complete = "Close current task with result summary and verification evidence."
+
+# ── Plan/conductor ──
+plan_connect = "Connect to existing plan — read state, find where work left off."
+plan_create_from_spec = "Create session plan from a deterministic spec."
+plan_conductor_status = "Get conductor lane graph and runnable lane status."
+plan_dispatch_next = "Get next delegated lane task packet."
+plan_dispatch_report = "Report delegated lane result back to conductor."
+
+# ── Orchestration ──
+orchestrate = "Full bootstrap/session/retrieval flow in one call."
+handle_prompt = "Route a user prompt through AIDOCS classification and retrieval."
+runtime_preflight = "Check runtime state before work."
+project_bootstrap_or_resume = "Initialize or resume AIDOCS for a project."

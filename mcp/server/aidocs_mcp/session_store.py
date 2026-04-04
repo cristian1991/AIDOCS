@@ -376,7 +376,13 @@ class SessionStore:
         raise ValueError(f"No actionable roadmap step matched: {step_text}")
 
     def update_plan(self, project_root: Path, session_id: str, patch: dict[str, list[str]]) -> PlanData:
-        data = self.read_plan(project_root, session_id)
+        path = self.plan_file(project_root, session_id)
+        if path.exists():
+            data = self.read_plan(project_root, session_id)
+        else:
+            # Bootstrap empty plan so plan_create_from_spec can populate it
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = PlanData(session_id=session_id, path=path, sections={s: ["-"] for s in PLAN_SECTION_ORDER}, phases=[], lanes={})
         for key, value in patch.items():
             if key not in PLAN_SECTION_ORDER:
                 raise ValueError(f"Unknown plan section: {key}")
@@ -955,7 +961,7 @@ class SessionStore:
                         raise ValueError("depends_on entries require an active Lane")
                     if current_lane.depends_on:
                         raise ValueError(f"depends_on already declared for lane '{current_lane.name}'")
-                    current_lane.depends_on = self._parse_plan_metadata_list(value, field_name="depends_on")
+                    current_lane.depends_on = [self._slugify_plan_metadata(d, fallback="dep") for d in self._parse_plan_metadata_list(value, field_name="depends_on")]
                     continue
 
             parsed_step = self._parse_plan_checkbox_line(line)

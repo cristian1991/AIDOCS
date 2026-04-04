@@ -1028,6 +1028,162 @@ class CodeIndexStore:
         return matches
 
 
+    def preview_extraction_deps(
+        self,
+        project_root: Path,
+        path: str,
+        start_line: int,
+        end_line: int,
+    ) -> dict[str, object]:
+        """Scan a code block and find names it depends on that are defined outside the block."""
+        abs_path = (project_root / path.replace("\\", "/")).resolve()
+        if not abs_path.is_file():
+            return {"error": f"File not found: {path}"}
+        try:
+            text = abs_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            return {"error": str(exc)}
+
+        lines = text.splitlines()
+        if start_line < 1 or end_line > len(lines) or start_line > end_line:
+            return {"error": f"Invalid line range {start_line}-{end_line} (file has {len(lines)} lines)"}
+
+        block_lines = lines[start_line - 1 : end_line]
+        block_text = "\n".join(block_lines)
+        outside_before = "\n".join(lines[: start_line - 1])
+        outside_after = "\n".join(lines[end_line:])
+        outside_text = outside_before + "\n" + outside_after
+
+        ext = abs_path.suffix.lower()
+        if ext == ".py":
+            return self._preview_deps_python(path, text, block_text, outside_text, start_line, end_line)
+        if ext in {".js", ".ts", ".jsx", ".tsx"}:
+            return self._preview_deps_js(path, text, block_text, outside_text, start_line, end_line)
+        return {"path": path, "start": start_line, "end": end_line, "deps": [], "imports_needed": []}
+
+    @staticmethod
+    def _preview_deps_python(
+        path: str, full_text: str, block_text: str, outside_text: str,
+        start_line: int, end_line: int,
+    ) -> dict[str, object]:
+        import ast
+        import re as _re
+
+        # Parse the block to find all Name references
+        block_names: set[str] = set()
+        try:
+            block_tree = ast.parse(block_text)
+            for node in ast.walk(block_tree):
+                if isinstance(node, ast.Name):
+                    block_names.add(node.id)
+                elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                    block_names.add(node.value.id)
+        except SyntaxError:
+            # Fallback to regex if block doesn't parse standalone
+            block_names = set(_re.findall(r'\b([A-Za-z_]\w*)\b', block_text))
+
+        # Find what's defined in the block itself (so we exclude self-references)
+        block_defined: set[str] = set()
+        try:
+            for node in ast.walk(ast.parse(block_text)):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    block_defined.add(node.name)
+                    for arg in node.args.args + node.args.posonlyargs + node.args.kwonlyargs:
+                        block_defined.add(arg.arg)
+                elif isinstance(node, ast.ClassDef):
+                    block_defined.add(node.name)
+                elif isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            block_defined.add(target.id)
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for alias in node.names:
+                        name = alias.asname or alias.name.split(".")[0]
+                        block_defined.add(name)
+        except SyntaxError:
+            pass
+
+        # Names used in block but not defined in block = external dependencies
+        external_names = block_names - block_defined - {"self", "cls", "True", "False", "None"}
+
+        # Categorize: which are imports, which are module-level definitions
+        imports_needed: list[str] = []
+        helpers_needed: list[str] = []
+        try:
+            full_tree = ast.parse(full_text)
+            imported_names: set[str] = set()
+            defined_names: set[str] = set()
+            for node in full_tree.body:
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for alias in node.names:
+                        imported_names.add(alias.asname or alias.name.split(".")[0])
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    defined_names.add(node.name)
+                elif isinstance(node, ast.ClassDef):
+                    defined_names.add(node.name)
+                elif isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            defined_names.add(target.id)
+
+            for name in sorted(external_names):
+                if name in imported_names:
+                    imports_needed.append(name)
+                elif name in defined_names:
+                    helpers_needed.append(name)
+        except SyntaxError:
+            pass
+
+        return {
+            "path": path,
+            "start": start_line,
+            "end": end_line,
+            "imports_needed": imports_needed,
+            "helpers_needed": helpers_needed,
+            "total_external_deps": len(imports_needed) + len(helpers_needed),
+        }
+
+    @staticmethod
+    def _preview_deps_js(
+        path: str, full_text: str, block_text: str, outside_text: str,
+        start_line: int, end_line: int,
+    ) -> dict[str, object]:
+        import re as _re
+
+        # Extract all identifiers used in block
+        block_names = set(_re.findall(r'\b([A-Za-z_$]\w*)\b', block_text))
+        # Remove JS keywords
+        js_keywords = {
+            "const", "let", "var", "function", "return", "if", "else", "for", "while",
+            "do", "switch", "case", "break", "continue", "try", "catch", "finally",
+            "throw", "new", "delete", "typeof", "instanceof", "void", "in", "of",
+            "class", "extends", "super", "this", "import", "export", "from", "default",
+            "async", "await", "yield", "true", "false", "null", "undefined",
+        }
+        block_names -= js_keywords
+
+        # Find imports in the full file
+        import_pattern = _re.compile(r'import\s+(?:type\s+)?(?:\{([^}]+)\}|(\w+)).*?from', _re.MULTILINE)
+        imported: set[str] = set()
+        for m in import_pattern.finditer(full_text):
+            if m.group(1):
+                for name in m.group(1).split(","):
+                    imported.add(name.strip().split(" as ")[-1].strip())
+            elif m.group(2):
+                imported.add(m.group(2))
+
+        imports_needed = sorted(name for name in block_names if name in imported)
+
+        return {
+            "path": path,
+            "start": start_line,
+            "end": end_line,
+            "imports_needed": imports_needed,
+            "helpers_needed": [],
+            "total_external_deps": len(imports_needed),
+        }
+
+
     def find_symbol_range(
         self,
         project_root: Path,

@@ -62,6 +62,7 @@ FREE_TOOLS: set[str] = {
     "code_find_stale_references",
     "code_find_dead_code",
     "code_find_symbol_range",
+    "code_preview_extraction_deps",
     "code_suggest_extractions",
     "code_investigate",
     "code_bundle",

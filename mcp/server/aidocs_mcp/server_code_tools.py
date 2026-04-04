@@ -201,6 +201,23 @@ def register_code_tools(
 
     @server.tool(
         annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Preview Extraction Dependencies",
+        },
+    )
+    def code_preview_extraction_deps(
+        root: str,
+        path: str,
+        start_line: int,
+        end_line: int,
+    ) -> dict[str, Any]:
+        """Before extracting a block, show what imports and helpers it depends on that won't come with it."""
+        return hub.code.preview_extraction_deps(Path(root), path, start_line, end_line)
+
+
+    @server.tool(
+        annotations={
             "destructiveHint": True,
             "openWorldHint": False,
             "title": "Extract Symbol",

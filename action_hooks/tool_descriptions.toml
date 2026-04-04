@@ -26,6 +26,7 @@ code_create_file = "Create a new file. Path must be relative to project root."
 code_extract_block = "Move a code block by line range from source to target file. Both files auto-reindexed."
 code_extract_symbol = "Move a symbol (function/class) from source to target by name. No line numbers needed — uses the index."
 code_find_symbol_range = "Find start and end line of a symbol. Use before extract_block if you need exact line numbers."
+code_preview_extraction_deps = "Before extracting code, show what imports and helpers it depends on. Prevents broken extractions."
 code_suggest_extractions = "Show the largest symbols in a file that are good extraction candidates. Use to plan deslopification."
 code_refactor_extract = "Full refactor pipeline: find symbol → extract → reindex → detect stale references + dead code. One call does everything."
 

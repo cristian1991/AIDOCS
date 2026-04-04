@@ -28,6 +28,7 @@ from .file_ops import (
     create_file as _file_create_file,
     str_replace as _file_str_replace,
     batch_str_replace as _file_batch_str_replace,
+    extract_block as _file_extract_block,
 )
 from .language_descriptors import (
     descriptor_match_summary,
@@ -182,7 +183,7 @@ def _grant_known_exact_path_read(
     )
 
 
-def _post_edit_grant_and_reindex(
+def _post_edit_reindex_and_grant(
     hub: AidocsServiceHub, project_root: Path, tool_name: str, path: str
 ) -> None:
     """After a successful edit: grant read access + reindex so indexed tools see the change."""
@@ -1034,6 +1035,71 @@ def create_server() -> Any:
         annotations={
             "readOnlyHint": True,
             "openWorldHint": False,
+            "title": "Stale Reference Scan",
+        },
+    )
+    def code_find_stale_references(
+        project_root: str,
+        symbols: list[str],
+        exclude_path: str | None = None,
+        include_tests: bool = False,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """After renaming/deleting symbols, find remaining references that need updating."""
+        root = Path(project_root)
+        results = hub.code.find_stale_references(
+            root,
+            symbols,
+            exclude_path=exclude_path,
+            include_tests=include_tests,
+            limit=limit,
+        )
+        return {"total_stale": len(results), "results": results}
+
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Extract Block",
+        }
+    )
+    def code_extract_block(
+        project_root: str,
+        source_path: str,
+        start_line: int,
+        end_line: int,
+        target_path: str,
+        target_position: str = "append",
+        target_line: int | None = None,
+        remove_from_source: bool = True,
+    ) -> dict[str, Any]:
+        """Move a code block from source to target file. Atomic: extracts lines, places in target, removes from source. Use for refactoring large files into modules."""
+        root = Path(project_root)
+        result = _file_extract_block(
+            root,
+            source_path,
+            start_line,
+            end_line,
+            target_path,
+            target_position=target_position,
+            target_line=target_line,
+            remove_from_source=remove_from_source,
+        )
+        if result.get("success"):
+            _post_edit_reindex_and_grant(
+                hub, root, "code_extract_block",
+                str(result.get("source_path") or source_path),
+            )
+            _post_edit_reindex_and_grant(
+                hub, root, "code_extract_block",
+                str(result.get("target_path") or target_path),
+            )
+        return result
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
             "title": "Get Dependencies",
         },
         meta={"anthropic/searchHint": True},
@@ -1325,7 +1391,7 @@ def create_server() -> Any:
             root, path, content, config_edit_mode=config_edit_mode
         )
         if result.get("success"):
-            _post_edit_grant_and_reindex(
+            _post_edit_reindex_and_grant(
                 hub,
                 root,
                 "code_create_file",
@@ -1381,7 +1447,7 @@ def create_server() -> Any:
             config_edit_mode=config_edit_mode,
         )
         if result.get("success") and not result.get("dry_run"):
-            _post_edit_grant_and_reindex(
+            _post_edit_reindex_and_grant(
                 hub,
                 root,
                 "code_edit_lines",
@@ -1427,7 +1493,7 @@ def create_server() -> Any:
         if result.get("success") and not dry_run:
             for item in result.get("results", []):
                 if isinstance(item, dict) and item.get("success"):
-                    _post_edit_grant_and_reindex(
+                    _post_edit_reindex_and_grant(
                         hub,
                         root,
                         "code_batch_edit",
@@ -1461,7 +1527,7 @@ def create_server() -> Any:
             config_edit_mode=config_edit_mode,
         )
         if result.get("success"):
-            _post_edit_grant_and_reindex(
+            _post_edit_reindex_and_grant(
                 hub,
                 root,
                 "code_str_replace",
@@ -1493,7 +1559,7 @@ def create_server() -> Any:
         if result.get("success"):
             for item in result.get("results", []):
                 if isinstance(item, dict) and item.get("success"):
-                    _post_edit_grant_and_reindex(
+                    _post_edit_reindex_and_grant(
                         hub,
                         root,
                         "code_batch_str_replace",

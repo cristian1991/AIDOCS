@@ -985,6 +985,39 @@ class CodeIndexStore:
         return matches
 
 
+    def find_stale_references(
+        self,
+        project_root: Path,
+        symbols: list[str],
+        *,
+        exclude_path: str | None = None,
+        include_tests: bool = False,
+        limit: int = 50,
+    ) -> list[dict[str, object]]:
+        """Find remaining references to removed/renamed symbols across the project."""
+        if not symbols:
+            return []
+        results: list[dict[str, object]] = []
+        for symbol in symbols:
+            matches = self.search_text(
+                project_root,
+                symbol,
+                include_tests=include_tests,
+                limit=limit,
+            )
+            for match in matches:
+                path = str(match.get("path", ""))
+                if exclude_path and path == exclude_path.replace("\\", "/").strip():
+                    continue
+                results.append({
+                    "symbol": symbol,
+                    "path": path,
+                    "match_count": match.get("match_count", 0),
+                    "lines": match.get("lines", []),
+                })
+        return results[:limit]
+
+
     def search_symbols(
         self,
         project_root: Path,

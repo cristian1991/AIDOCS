@@ -1134,3 +1134,95 @@ def batch_str_replace(
         "results": validations,
         "error": None if not failures else f"{len(failures)} edit(s) failed.",
     }
+
+
+def extract_block(
+    project_root: Path,
+    source_path: str,
+    start_line: int,
+    end_line: int,
+    target_path: str,
+    *,
+    target_position: str = "append",
+    target_line: int | None = None,
+    remove_from_source: bool = True,
+) -> dict[str, object]:
+    """Extract a code block from source and place it in target.
+
+    Args:
+        source_path: File to extract from.
+        start_line: First line of block (1-indexed, inclusive).
+        end_line: Last line of block (inclusive).
+        target_path: File to place block in (created if missing).
+        target_position: 'append' (end of file), 'prepend' (start), or 'at_line' (use target_line).
+        target_line: Insert before this line when target_position='at_line'.
+        remove_from_source: If True, remove the block from source after copying.
+    """
+    try:
+        _validate_project_root(project_root, write=True)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+
+    try:
+        src_abs = _resolve_path(project_root, source_path, write=remove_from_source)
+        _check_sensitive(source_path)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+
+    try:
+        tgt_abs = _resolve_path(project_root, target_path, write=True)
+        _check_sensitive(target_path)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+
+    src_lines = _read_file_lines(src_abs)
+    total = len(src_lines)
+
+    if start_line < 1 or start_line > total:
+        return {"success": False, "error": f"start_line {start_line} out of range (file has {total} lines)"}
+    if end_line < start_line or end_line > total:
+        return {"success": False, "error": f"end_line {end_line} out of range"}
+
+    block = src_lines[start_line - 1 : end_line]
+    block_text = "\n".join(block)
+
+    # Build target content
+    if tgt_abs.is_file():
+        tgt_lines = _read_file_lines(tgt_abs)
+    else:
+        tgt_lines = []
+
+    pos = target_position.strip().lower()
+    if pos == "append":
+        new_tgt_lines = tgt_lines + block
+    elif pos == "prepend":
+        new_tgt_lines = block + tgt_lines
+    elif pos == "at_line" and target_line is not None:
+        insert_at = max(0, min(target_line - 1, len(tgt_lines)))
+        new_tgt_lines = tgt_lines[:insert_at] + block + tgt_lines[insert_at:]
+    else:
+        return {"success": False, "error": f"Invalid target_position: {target_position}"}
+
+    # Write target
+    tgt_abs.parent.mkdir(parents=True, exist_ok=True)
+    _write_lines(tgt_abs, new_tgt_lines, final_newline=True)
+
+    # Remove from source
+    lines_removed = 0
+    if remove_from_source:
+        new_src_lines = src_lines[: start_line - 1] + src_lines[end_line:]
+        _write_lines(src_abs, new_src_lines, final_newline=_file_ends_with_newline(src_abs) if new_src_lines else True)
+        lines_removed = len(block)
+
+    src_canonical = _canonical_relative_path(project_root, src_abs)
+    tgt_canonical = _canonical_relative_path(project_root, tgt_abs)
+
+    return {
+        "success": True,
+        "source_path": src_canonical,
+        "target_path": tgt_canonical,
+        "lines_extracted": len(block),
+        "lines_removed_from_source": lines_removed,
+        "target_position": pos,
+        "error": None,
+    }

@@ -21,5 +21,20 @@ def extract_python_outline(text: str) -> list[tuple[str, str, int, str | None, b
             if node.name.startswith("use") and len(node.name) > 3 and node.name[3:4].isupper():
                 kind = "hook"
             outlines.append((node.name, kind, node.lineno, None, False))
+            # Index nested functions as first-class symbols with parent as container
+            _extract_nested_functions(node, node.name, outlines)
 
     return outlines
+
+
+def _extract_nested_functions(
+    parent: ast.FunctionDef | ast.AsyncFunctionDef,
+    container: str,
+    outlines: list[tuple[str, str, int, str | None, bool]],
+) -> None:
+    """Walk function body for nested def/async def — makes factory-pattern locals discoverable."""
+    for child in ast.iter_child_nodes(parent):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            outlines.append((child.name, "function", child.lineno, container, False))
+            # Recurse one more level for deeply nested functions
+            _extract_nested_functions(child, f"{container}.{child.name}", outlines)

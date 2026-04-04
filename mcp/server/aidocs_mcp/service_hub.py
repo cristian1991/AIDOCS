@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .access_gate import AccessGate
 from .action_surface_service import ActionSurfaceService
 from .capability_index_store import CapabilityIndexStore
 from .code_index_store import CodeIndexStore
@@ -40,6 +41,7 @@ class AidocsServiceHub:
         self.schema = SchemaIndexStore()
         self.skills = SkillStore()
         self.query_gate = QueryGateStore()
+        self.access_gate = AccessGate()
         self.updater = UpdaterService(script_root=script_root or templates_root.parents[2] / "scripts")
         self.legacy = LegacyMigrationService()
         self.related = RelatedProjectService()

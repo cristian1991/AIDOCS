@@ -906,6 +906,32 @@ def batch_edit(
     }
 
 
+
+def _check_parse(text: str, ext: str) -> str | None:
+    """Return parse error string if text doesn't parse, None if clean."""
+    if ext == ".py":
+        import ast
+        try:
+            ast.parse(text)
+            return None
+        except SyntaxError as exc:
+            return f"Python SyntaxError at line {exc.lineno}: {exc.msg}"
+    if ext in {".js", ".ts", ".jsx", ".tsx"}:
+        # Brace balance check — catches most structural tears
+        opens = text.count("{") + text.count("(") + text.count("[")
+        closes = text.count("}") + text.count(")") + text.count("]")
+        if opens != closes:
+            return f"Unbalanced brackets: {opens} opens vs {closes} closes"
+        return None
+    if ext in {".cs"}:
+        opens = text.count("{")
+        closes = text.count("}")
+        if opens != closes:
+            return f"Unbalanced braces: {opens} {{ vs {closes} }}"
+        return None
+    return None
+
+
 def _edit_error(path: str, start: int, end: int, error: str) -> dict[str, object]:
     """Create a failed edit result."""
     return {
@@ -1186,6 +1212,29 @@ def extract_block(
         new_tgt_lines = tgt_lines[:insert_at] + block + tgt_lines[insert_at:]
     else:
         return {"success": False, "error": f"Invalid target_position: {target_position}"}
+    # Validate both files parse BEFORE writing
+    new_src_lines = src_lines[: start_line - 1] + src_lines[end_line:] if remove_from_source else src_lines
+    new_tgt_text = "\n".join(new_tgt_lines)
+    new_src_text = "\n".join(new_src_lines)
+
+    src_ext = src_abs.suffix.lower()
+    tgt_ext = tgt_abs.suffix.lower()
+
+    src_parse_error = _check_parse(new_src_text, src_ext) if remove_from_source else None
+    tgt_parse_error = _check_parse(new_tgt_text, tgt_ext)
+
+    if src_parse_error:
+        return {
+            "success": False,
+            "error": f"Extraction would break source file syntax: {src_parse_error}",
+            "hint": "The block boundary may be wrong — check start_line/end_line include the complete symbol.",
+        }
+    if tgt_parse_error:
+        return {
+            "success": False,
+            "error": f"Extraction would break target file syntax: {tgt_parse_error}",
+            "hint": "The extracted block may be incomplete or need imports/context in the target.",
+        }
 
     # Write target
     tgt_abs.parent.mkdir(parents=True, exist_ok=True)
@@ -1194,7 +1243,6 @@ def extract_block(
     # Remove from source
     lines_removed = 0
     if remove_from_source:
-        new_src_lines = src_lines[: start_line - 1] + src_lines[end_line:]
         _write_lines(src_abs, new_src_lines, final_newline=_file_ends_with_newline(src_abs) if new_src_lines else True)
         lines_removed = len(block)
 

@@ -195,6 +195,7 @@ class ConfigResolver:
     ) -> None:
         self._global_config_path = global_config_path
         self._user_config_path = user_config_path
+        self._has_custom_paths = global_config_path is not None or user_config_path is not None
 
     def distribution_config_path(self) -> Path | None:
         return (
@@ -239,7 +240,9 @@ class ConfigResolver:
         session_id: str | None = None,
     ) -> dict[str, object]:
         merged: dict[str, Any] = deepcopy(_DEFAULT_CONFIG)
-        _merge_dicts(merged, _ACTION_HOOK_DEFAULTS)
+        # Only the module-level resolver uses the cached defaults
+        hooks = _ACTION_HOOK_DEFAULTS if self is _DEFAULT_RESOLVER else _load_action_hook_defaults()
+        _merge_dicts(merged, hooks)
         seen_paths: set[Path] = set()
         # Merge order: distribution → user-global → project → session
         for path in (
@@ -305,8 +308,8 @@ class ConfigResolver:
         project_root: Path | None = None,
         session_id: str | None = None,
     ) -> object | None:
-        # Fast path: no project/session context uses the cached default config
-        if project_root is None and session_id is None:
+        # Fast path: only the module-level default resolver uses the cached config
+        if project_root is None and session_id is None and self is _DEFAULT_RESOLVER:
             return _get_dotted(_DEFAULT_EFFECTIVE_CONFIG, key)
         return _get_dotted(
             self.effective_config(project_root=project_root, session_id=session_id), key

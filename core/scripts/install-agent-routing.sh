@@ -62,56 +62,49 @@ mkdir -p "$OPENCODE_COMMANDS_DIR" "$OPENCODE_PLUGINS_DIR" "$OPENCODE_ACTION_HOOK
 
 HEADER="$(printf '\U1F6D1') STOP"
 
-cat > "$OPENCODE_DIR/AGENTS.md" <<EOF
-# Global AGENTS.md - Cross-Agent Bootstrap
+write_agent_file_with_backup() {
+  local target_path="$1"
+  local template_path="$2"
+  local aidocs_path="$3"
+  local stop_header="$4"
 
-AIDOCS source: $PROJECT_ROOT
+  # Read and substitute template
+  local managed
+  managed=$(sed -e "s|{{AIDOCS_PATH}}|$aidocs_path|g" -e "s|{{STOP_HEADER}}|$stop_header|g" "$template_path")
 
-Non-negotiables:
-- Do not operate outside the current project unless explicitly instructed.
-- Before acting, briefly state what you think the task is and what you will do.
-- If user provides an error, explain WHY first; if clear, fix; if unclear, STOP and ask.
-- When clarification is needed, print a blank line, then: $HEADER
-- Read only files relevant to the task (do not scan full repo by default).
-- After entering a project, read project \`AGENTS.md\`/\`CLAUDE.md\`, then \`/.MEMORY/.aidocs/index.aidocs\`, then \`/.MEMORY/INDEX.md\`, then inspect \`/.MEMORY/sessions/*/SESSION.md\` and read the selected session.
-- Durable memory, plans, and task output belong only in project-local \`/.MEMORY/**\`.
-- Spawned-agent plans/investigations belong in the active session under \`/.MEMORY/sessions/<session-id>/agents/\`.
-- If user states a durable fact/rule/lesson/preference to remember, persist it immediately to categorized project memory and log it in today's daily file.
-- Router files list/link docs only; do not force-load full documentation by default.
-- If context is insufficient, read necessary related docs + memory files; if still unclear, STOP and ask.
-- If a STOP condition appears during a multi-step script/command sequence, halt immediately and issue STOP (do not run remaining steps).
+  if [[ -f "$target_path" ]]; then
+    local existing
+    existing=$(cat "$target_path")
 
-Routing order:
-1) Project \`AGENTS.md\` or \`CLAUDE.md\` if present
-2) Follow the project router (\`/.MEMORY/.aidocs/index.aidocs\` -> \`/.MEMORY/INDEX.md\` -> selected \`/.MEMORY/sessions/*/SESSION.md\`)
-3) If project setup is missing, fall back to $PROJECT_ROOT/.MEMORY/.aidocs/index.aidocs
-EOF
+    # Extract user section (everything after AIDOCS:END)
+    local end_tag="<!-- AIDOCS:END -->"
+    if echo "$existing" | grep -qF "$end_tag"; then
+      local user_section
+      user_section=$(echo "$existing" | sed -n "/<!-- AIDOCS:END -->/,\$p" | tail -n +2)
+    else
+      # No tags — entire file is user content
+      local user_section="$existing"
+    fi
 
-cat > "$CLAUDE_DIR/CLAUDE.md" <<EOF
-# Global CLAUDE.md - Cross-Agent Bootstrap
+    # Backup before overwrite
+    cp "$target_path" "${target_path}.backup"
 
-AIDOCS source: $PROJECT_ROOT
+    # Merge: managed + user section
+    if [[ -n "${user_section// /}" ]]; then
+      printf '%s\n%s\n' "$managed" "$user_section" > "$target_path"
+    else
+      printf '%s\n' "$managed" > "$target_path"
+    fi
+  else
+    printf '%s\n' "$managed" > "$target_path"
+  fi
+}
 
-Non-negotiables:
-- Do not operate outside the current project unless explicitly instructed.
-- Before acting, briefly state what you think the task is and what you will do.
-- If user provides an error, explain WHY first; if clear, fix; if unclear, STOP and ask.
-- When clarification is needed, print a blank line, then: $HEADER
-- Read only files relevant to the task (do not scan full repo by default).
-- After entering a project, read project \`AGENTS.md\`/\`CLAUDE.md\`, then \`/.MEMORY/.aidocs/index.aidocs\`, then \`/.MEMORY/INDEX.md\`, then inspect \`/.MEMORY/sessions/*/SESSION.md\` and read the selected session.
-- Durable memory, plans, and task output belong only in project-local \`/.MEMORY/**\`.
-- Claude auto-memory \`~/.claude/projects/<resolved>/memory/MEMORY.md\` is bootstrap-only; never store memory, plans, or task output there.
-- Spawned-agent plans/investigations belong in the active session under \`/.MEMORY/sessions/<session-id>/agents/\`.
-- If user states a durable fact/rule/lesson/preference to remember, persist it immediately to categorized project memory and log it in today's daily file.
-- Router files list/link docs only; do not force-load full documentation by default.
-- If context is insufficient, read necessary related docs + memory files; if still unclear, STOP and ask.
-- If a STOP condition appears during a multi-step script/command sequence, halt immediately and issue STOP (do not run remaining steps).
+AGENTS_TEMPLATE="$CORE_ROOT/templates/global-agents.md.tmpl"
+CLAUDE_TEMPLATE="$CORE_ROOT/templates/global-claude.md.tmpl"
 
-Routing order:
-1) Project \`AGENTS.md\` or \`CLAUDE.md\` if present
-2) Follow the project router (\`/.MEMORY/.aidocs/index.aidocs\` -> \`/.MEMORY/INDEX.md\` -> selected \`/.MEMORY/sessions/*/SESSION.md\`)
-3) If project setup is missing, fall back to $PROJECT_ROOT/.MEMORY/.aidocs/index.aidocs
-EOF
+write_agent_file_with_backup "$OPENCODE_DIR/AGENTS.md" "$AGENTS_TEMPLATE" "$PROJECT_ROOT" "$HEADER"
+write_agent_file_with_backup "$CLAUDE_DIR/CLAUDE.md" "$CLAUDE_TEMPLATE" "$PROJECT_ROOT" "$HEADER"
 
 OPENCODE_PLUGIN_SOURCE="$CORE_ROOT/plugins/aidocs.js"
 if [[ ! -f "$OPENCODE_PLUGIN_SOURCE" ]]; then
@@ -190,6 +183,12 @@ done
 if [[ -z "$PYTHON_BIN" ]]; then
   echo "python3/python/py not found in PATH" >&2
   exit 1
+fi
+
+# Prefer venv Python if available
+VENV_PYTHON="$HOME/.aidocs/venv/bin/python"
+if [[ -f "$VENV_PYTHON" ]]; then
+  PYTHON_BIN="$VENV_PYTHON"
 fi
 
 export OPENCODE_SETTINGS_PATH PROJECT_ROOT PYTHON_BIN CLAUDE_SETTINGS_PATH CORE_ROOT
@@ -370,6 +369,31 @@ if [[ -d "$ACTION_HOOKS_ROOT" ]]; then
     echo "- $file"
   done < <(find "$OPENCODE_ACTION_HOOKS_DIR" -maxdepth 1 -type f -name '*.toml' -print0 | sort -z)
 fi
+
+# ── Auto-install MCP runtime into ~/.aidocs/venv ──
+AIDOCS_HOME="$HOME/.aidocs"
+VENV_DIR="$AIDOCS_HOME/venv"
+MCP_PACKAGE_DIR="$PROJECT_ROOT/mcp"
+
+if [[ -f "$MCP_PACKAGE_DIR/pyproject.toml" ]]; then
+  if [[ ! -d "$VENV_DIR" ]]; then
+    echo "Creating AIDOCS MCP venv at $VENV_DIR..."
+    python3 -m venv "$VENV_DIR" || python -m venv "$VENV_DIR"
+  fi
+
+  VENV_PIP="$VENV_DIR/bin/pip"
+  if [[ -f "$VENV_PIP" ]]; then
+    echo "Installing AIDOCS MCP runtime..."
+    "$VENV_PIP" install -e "$MCP_PACKAGE_DIR" --quiet 2>/dev/null
+    if [[ $? -eq 0 ]]; then
+      echo "MCP runtime installed successfully."
+    else
+      echo "WARNING: MCP runtime install failed. You may need to install manually: cd mcp && pip install -e ."
+    fi
+  fi
+fi
+
+
 # Set AIDOCS_PATH in shell profile
 AIDOCS_EXPORT_LINE="export AIDOCS_PATH=\"$PROJECT_ROOT\""
 SHELL_PROFILE=""

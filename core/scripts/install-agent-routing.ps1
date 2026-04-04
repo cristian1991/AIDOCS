@@ -113,80 +113,53 @@ function Remove-AidocsHookGroups {
 
 $header = [System.Char]::ConvertFromUtf32(0x1F6D1) + " STOP"
 
-$globalAgents = @"
-# Global AGENTS.md - Cross-Agent Bootstrap
-
-AIDOCS source: $projectRoot
-
-Non-negotiables:
-- Do not operate outside the current project unless explicitly instructed.
-- Before acting, briefly state what you think the task is and what you will do.
-- If user provides an error, explain WHY first; if clear, fix; if unclear, STOP and ask.
-- When clarification is needed, print a blank line, then: $header
-- Read only files relevant to the task (do not scan full repo by default).
-- After entering a project, read project `AGENTS.md`/`CLAUDE.md`, then `/.MEMORY/.aidocs/index.aidocs`, then `/.MEMORY/INDEX.md`, then inspect `/.MEMORY/sessions/*/SESSION.md` and read the selected session.
-- Durable memory, plans, and task output belong only in project-local `/.MEMORY/**`.
-- Spawned-agent plans/investigations belong in the active session under `/.MEMORY/sessions/<session-id>/agents/`.
-- If user states a durable fact/rule/lesson/preference to remember, persist it immediately to categorized project memory and log it in today's daily file.
-- Router files list/link docs only; do not force-load full documentation by default.
-- If context is insufficient, read necessary related docs + memory files; if still unclear, STOP and ask.
-- If a STOP condition appears during a multi-step script/command sequence, halt immediately and issue STOP (do not run remaining steps).
-
-Routing order:
-1) Project `AGENTS.md` or `CLAUDE.md` if present
-2) Follow the project router (`/.MEMORY/.aidocs/index.aidocs` -> `/.MEMORY/INDEX.md` -> selected `/.MEMORY/sessions/*/SESSION.md`)
-3) If project setup is missing, fall back to $projectRoot\.MEMORY\.aidocs\index.aidocs
-"@
-
-$globalClaude = @"
-# Global CLAUDE.md - Cross-Agent Bootstrap
-
-AIDOCS source: $projectRoot
-
-Non-negotiables:
-- Do not operate outside the current project unless explicitly instructed.
-- Before acting, briefly state what you think the task is and what you will do.
-- If user provides an error, explain WHY first; if clear, fix; if unclear, STOP and ask.
-- When clarification is needed, print a blank line, then: $header
-- Read only files relevant to the task (do not scan full repo by default).
-- After entering a project, read project `AGENTS.md`/`CLAUDE.md`, then `/.MEMORY/.aidocs/index.aidocs`, then `/.MEMORY/INDEX.md`, then inspect `/.MEMORY/sessions/*/SESSION.md` and read the selected session.
-- Durable memory, plans, and task output belong only in project-local `/.MEMORY/**`.
-- Claude auto-memory `~/.claude/projects/<resolved>/memory/MEMORY.md` is bootstrap-only; never store memory, plans, or task output there.
-- Spawned-agent plans/investigations belong in the active session under `/.MEMORY/sessions/<session-id>/agents/`.
-- If user states a durable fact/rule/lesson/preference to remember, persist it immediately to categorized project memory and log it in today's daily file.
-- Router files list/link docs only; do not force-load full documentation by default.
-- If context is insufficient, read necessary related docs + memory files; if still unclear, STOP and ask.
-- If a STOP condition appears during a multi-step script/command sequence, halt immediately and issue STOP (do not run remaining steps).
-
-Routing order:
-1) Project `AGENTS.md` or `CLAUDE.md` if present
-2) Follow the project router (`/.MEMORY/.aidocs/index.aidocs` -> `/.MEMORY/INDEX.md` -> selected `/.MEMORY/sessions/*/SESSION.md`)
-3) If project setup is missing, fall back to $projectRoot\.MEMORY\.aidocs\index.aidocs
-"@
-
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-
-function New-LinkOrCopy {
+function Write-AgentFileWithBackup {
   param(
-    [Parameter(Mandatory = $true)][string]$Source,
-    [Parameter(Mandatory = $true)][string]$Target
+    [string]$TargetPath,
+    [string]$TemplatePath,
+    [string]$AidocsPath,
+    [string]$StopHeader
   )
 
-  if (Test-Path $Target) {
-    Remove-Item -LiteralPath $Target -Force -ErrorAction SilentlyContinue
+  # Read and substitute template
+  $templateContent = [System.IO.File]::ReadAllText($TemplatePath, $utf8NoBom)
+  $managed = $templateContent.Replace("{{AIDOCS_PATH}}", $AidocsPath).Replace("{{STOP_HEADER}}", $StopHeader)
+
+  if (Test-Path $TargetPath) {
+    $existing = [System.IO.File]::ReadAllText($TargetPath, $utf8NoBom)
+
+    # Extract user section (everything after AIDOCS:END)
+    $endTag = "<!-- AIDOCS:END -->"
+    $endIdx = $existing.IndexOf($endTag)
+    if ($endIdx -ge 0) {
+      $userSection = $existing.Substring($endIdx + $endTag.Length).TrimStart("`r", "`n")
+    } else {
+      # No tags — entire file is user content, preserve it all
+      $userSection = $existing
+    }
+
+    # Backup before overwrite
+    $backupPath = $TargetPath + ".backup"
+    [System.IO.File]::WriteAllText($backupPath, $existing, $utf8NoBom)
+
+    # Merge: AIDOCS managed section + user section
+    if ($userSection.Trim()) {
+      $finalContent = $managed + "`n" + $userSection
+    } else {
+      $finalContent = $managed
+    }
+  } else {
+    $finalContent = $managed
   }
 
-  try {
-    New-Item -ItemType SymbolicLink -Path $Target -Target $Source -Force | Out-Null
-    return "link"
-  } catch {
-    Copy-Item -LiteralPath $Source -Destination $Target -Force
-    return "copy"
-  }
+  [System.IO.File]::WriteAllText($TargetPath, $finalContent, $utf8NoBom)
 }
 
-[System.IO.File]::WriteAllText((Join-Path $opencodeDir "AGENTS.md"), $globalAgents, $utf8NoBom)
-[System.IO.File]::WriteAllText((Join-Path $claudeDir "CLAUDE.md"), $globalClaude, $utf8NoBom)
+$agentsTemplate = Join-Path $coreRoot "templates\global-agents.md.tmpl"
+$claudeTemplate = Join-Path $coreRoot "templates\global-claude.md.tmpl"
+
+Write-AgentFileWithBackup -TargetPath (Join-Path $opencodeDir "AGENTS.md") -TemplatePath $agentsTemplate -AidocsPath $projectRoot -StopHeader $header
+Write-AgentFileWithBackup -TargetPath (Join-Path $claudeDir "CLAUDE.md") -TemplatePath $claudeTemplate -AidocsPath $projectRoot -StopHeader $header
 
 $opencodePluginSource = Join-Path $coreRoot "plugins\aidocs.js"
 if (-not (Test-Path $opencodePluginSource)) {
@@ -257,26 +230,33 @@ if ((-not $opencodeSettings.PSObject.Properties['mcp']) -or $null -eq $opencodeS
   $opencodeSettings | Add-Member -NotePropertyName mcp -NotePropertyValue ([pscustomobject]@{})
 }
 
-$pythonExecutable = "python"
-try {
-  $pythonExecutable = (Get-Command python -ErrorAction Stop).Source
-} catch {
-  try {
-    $pythonExecutable = (Get-Command py -ErrorAction Stop).Source
-  } catch {
+  # Use venv Python if available, otherwise system Python
+  $venvPythonPath = if ($IsLinux -or $IsMacOS) { Join-Path $venvDir "bin/python" } else { Join-Path $venvDir "Scripts\python.exe" }
+  if (Test-Path $venvPythonPath) {
+    $pythonExecutable = $venvPythonPath
+  } else {
     $pythonExecutable = "python"
+    try {
+      $pythonExecutable = (Get-Command python -ErrorAction Stop).Source
+    } catch {
+      try {
+        $pythonExecutable = (Get-Command py -ErrorAction Stop).Source
+      } catch {
+        $pythonExecutable = "python"
+      }
+    }
   }
-}
 
-$aidocsMcpEntry = [pscustomobject]@{
-  type = "local"
-  enabled = $true
-  timeout = 120000
-  command = @($pythonExecutable, "-m", "aidocs_mcp.mcp_server")
-  environment = [pscustomobject]@{
-    PYTHONPATH = (Join-Path $projectRoot "mcp\server")
+  $mcpServerPath = Join-Path $projectRoot "mcp\server"
+  $aidocsMcpEntry = [pscustomobject]@{
+    type = "local"
+    enabled = $true
+    timeout = 120000
+    command = @($pythonExecutable, "-m", "aidocs_mcp.mcp_server")
+    environment = [pscustomobject]@{
+      PYTHONPATH = $mcpServerPath
+    }
   }
-}
 
 $opencodeSettings.mcp | Add-Member -Force -NotePropertyName aidocs -NotePropertyValue $aidocsMcpEntry
 
@@ -403,6 +383,33 @@ foreach ($k in $claudeCopied.Keys) {
 foreach ($k in $opencodeActionTokenExports.Keys) {
   Write-Host "-" $k "(" $opencodeActionTokenExports[$k] ")"
 }
+
+# ── Auto-install MCP runtime into ~/.aidocs/venv ──
+$aidocsHome = Join-Path $env:USERPROFILE ".aidocs"
+$venvDir = Join-Path $aidocsHome "venv"
+$mcpPackageDir = Join-Path $projectRoot "mcp"
+
+if (Test-Path (Join-Path $mcpPackageDir "pyproject.toml")) {
+  if (-not (Test-Path $venvDir)) {
+    Write-Host "Creating AIDOCS MCP venv at $venvDir..."
+    & python -m venv $venvDir
+  }
+
+  $venvPython = if ($IsLinux -or $IsMacOS) { Join-Path $venvDir "bin/python" } else { Join-Path $venvDir "Scripts\python.exe" }
+  $venvPip = if ($IsLinux -or $IsMacOS) { Join-Path $venvDir "bin/pip" } else { Join-Path $venvDir "Scripts\pip.exe" }
+
+  if (Test-Path $venvPython) {
+    Write-Host "Installing AIDOCS MCP runtime..."
+    & $venvPip install -e $mcpPackageDir --quiet 2>$null
+    if ($LASTEXITCODE -eq 0) {
+      Write-Host "MCP runtime installed successfully."
+    } else {
+      Write-Host "WARNING: MCP runtime install failed (exit $LASTEXITCODE). You may need to install manually: cd mcp && pip install -e ."
+    }
+  }
+}
+
+
 # Set AIDOCS_PATH as a persistent user environment variable
 $currentAidocsPath = [System.Environment]::GetEnvironmentVariable("AIDOCS_PATH", "User")
 if ($currentAidocsPath -ne $projectRoot) {

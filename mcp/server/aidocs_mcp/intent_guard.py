@@ -464,3 +464,7 @@ def scan_for_injection(content: str) -> list[dict[str, str]]:
                     }
                 )
     return findings
+
+
+# Eager load at module import — no first-call penalty
+_load_action_token_lists()

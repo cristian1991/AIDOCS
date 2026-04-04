@@ -130,13 +130,7 @@ def _resolve_action_hooks_dir() -> Path | None:
     return None
 
 
-_action_hook_cache: dict[str, object] | None = None
-
-
 def _load_action_hook_defaults() -> dict[str, object]:
-    global _action_hook_cache
-    if _action_hook_cache is not None:
-        return _action_hook_cache
     root = _resolve_action_hooks_dir()
     if root is None or tomllib is None:
         return {}
@@ -145,7 +139,6 @@ def _load_action_hook_defaults() -> dict[str, object]:
         loaded = _load_config_file(path)
         if loaded:
             _merge_dicts(merged, loaded)
-    _action_hook_cache = merged
     return merged
 
 
@@ -156,6 +149,10 @@ def _merge_dicts(base: dict[str, Any], override: dict[str, object]) -> dict[str,
         else:
             base[key] = deepcopy(value)
     return base
+
+
+# Populated once at import — all subsequent lookups use this cached dict
+_ACTION_HOOK_DEFAULTS: dict[str, object] = _load_action_hook_defaults()
 
 
 def _get_dotted(config: dict[str, object], key: str) -> object | None:
@@ -242,7 +239,7 @@ class ConfigResolver:
         session_id: str | None = None,
     ) -> dict[str, object]:
         merged: dict[str, Any] = deepcopy(_DEFAULT_CONFIG)
-        _merge_dicts(merged, _load_action_hook_defaults())
+        _merge_dicts(merged, _ACTION_HOOK_DEFAULTS)
         seen_paths: set[Path] = set()
         # Merge order: distribution → user-global → project → session
         for path in (

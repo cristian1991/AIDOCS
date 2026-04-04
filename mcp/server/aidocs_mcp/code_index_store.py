@@ -932,20 +932,11 @@ class CodeIndexStore:
                 "SELECT mtime_ns, size_bytes FROM code_files WHERE path = ?", (rel,)
             ).fetchone()
         if row is None:
-            return True
+            # Not indexed yet — not stale, just unknown
+            return False
         try:
             stat = abs_path.stat()
-            size_match = int(stat.st_size) == int(row["size_bytes"])
-            mtime_match = int(stat.st_mtime_ns) == int(row["mtime_ns"])
-            if mtime_match and size_match:
-                return False
-            # Size changed = definitely stale
-            if not size_match:
-                return True
-            # Mtime changed but size same = might be filesystem flush lag after our own edit
-            # Only flag stale if mtime difference is > 2 seconds (rules out flush lag)
-            mtime_diff_ns = abs(int(stat.st_mtime_ns) - int(row["mtime_ns"]))
-            return mtime_diff_ns > 2_000_000_000
+            return int(stat.st_mtime_ns) != int(row["mtime_ns"]) or int(stat.st_size) != int(row["size_bytes"])
         except Exception:
             return False
 

@@ -264,7 +264,14 @@ class SessionStore:
     def read_plan(self, project_root: Path, session_id: str) -> PlanData:
         path = self.plan_file(project_root, session_id)
         if not path.exists():
-            raise FileNotFoundError(path)
+            # Graceful fallback — return empty plan instead of throwing
+            return PlanData(
+                session_id=session_id,
+                path=path,
+                sections={s: ["-"] for s in PLAN_SECTION_ORDER},
+                phases=[],
+                lanes={},
+            )
         sections = self._parse_sections(path.read_text(encoding="utf-8"))
         for section in PLAN_SECTION_ORDER:
             sections.setdefault(section, ["-"])
@@ -506,7 +513,11 @@ class SessionStore:
     def read_context(self, project_root: Path, session_id: str) -> ContextData:
         path = self.context_file(project_root, session_id)
         if not path.exists():
-            raise FileNotFoundError(path)
+            return ContextData(
+                session_id=session_id,
+                path=path,
+                sections={s: [] for s in CONTEXT_SECTION_ORDER},
+            )
         sections = self._parse_sections(path.read_text(encoding="utf-8"))
         for section in CONTEXT_SECTION_ORDER:
             sections.setdefault(section, [])

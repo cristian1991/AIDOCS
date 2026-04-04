@@ -1230,7 +1230,7 @@ class CodeIndexStore:
         else:
             snippet = "\n".join(lines[start_idx:min(len(lines), start_idx + 20)])
 
-        end_line = int(row["line_number"]) + snippet.count("\n")
+        end_line = int(row["line_number"]) + snippet.rstrip("\n").count("\n")
 
         return {
             "path": path,

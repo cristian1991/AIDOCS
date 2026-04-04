@@ -285,14 +285,17 @@ class SessionStore:
         return self.read_plan(project_root, session_id)
 
     def roadmap_candidates(self, project_root: Path) -> list[Path]:
-        """Find all planning documents: ROADMAP*.md, docs/plans/*.md, docs/specs/*.md."""
+        """Find all planning documents across project and memory."""
         candidates: list[Path] = []
         # Root roadmaps
         for f in sorted(project_root.glob("ROADMAP*.md")):
             if f.is_file():
                 candidates.append(f)
-        # Plans and specs dirs
-        for subdir in ["docs/plans", "docs/specs", ".MEMORY/plans"]:
+        # Project-level and memory-level planning dirs
+        for subdir in [
+            "docs/plans", "docs/specs",
+            ".MEMORY/roadmaps", ".MEMORY/specs", ".MEMORY/plans",
+        ]:
             d = project_root / subdir
             if d.is_dir():
                 for f in sorted(d.glob("*.md")):

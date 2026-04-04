@@ -180,6 +180,10 @@ class IndexStore:
             return "system"
         if relative_path.startswith("domains/"):
             return "domain"
+        if relative_path.startswith("roadmaps/"):
+            return "roadmap"
+        if relative_path.startswith("specs/"):
+            return "spec"
         if relative_path.startswith("config/"):
             return "config"
         if relative_path.startswith("related-projects/"):

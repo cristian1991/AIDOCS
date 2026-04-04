@@ -42,6 +42,8 @@ class RuntimeBootstrapService:
                 ".MEMORY/domains",
                 ".MEMORY/system",
                 ".MEMORY/config",
+                ".MEMORY/roadmaps",
+                ".MEMORY/specs",
                 ".MEMORY/archive/sessions",
             ]:
                 (root / d).mkdir(parents=True, exist_ok=True)

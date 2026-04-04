@@ -1017,6 +1017,129 @@ class CodeIndexStore:
                 })
         return results[:limit]
 
+    def find_dead_code(
+        self,
+        project_root: Path,
+        path: str,
+    ) -> dict[str, object]:
+        """Find dead imports and unused locals in a single file."""
+        abs_path = (project_root / path.replace("\\", "/")).resolve()
+        if not abs_path.is_file():
+            return {"path": path, "dead_imports": [], "unused_locals": [], "error": f"File not found: {path}"}
+        try:
+            text = abs_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            return {"path": path, "dead_imports": [], "unused_locals": [], "error": str(exc)}
+
+        ext = abs_path.suffix.lower()
+        if ext == ".py":
+            return self._find_dead_code_python(path, text)
+        if ext in {".js", ".ts", ".jsx", ".tsx"}:
+            return self._find_dead_code_js(path, text)
+        return {"path": path, "dead_imports": [], "unused_locals": [], "error": f"Unsupported language: {ext}"}
+
+    @staticmethod
+    def _find_dead_code_python(path: str, text: str) -> dict[str, object]:
+        import ast
+
+        try:
+            tree = ast.parse(text)
+        except SyntaxError as exc:
+            return {"path": path, "dead_imports": [], "unused_locals": [], "error": str(exc)}
+
+        # Find TYPE_CHECKING guarded import lines to exclude
+        type_checking_lines: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING":
+                for child in ast.walk(node):
+                    if isinstance(child, (ast.Import, ast.ImportFrom)):
+                        type_checking_lines.add(child.lineno)
+
+        # Collect all imported names (skip __future__ and TYPE_CHECKING)
+        imported: dict[str, int] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)) and node.lineno in type_checking_lines:
+                continue
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    name = alias.asname or alias.name.split(".")[0]
+                    imported[name] = node.lineno
+            elif isinstance(node, ast.ImportFrom):
+                if node.module == "__future__":
+                    continue
+                for alias in node.names:
+                    name = alias.asname or alias.name
+                    if name != "*":
+                        imported[name] = node.lineno
+
+        # Collect all Name references (reads) + names in string annotations
+        used_names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                used_names.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                if isinstance(node.value, ast.Name):
+                    used_names.add(node.value.id)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                # String annotations reference type names
+                import re as _re
+                for word in _re.findall(r'[A-Za-z_]\w*', node.value):
+                    used_names.add(word)
+
+        dead_imports = [
+            {"name": name, "line": line}
+            for name, line in sorted(imported.items(), key=lambda x: x[1])
+            if name not in used_names
+        ]
+
+        # Collect assigned locals at module level that are never read
+        # (skip _ prefixed names — convention for intentional unused)
+        assigned: dict[str, int] = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and not target.id.startswith("_"):
+                        assigned[target.id] = node.lineno
+
+        unused_locals = [
+            {"name": name, "line": line}
+            for name, line in sorted(assigned.items(), key=lambda x: x[1])
+            if name not in used_names and name not in imported
+        ]
+
+        return {"path": path, "dead_imports": dead_imports, "unused_locals": unused_locals}
+
+    @staticmethod
+    def _find_dead_code_js(path: str, text: str) -> dict[str, object]:
+        import re
+
+        # Regex-based for JS/TS — no AST dependency
+        import_pattern = re.compile(
+            r"""(?:import\s+(?:\{([^}]+)\}|(\w+)).*?from|import\s+(\w+)\s+from)""",
+            re.MULTILINE,
+        )
+        dead_imports: list[dict[str, object]] = []
+        for i, line in enumerate(text.splitlines(), 1):
+            m = import_pattern.search(line)
+            if not m:
+                continue
+            names: list[str] = []
+            if m.group(1):
+                names = [n.strip().split(" as ")[-1].strip() for n in m.group(1).split(",") if n.strip()]
+            elif m.group(2):
+                names = [m.group(2)]
+            elif m.group(3):
+                names = [m.group(3)]
+            # Check each imported name against rest of file
+            rest = text[text.index("\n", text.index(line)) + 1:] if "\n" in text[text.index(line):] else ""
+            for name in names:
+                if name and not re.search(r'\b' + re.escape(name) + r'\b', rest):
+                    dead_imports.append({"name": name, "line": i})
+
+        return {"path": path, "dead_imports": dead_imports, "unused_locals": []}
+
+
+
 
     def search_symbols(
         self,

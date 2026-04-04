@@ -60,6 +60,7 @@ FREE_TOOLS: set[str] = {
     "code_search",
     "code_text_search",
     "code_find_stale_references",
+    "code_find_dead_code",
     "code_investigate",
     "code_bundle",
     "code_index_sync",

@@ -974,6 +974,21 @@ def create_server() -> Any:
 
     @server.tool(
         annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Find Dead Code",
+        },
+    )
+    def code_find_dead_code(
+        root: str,
+        path: str,
+    ) -> dict[str, Any]:
+        """Find dead imports and unused locals in a file. Use after refactors to clean up."""
+        return hub.code.find_dead_code(Path(root), path)
+
+
+    @server.tool(
+        annotations={
             "destructiveHint": True,
             "openWorldHint": False,
             "title": "Extract Block",

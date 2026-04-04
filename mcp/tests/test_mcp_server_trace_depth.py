@@ -51,15 +51,16 @@ def test_indexed_read_gate_blocks_when_no_indexed_query_used(tmp_path: Path) -> 
     assert "Indexed-query prerequisite" in result["error"]
 
 
-def test_indexed_read_gate_unlocks_after_grant(tmp_path: Path) -> None:
+def test_per_file_grant_unlocks_specific_path(tmp_path: Path) -> None:
+    """Per-file discovery grant allows reading that specific file."""
     server = create_server()
     hub = server._aidocs_test_hub
     project_root = tmp_path / "project"
     (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
     hub.managed_mode.set_mode(project_root, session_id="s1")
 
-    _grant_indexed_read_gate(hub, project_root, "code_find")
-    result = _require_indexed_read_gate(hub, project_root)
+    _grant_known_exact_path_read(hub, project_root, "code_find", "src/found.py")
+    result = _require_indexed_read_gate(hub, project_root, exact_path="src/found.py")
 
     assert result is None
 
@@ -79,10 +80,10 @@ def test_known_exact_path_grant_stays_narrow(tmp_path: Path) -> None:
         _require_indexed_read_gate(hub, project_root, exact_path="src/new.txt") is None
     )
     blocked = _require_indexed_read_gate(hub, project_root)
-    assert blocked is not None
     gate = hub.query_gate.get(project_root, "s1")
     assert gate["allow_read"] is False
-    assert gate["last_tool"] == "known_exact_path:aidocs_code_create_file:src/new.txt"
+    assert gate["last_tool"] == "discovery:aidocs_code_create_file"
+    assert gate["known_exact_paths"] == ["src/new.txt"]
     assert gate["known_exact_paths"] == ["src/new.txt"]
 
 
@@ -131,10 +132,10 @@ def test_protected_exact_path_cannot_be_granted(tmp_path: Path) -> None:
     assert gate["known_exact_paths"] == []
     assert gate["last_tool"] is None
 
-
 def test_second_server_grant_in_different_project_does_not_unlock_first_server_gate(
     tmp_path: Path,
 ) -> None:
+    """Per-file grants in project B do not affect project A's gate."""
     project_root = tmp_path / "project-a"
     other_project_root = tmp_path / "project-b"
     (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
@@ -143,28 +144,27 @@ def test_second_server_grant_in_different_project_does_not_unlock_first_server_g
     server1 = create_server()
     hub1 = server1._aidocs_test_hub
     hub1.managed_mode.set_mode(project_root, session_id="s1")
-    blocked_before = _require_indexed_read_gate(hub1, project_root)
+    blocked_before = _require_indexed_read_gate(hub1, project_root, exact_path="src/a.py")
 
     server2 = create_server()
     hub2 = server2._aidocs_test_hub
     hub2.managed_mode.set_mode(other_project_root, session_id="s1")
 
-    _grant_indexed_read_gate(hub2, other_project_root, "code_find")
-    blocked_after = _require_indexed_read_gate(hub1, project_root)
+    _grant_known_exact_path_read(hub2, other_project_root, "code_find", "src/b.py")
+    blocked_after = _require_indexed_read_gate(hub1, project_root, exact_path="src/a.py")
     gate1 = hub1.query_gate.get(project_root, "s1")
     gate2 = hub2.query_gate.get(other_project_root, "s1")
 
     assert blocked_before is not None
     assert blocked_after is not None
-    assert gate1["allow_read"] is False
-    assert gate1["last_tool"] is None
-    assert gate2["allow_read"] is True
-    assert gate2["last_tool"] == "code_find"
-
+    assert gate1["known_exact_paths"] == []
+    assert "src/b.py" in gate2["known_exact_paths"]
+    assert gate2["last_tool"] == "discovery:code_find"
 
 def test_indexed_read_gate_resets_on_task_begin_and_task_complete(
     tmp_path: Path,
 ) -> None:
+    """task_begin and task_complete clear known_exact_paths."""
     from aidocs_mcp.runtime_service import RuntimeService
     from aidocs_mcp.service_hub import AidocsServiceHub
 
@@ -173,8 +173,8 @@ def test_indexed_read_gate_resets_on_task_begin_and_task_complete(
     project_root = tmp_path / "project"
     (project_root / ".MEMORY").mkdir(parents=True, exist_ok=True)
     hub.managed_mode.set_mode(project_root, session_id="2026-03-23-a")
-    _grant_indexed_read_gate(hub, project_root, "code_find")
-    assert _require_indexed_read_gate(hub, project_root) is None
+    _grant_known_exact_path_read(hub, project_root, "code_find", "src/found.py")
+    assert _require_indexed_read_gate(hub, project_root, exact_path="src/found.py") is None
 
     templates = tmp_path / "templates"
     templates.mkdir(parents=True, exist_ok=True)
@@ -214,11 +214,10 @@ def test_indexed_read_gate_resets_on_task_begin_and_task_complete(
         project_root, "2026-03-23-a", goal="Do work", include_code_bundle=False
     )
     gate = hub2.query_gate.get(project_root, "2026-03-23-a")
-    assert gate["allow_read"] is False
+    assert gate["known_exact_paths"] == []
     assert gate["last_tool"] == "task_begin"
-    hub2.query_gate.set(
-        project_root, "2026-03-23-a", allow_read=True, last_tool="code_find"
-    )
+
+    _grant_known_exact_path_read(hub2, project_root, "code_find", "src/during.py")
     runtime.task_complete(
         project_root,
         "2026-03-23-a",
@@ -230,5 +229,5 @@ def test_indexed_read_gate_resets_on_task_begin_and_task_complete(
         include_code_bundle=False,
     )
     gate = hub2.query_gate.get(project_root, "2026-03-23-a")
-    assert gate["allow_read"] is False
+    assert gate["known_exact_paths"] == []
     assert gate["last_tool"] == "task_complete"

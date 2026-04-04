@@ -56,17 +56,21 @@ def test_known_exact_path_allows_followup_read_after_native_file_create(tmp_path
 
 
 def test_known_exact_path_requires_project_relative_path_even_after_grant(tmp_path: Path) -> None:
+    """Absolute paths are rejected by file_ops even with known_exact_path."""
+    import pytest as _pytest
+    from fastmcp.exceptions import ToolError
+
     project = tmp_path / "project"
     (project / ".MEMORY").mkdir(parents=True, exist_ok=True)
     created_path = project / "src" / "created.txt"
     created_path.parent.mkdir(parents=True, exist_ok=True)
 
-    async def run() -> tuple[object, object]:
+    async def run() -> None:
         server = create_server()
         hub = server._aidocs_test_hub
         hub.managed_mode.set_mode(project, session_id="s1")
 
-        created = await server.call_tool(
+        await server.call_tool(
             "aidocs_code_create_file",
             {
                 "project_root": str(project),
@@ -74,26 +78,21 @@ def test_known_exact_path_requires_project_relative_path_even_after_grant(tmp_pa
                 "content": "one\ntwo\n",
             },
         )
-        lines = await server.call_tool(
-            "aidocs_code_get_lines",
-            {
-                "project_root": str(project),
-                "path": str(created_path),
-                "start_line": 1,
-                "count": 1,
-                "show_line_numbers": False,
-                "known_exact_path": True,
-            },
-        )
-        return created, lines
+        with _pytest.raises(ToolError, match="Absolute paths are not allowed"):
+            await server.call_tool(
+                "aidocs_code_get_lines",
+                {
+                    "project_root": str(project),
+                    "path": str(created_path),
+                    "start_line": 1,
+                    "count": 1,
+                    "show_line_numbers": False,
+                    "known_exact_path": True,
+                },
+            )
 
-    created, lines = asyncio.run(run())
-    created_data = _payload_json(created)
-    data = _payload_json(lines)
-
-    assert created_data["success"] is True
+    asyncio.run(run())
     assert _is_safe_grantable_path(str(created_path)) is False
-    assert "error" in data
 
 
 def test_known_exact_path_rejects_drive_qualified_absolute_path() -> None:

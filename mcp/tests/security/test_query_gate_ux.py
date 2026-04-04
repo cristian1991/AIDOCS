@@ -75,7 +75,7 @@ def test_edit_or_create_flow_can_grant_narrow_followup_read_without_unlocking_br
                 },
             )
         )
-        blocked_other_exact = _payload_json(
+        blocked_other_no_flag = _payload_json(
             await server.call_tool(
                 "aidocs_code_get_lines",
                 {
@@ -84,7 +84,6 @@ def test_edit_or_create_flow_can_grant_narrow_followup_read_without_unlocking_br
                     "start_line": 1,
                     "count": 1,
                     "show_line_numbers": False,
-                    "known_exact_path": True,
                 },
             )
         )
@@ -105,7 +104,7 @@ def test_edit_or_create_flow_can_grant_narrow_followup_read_without_unlocking_br
             "created_followup": created_followup,
             "edit": edit,
             "edited_followup": edited_followup,
-            "blocked_other_exact": blocked_other_exact,
+            "blocked_other_no_flag": blocked_other_no_flag,
             "blocked_same_without_flag": blocked_same_without_flag,
         }
 
@@ -115,10 +114,10 @@ def test_edit_or_create_flow_can_grant_narrow_followup_read_without_unlocking_br
     assert data["created_followup"]["content"] == "beta"
     assert data["edit"]["success"] is True
     assert data["edited_followup"]["content"] == "updated"
-    assert "Indexed-query prerequisite" in str(data["blocked_other_exact"]["error"])
-    assert "Indexed-query prerequisite" in str(
-        data["blocked_same_without_flag"]["error"]
-    )
+    # Undiscovered files blocked when known_exact_path is not set
+    assert "Indexed-query prerequisite" in str(data["blocked_other_no_flag"]["error"])
+    # Discovered file (via edit grant) is readable even without known_exact_path flag
+    assert "error" not in data["blocked_same_without_flag"]
 
 
 def test_batch_edit_flow_can_grant_narrow_followup_reads_for_multiple_files(

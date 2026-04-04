@@ -198,15 +198,16 @@ def register_code_edit_tools(
         }
     )
     def code_str_replace(
-        root: str,
         path: str,
         old_str: str,
         new_str: str,
         replace_all: bool = False,
         config_edit_mode: str | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
-        """Quick string-match edit for small changes."""
-        project_root = Path(root)
+        """Quick string-match edit for small changes (old_str under 500 chars, unique in file)."""
+        from .mcp_server_runtime_helpers import resolve_project_root
+        project_root = resolve_project_root(root)
         result = file_str_replace(
             project_root,
             path,

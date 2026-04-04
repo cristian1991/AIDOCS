@@ -920,6 +920,26 @@ class CodeIndexStore:
             for _, row, reasons in ranked[:limit]
         ]
 
+    def is_file_stale(self, project_root: Path, path: str) -> bool:
+        """Check if a file has been modified outside AIDOCS since last index."""
+        self.init_db(project_root)
+        rel = path.replace("\\", "/").strip()
+        abs_path = project_root / rel
+        if not abs_path.is_file():
+            return False
+        with self.connect(project_root) as conn:
+            row = conn.execute(
+                "SELECT mtime_ns, size_bytes FROM code_files WHERE path = ?", (rel,)
+            ).fetchone()
+        if row is None:
+            return True
+        try:
+            stat = abs_path.stat()
+            return int(stat.st_mtime_ns) != int(row["mtime_ns"]) or int(stat.st_size) != int(row["size_bytes"])
+        except Exception:
+            return False
+
+
     def search_text(
         self,
         project_root: Path,

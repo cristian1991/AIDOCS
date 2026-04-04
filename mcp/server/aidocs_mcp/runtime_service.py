@@ -9,13 +9,16 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from uuid import uuid4
 
 from . import __version__
 from .config import ConfigResolver, _parse_bool, render_interaction_text
-from .config_schema import SETTINGS_CATALOG, available_config_edit_modes
+from .git_helpers import run_git_sync as _run_git_sync
 from .plan_conductor import PlanConductor
+from .runtime_presentation_service import RuntimePresentationService
 from .service_hub import AidocsServiceHub
+from .skill_resolution import match_selected_skill_id_for_trigger
+from .skill_resolution import selected_skill_override_identity
+from .skill_resolution import selected_skill_trigger_identity
 from .skill_provider import BUNDLED_PROVIDER_ID
 from .skill_override_store import SkillOverrideStore
 from .types import ExecutionModeSelection
@@ -113,43 +116,6 @@ _DEFAULT_PLAN_VALIDATION_VAGUE_PATTERNS = (
     "work on it",
     "make it better",
 )
-
-
-def _run_git_sync(cwd: str, *args: str, timeout: int = 10) -> str:
-    import tempfile
-
-    out_path = err_path = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".out", delete=False) as f:
-            out_path = f.name
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".err", delete=False) as f:
-            err_path = f.name
-        with open(out_path, "w") as out_fh, open(err_path, "w") as err_fh:
-            result = subprocess.run(
-                ["git", "-c", "safe.directory=*", *args],
-                cwd=cwd,
-                stdin=subprocess.DEVNULL,
-                stdout=out_fh,
-                stderr=err_fh,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
-        stdout = Path(out_path).read_text(encoding="utf-8", errors="ignore").strip()
-        stderr = Path(err_path).read_text(encoding="utf-8", errors="ignore").strip()
-    finally:
-        for p in (out_path, err_path):
-            if p:
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
-    if result.returncode != 0:
-        message = (
-            stderr or stdout or f"git exited with code {result.returncode}"
-        ).strip()
-        raise RuntimeError(message)
-    return stdout
 
 
 def _origin_role(name: str, url: str) -> str:
@@ -272,6 +238,7 @@ class RuntimeService:
         ] = {}
         self._config_resolver = ConfigResolver()
         self._skill_overrides = SkillOverrideStore()
+        self._presentation = RuntimePresentationService(self)
 
     def effective_config(
         self, project_root: Path, session_id: str | None = None
@@ -1242,11 +1209,10 @@ class RuntimeService:
         selected_skill_id: str,
         provider_states: dict[str, object] | None = None,
     ) -> tuple[str, str] | None:
-        if "/" in selected_skill_id:
-            return tuple(selected_skill_id.split("/", 1))
-        if isinstance(provider_states, dict) and BUNDLED_PROVIDER_ID in provider_states:
-            return _BUNDLED_OVERRIDE_PROVIDER_ID, selected_skill_id
-        return None
+        return selected_skill_override_identity(
+            selected_skill_id,
+            provider_states=provider_states,
+        )
 
     def _selected_skill_trigger_identity(
         self,
@@ -1254,28 +1220,11 @@ class RuntimeService:
         *,
         provider_states: dict[str, object] | None = None,
     ) -> tuple[str, str, str] | None:
-        override_target = self._selected_skill_override_identity(
+        return selected_skill_trigger_identity(
             selected_skill_id,
             provider_states=provider_states,
+            override_store=self._skill_overrides,
         )
-        if override_target is None:
-            return None
-        policy_provider_id, selected_name = override_target
-        source_provider_id = (
-            selected_skill_id.split("/", 1)[0]
-            if "/" in selected_skill_id
-            else BUNDLED_PROVIDER_ID
-        )
-        decision = self._skill_overrides.resolve(policy_provider_id, selected_name)
-        resolved_skill_id = selected_skill_id
-        provider = source_provider_id
-        runtime_provider = source_provider_id
-        if decision.mode in _RUNTIME_OWNED_OVERRIDE_MODES:
-            resolved_skill_id = str(decision.skill_id or selected_name)
-            runtime_provider = "aidocs_runtime"
-        elif decision.mode == "provider_content_aidocs_runtime":
-            runtime_provider = "aidocs"
-        return resolved_skill_id, provider, runtime_provider
 
     def _match_selected_skill_id_for_trigger(
         self,
@@ -1286,18 +1235,14 @@ class RuntimeService:
         runtime_provider: str,
         provider_states: dict[str, object] | None = None,
     ) -> str | None:
-        if skill_id in selected_skills:
-            return skill_id
-        matches = [
-            selected_skill_id
-            for selected_skill_id in selected_skills
-            if self._selected_skill_trigger_identity(
-                selected_skill_id,
-                provider_states=provider_states,
-            )
-            == (skill_id, provider, runtime_provider)
-        ]
-        return sorted(matches)[0] if matches else None
+        return match_selected_skill_id_for_trigger(
+            selected_skills=selected_skills,
+            skill_id=skill_id,
+            provider=provider,
+            runtime_provider=runtime_provider,
+            provider_states=provider_states,
+            override_store=self._skill_overrides,
+        )
 
     def _resolve_trigger_skill(
         self,
@@ -2857,83 +2802,17 @@ class RuntimeService:
     def _dashboard_config_entries(
         self, project_root: Path, session_id: str | None
     ) -> list[dict[str, object]]:
-        entries: list[dict[str, object]] = []
-        for setting_path, metadata in sorted(SETTINGS_CATALOG.items()):
-            section, _, key = setting_path.rpartition(".")
-            entries.append(
-                {
-                    "path": setting_path,
-                    "section": section,
-                    "key": key,
-                    "type": metadata["type"],
-                    "description": metadata["description"],
-                    "default": metadata["default"],
-                    "allowed_values": metadata["allowed_values"],
-                    "value_descriptions": metadata["value_descriptions"],
-                    "allowed_scopes": metadata["allowed_scopes"],
-                    "agent_editable_scopes": metadata["agent_editable_scopes"],
-                    "security_sensitive": metadata["security_sensitive"],
-                    "requires_restart": metadata["requires_restart"],
-                    "editable": "project" in metadata["agent_editable_scopes"],
-                    "current_value": self._config_resolver.get(
-                        setting_path, project_root=project_root, session_id=session_id
-                    ),
-                }
-            )
-        return entries
+        return self._presentation.dashboard_config_entries(project_root, session_id)
 
     def _dashboard_token_usage(
         self,
         execution_summary: dict[str, object],
         recent_execution: list[dict[str, object]],
     ) -> dict[str, object]:
-        capability_counts: dict[str, int] = {}
-        action_counts = {
-            str(key): int(value)
-            for key, value in (execution_summary.get("by_action_kind") or {}).items()
-            if value is not None
-        }
-        event_counts = {
-            str(key): int(value)
-            for key, value in (execution_summary.get("by_event_kind") or {}).items()
-            if value is not None
-        }
-        for event in recent_execution:
-            capability_name = str(event.get("capability_name") or "unknown")
-            capability_counts[capability_name] = (
-                capability_counts.get(capability_name, 0) + 1
-            )
-        top_capabilities = [
-            {"label": label, "count": count}
-            for label, count in sorted(
-                capability_counts.items(), key=lambda item: (-item[1], item[0])
-            )[:8]
-        ]
-        top_actions = [
-            {"label": label, "count": count}
-            for label, count in sorted(
-                action_counts.items(), key=lambda item: (-item[1], item[0])
-            )[:8]
-        ]
-        event_breakdown = [
-            {"label": label, "count": count}
-            for label, count in sorted(
-                event_counts.items(), key=lambda item: (-item[1], item[0])
-            )[:8]
-        ]
-        return {
-            "available": False,
-            "reason": (
-                "Execution evidence currently tracks events and capabilities, but not actual token counts. "
-                "The dashboard shows activity proxies until host/runtime token instrumentation is added."
-            ),
-            "proxy_series": {
-                "top_capabilities": top_capabilities,
-                "top_action_kinds": top_actions,
-                "event_breakdown": event_breakdown,
-            },
-            "recent_event_count": len(recent_execution),
-        }
+        return self._presentation.dashboard_token_usage(
+            execution_summary,
+            recent_execution,
+        )
 
     def dashboard_snapshot(
         self,
@@ -2941,202 +2820,16 @@ class RuntimeService:
         session_id: str | None = None,
         event_limit: int = 12,
     ) -> dict[str, object]:
-        repo_summary = self.repo_summary(project_root)
-        managed_mode = self.hub.managed_mode.get_mode(project_root)
-        sessions = self.hub.sessions.list_sessions(project_root)
-        selected_session_id = session_id
-        if not selected_session_id and managed_mode.get("active"):
-            selected_session_id = (
-                str(managed_mode.get("session_id") or "").strip() or None
-            )
-        if not selected_session_id and len(sessions) == 1:
-            selected_session_id = sessions[0].session_id
-
-        session_cards = [
-            {
-                "session_id": item.session_id,
-                "title": item.title,
-                "status": item.status,
-                "owner": item.owner,
-                "goal": item.goal,
-                "last_updated": item.last_updated,
-                "selected": item.session_id == selected_session_id,
-                "managed": item.session_id
-                == str(managed_mode.get("session_id") or "").strip(),
-            }
-            for item in sessions
-        ]
-
-        selected_session: dict[str, object] | None = None
-        execution_summary = self.hub.execution.query_execution_summary(
-            project_root, session_id=selected_session_id
+        return self._presentation.dashboard_snapshot(
+            project_root,
+            session_id=session_id,
+            event_limit=event_limit,
         )
-        recent_execution = self.hub.execution.query_last_execution(
-            project_root, session_id=selected_session_id, limit=event_limit
-        )
-        if selected_session_id:
-            session = self.hub.sessions.read_session(project_root, selected_session_id)
-            context = self.hub.sessions.read_context(project_root, selected_session_id)
-            plan = self.hub.sessions.read_plan(project_root, selected_session_id)
-            handoff_steps = self.hub.sessions.read_handoff_steps(
-                project_root, selected_session_id
-            )
-            compliance = self.session_compliance_summary(
-                project_root, selected_session_id
-            )
-            conductor: dict[str, object] | None = None
-            conductor_error: str | None = None
-            if getattr(plan, "lanes", None):
-                try:
-                    conductor = self.plan_conductor_status(
-                        project_root, selected_session_id
-                    )
-                except Exception as exc:
-                    conductor_error = str(exc)
-            selected_session = {
-                "session": {
-                    "session_id": session.session_id,
-                    "path": str(session.path),
-                    "sections": session.sections,
-                },
-                "context": {"path": str(context.path), "sections": context.sections},
-                "overview": self._build_session_overview(
-                    session_id=selected_session_id,
-                    session_sections=session.sections,
-                    context_sections=context.sections,
-                    handoff_steps=handoff_steps,
-                    compliance=compliance,
-                ),
-                "plan_overview": self._build_plan_overview(
-                    session_id=selected_session_id,
-                    plan_path=str(plan.path),
-                    plan_sections=plan.sections,
-                    has_lanes=bool(getattr(plan, "lanes", None)),
-                ),
-                "compliance": compliance,
-                "handoff_steps": handoff_steps,
-                "conductor": conductor,
-                "conductor_error": conductor_error,
-            }
-
-        effective_config = self.effective_config(
-            project_root, session_id=selected_session_id
-        )
-        payload = {
-            "project": self._build_project_overview(
-                project_root,
-                repo_summary=repo_summary,
-                selected_session_id=selected_session_id,
-            ),
-            "repo_summary": repo_summary,
-            "managed_mode": managed_mode,
-            "sessions": session_cards,
-            "selected_session_id": selected_session_id,
-            "selected_session": selected_session,
-            "execution": {
-                "summary": execution_summary,
-                "recent": recent_execution,
-            },
-            "token_usage": self._dashboard_token_usage(
-                execution_summary, recent_execution
-            ),
-            "config": {
-                "project_config_path": str(
-                    self._config_resolver.project_config_path(project_root) or ""
-                ),
-                "session_config_path": str(
-                    self._config_resolver.session_config_path(
-                        project_root, selected_session_id
-                    )
-                    or ""
-                ),
-                "effective": effective_config,
-                "entries": self._dashboard_config_entries(
-                    project_root, selected_session_id
-                ),
-                "available_edit_modes": available_config_edit_modes("release"),
-            },
-        }
-        return payload
 
     def session_compliance_summary(
         self, project_root: Path, session_id: str
     ) -> dict[str, object]:
-        session = self.hub.sessions.read_session(project_root, session_id)
-        plan = self.hub.sessions.read_plan(project_root, session_id)
-        handoff_steps = self.hub.sessions.read_handoff_steps(project_root, session_id)
-        journal = self.hub.sessions.read_journal(project_root, session_id, last_n=20)
-        execution_summary = self.hub.execution.query_execution_summary(
-            project_root, session_id=session_id
-        )
-        recent_events = self.hub.execution.query_last_execution(
-            project_root, session_id=session_id, limit=20
-        )
-
-        status_values = self._clean_bullets(session.sections.get("Status", []))
-        task_open = any(value == "active" for value in status_values)
-        partial_goals = self._clean_bullets(plan.sections.get("Partial Goals", []))
-        upcoming = self._clean_bullets(session.sections.get("Upcoming", []))
-        actionable_steps = [
-            step
-            for step in handoff_steps
-            if str(step.get("status")) in {"open", "reset", "failed", "stale"}
-        ]
-
-        latest_journal_ts = None
-        if journal:
-            try:
-                latest_journal_ts = max(
-                    datetime.strptime(entry["timestamp"], "%Y-%m-%d %H:%M")
-                    for entry in journal
-                    if entry.get("timestamp")
-                )
-            except Exception:
-                latest_journal_ts = None
-
-        journal_coverage = self.hub.execution.session_journal_coverage_summary(
-            project_root,
-            session_id,
-            latest_journal_at=latest_journal_ts,
-        )
-        latest_work_ts = None
-        latest_work_text = str(
-            journal_coverage.get("latest_meaningful_event_at") or ""
-        ).strip()
-        if latest_work_text:
-            try:
-                latest_work_ts = datetime.strptime(
-                    latest_work_text, "%Y-%m-%d %H:%M:%S"
-                )
-            except Exception:
-                latest_work_ts = None
-
-        logging_debt = bool(journal_coverage.get("logging_debt"))
-        summary = {
-            "task_open": task_open,
-            "logging_debt": logging_debt,
-            "actionable_step_count": len(actionable_steps),
-            "partial_goal_count": len(partial_goals),
-            "upcoming_count": len(upcoming),
-            "execution_events": int(execution_summary.get("total_events", 0)),
-            "latest_work_event_at": latest_work_ts.strftime("%Y-%m-%d %H:%M:%S")
-            if latest_work_ts
-            else None,
-            "latest_journal_at": latest_journal_ts.strftime("%Y-%m-%d %H:%M")
-            if latest_journal_ts
-            else None,
-            "journal_coverage": journal_coverage,
-            "warnings": [],
-        }
-        warnings: list[str] = []
-        if task_open:
-            warnings.append("task remains open")
-        if logging_debt:
-            warnings.append("work occurred after the latest journal entry")
-        if actionable_steps:
-            warnings.append(f"{len(actionable_steps)} actionable handoff steps remain")
-        summary["warnings"] = warnings
-        return summary
+        return self._presentation.session_compliance_summary(project_root, session_id)
 
     def _build_project_overview(
         self,
@@ -3147,59 +2840,23 @@ class RuntimeService:
         stage: str | None = None,
         ready: bool | None = None,
     ) -> dict[str, object]:
-        summary = (
-            repo_summary
-            if isinstance(repo_summary, dict)
-            else self.repo_summary(project_root)
+        return self._presentation.build_project_overview(
+            project_root,
+            repo_summary=repo_summary,
+            selected_session_id=selected_session_id,
+            stage=stage,
+            ready=ready,
         )
-        return {
-            "project_name": summary.get("project_name") or project_root.name,
-            "project_root": summary.get("project_root") or str(project_root),
-            "code_file_count": int(summary.get("code_files") or 0),
-            "module_count": int(summary.get("modules") or 0),
-            "schema_entity_count": int(summary.get("schema_entities") or 0),
-            "session_count": int(summary.get("sessions") or 0),
-            "selected_session_id": selected_session_id,
-            "artifact_catalog": self._project_artifact_catalog(project_root),
-            "stage": stage,
-            "ready": ready,
-        }
 
     def _project_artifact_catalog(
         self, project_root: Path
     ) -> dict[str, dict[str, object]]:
-        return {
-            "skill_provider_registry": {
-                "path": str(
-                    self.hub.skills.external_provider_registry_path(project_root)
-                ),
-                "classification": "config",
-                "legacy_paths": [
-                    str(
-                        self.hub.skills.legacy_external_provider_registry_path(
-                            project_root
-                        )
-                    )
-                ],
-            },
-            "aidocs_managed": {
-                "path": str(self.hub.managed_mode.config_path(project_root)),
-                "classification": "runtime_binding_state",
-            },
-            "workflow_actions": {
-                "path": str(self.hub.workflow.config_path(project_root)),
-                "classification": "compiled_runtime_artifact",
-            },
-        }
+        return self._presentation.project_artifact_catalog(project_root)
 
     def _result_artifacts_root(
         self, project_root: Path, session_id: str | None = None
     ) -> Path:
-        if session_id:
-            return (
-                self.hub.sessions.session_path(project_root, session_id) / "artifacts"
-            )
-        return project_root / ".MEMORY" / ".runtime" / "artifacts"
+        return self._presentation.result_artifacts_root(project_root, session_id)
 
     def _write_result_artifact(
         self,
@@ -3209,27 +2866,12 @@ class RuntimeService:
         artifact_name: str,
         session_id: str | None = None,
     ) -> dict[str, object]:
-        artifacts_root = self._result_artifacts_root(project_root, session_id)
-        target_dir = artifacts_root / "mcp-results"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        slug = re.sub(r"[^a-z0-9_-]+", "-", artifact_name.strip().lower()).strip("-")
-        if not slug:
-            slug = "result"
-        artifact_id = f"{slug}-{uuid4().hex[:12]}"
-        path = target_dir / f"{artifact_id}.json"
-        serialized = json.dumps(payload, indent=2, sort_keys=True, default=str)
-        path.write_text(serialized + "\n", encoding="utf-8")
-        try:
-            relative_path = str(path.relative_to(project_root)).replace("\\", "/")
-        except ValueError:
-            relative_path = str(path)
-        return {
-            "artifact_id": artifact_id,
-            "artifact_path": relative_path,
-            "artifact_kind": "json",
-            "size_bytes": len(serialized.encode("utf-8")),
-            "session_id": session_id,
-        }
+        return self._presentation.write_result_artifact(
+            project_root,
+            payload=payload,
+            artifact_name=artifact_name,
+            session_id=session_id,
+        )
 
     def build_artifact_backed_result(
         self,
@@ -3241,23 +2883,14 @@ class RuntimeService:
         session_id: str | None = None,
         structured_summary: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        artifact = self._write_result_artifact(
+        return self._presentation.build_artifact_backed_result(
             project_root,
+            inline_summary=inline_summary,
             payload=payload,
             artifact_name=artifact_name,
             session_id=session_id,
+            structured_summary=structured_summary,
         )
-        structured_content: dict[str, object] = {
-            **(structured_summary or {}),
-            "artifact": artifact,
-        }
-        return {
-            "content": (
-                f"{inline_summary}\n"
-                f"Full payload saved to artifact: `{artifact['artifact_path']}`."
-            ),
-            "structuredContent": structured_content,
-        }
 
     def _build_session_overview(
         self,
@@ -3268,45 +2901,13 @@ class RuntimeService:
         handoff_steps: list[dict[str, object]] | None,
         compliance: dict[str, object] | None,
     ) -> dict[str, object]:
-        session_sections = (
-            session_sections if isinstance(session_sections, dict) else {}
+        return self._presentation.build_session_overview(
+            session_id=session_id,
+            session_sections=session_sections,
+            context_sections=context_sections,
+            handoff_steps=handoff_steps,
+            compliance=compliance,
         )
-        context_sections = (
-            context_sections if isinstance(context_sections, dict) else {}
-        )
-        titles = self._clean_bullets(session_sections.get("Title", []))
-        statuses = self._clean_bullets(session_sections.get("Status", []))
-        goals = self._clean_bullets(session_sections.get("Goal", []))
-        owners = self._clean_bullets(session_sections.get("Owner", []))
-        relevant_files = self._clean_bullets(context_sections.get("Relevant Files", []))
-        actionable_handoff_step_count = len(
-            [
-                step
-                for step in (handoff_steps or [])
-                if str(step.get("status") or "") in {"open", "reset", "failed", "stale"}
-            ]
-        )
-        journal_coverage = (
-            (compliance or {}).get("journal_coverage")
-            if isinstance((compliance or {}).get("journal_coverage"), dict)
-            else {}
-        )
-        return {
-            "session_id": session_id,
-            "title": titles[0] if titles else None,
-            "status": statuses[0] if statuses else None,
-            "goal": goals[0] if goals else None,
-            "owner": owners[0] if owners else None,
-            "relevant_file_count": len(relevant_files),
-            "actionable_handoff_step_count": actionable_handoff_step_count,
-            "logging_debt": bool((compliance or {}).get("logging_debt")),
-            "meaningful_event_count_since_journal": int(
-                journal_coverage.get("meaningful_event_count_since_journal") or 0
-            ),
-            "latest_meaningful_event_at": journal_coverage.get(
-                "latest_meaningful_event_at"
-            ),
-        }
 
     def _build_skills_overview(
         self,
@@ -3317,46 +2918,13 @@ class RuntimeService:
         imported_skill_state: dict[str, object] | None,
         skill_trigger_state: dict[str, object] | None,
     ) -> dict[str, object]:
-        selected = [
-            str(item) for item in (selected_skills or {}).get("selected_skills", [])
-        ]
-        active = [str(item) for item in (active_skills or [])]
-        override_modes: dict[str, str] = {}
-        triggered = (
-            (skill_trigger_state or {}).get("triggered")
-            if isinstance(skill_trigger_state, dict)
-            else []
+        return self._presentation.build_skills_overview(
+            session_id=session_id,
+            selected_skills=selected_skills,
+            active_skills=active_skills,
+            imported_skill_state=imported_skill_state,
+            skill_trigger_state=skill_trigger_state,
         )
-        runtime_owned_capabilities = [
-            item
-            for item in (
-                (skill_trigger_state or {}).get("runtime_owned_capabilities") or []
-            )
-            if isinstance(item, dict)
-        ]
-        if isinstance(triggered, list):
-            for item in triggered:
-                if not isinstance(item, dict):
-                    continue
-                if isinstance(item.get("runtime_owned_capability"), dict):
-                    continue
-                skill_id = str(item.get("skill_id") or "")
-                override_mode = str(item.get("override_mode") or "").strip()
-                if skill_id and override_mode:
-                    override_modes[skill_id] = override_mode
-        return {
-            "session_id": session_id,
-            "selected_skills": selected,
-            "selected_skill_count": len(selected),
-            "active_skills": active,
-            "active_skill_count": len(active),
-            "runtime_owned_capabilities": runtime_owned_capabilities,
-            "runtime_owned_capability_count": len(runtime_owned_capabilities),
-            "provider_state": (imported_skill_state or {}).get("provider_state"),
-            "provider_states": (imported_skill_state or {}).get("provider_states")
-            or {},
-            "override_modes": override_modes,
-        }
 
     def _build_default_plan_overview(
         self,
@@ -3364,17 +2932,10 @@ class RuntimeService:
         session_id: str,
         end_goal: str | None = None,
     ) -> dict[str, object]:
-        return {
-            "session_id": session_id,
-            "plan_path": None,
-            "progress": "0/0",
-            "completed_count": 0,
-            "incomplete_count": 0,
-            "next_step": None,
-            "purpose": None,
-            "end_goal": end_goal,
-            "has_lanes": False,
-        }
+        return self._presentation.build_default_plan_overview(
+            session_id=session_id,
+            end_goal=end_goal,
+        )
 
     def _build_plan_overview(
         self,
@@ -3384,34 +2945,12 @@ class RuntimeService:
         plan_sections: dict[str, list[str]] | None,
         has_lanes: bool,
     ) -> dict[str, object]:
-        sections = plan_sections if isinstance(plan_sections, dict) else {}
-        completed: list[str] = []
-        incomplete: list[str] = []
-        for lines in sections.values():
-            for line in lines:
-                parsed = self._parse_plan_checkbox_line(line)
-                if not parsed:
-                    continue
-                text = str(parsed["text"])
-                if parsed["status"] == "completed":
-                    completed.append(text)
-                else:
-                    incomplete.append(text)
-        total = len(completed) + len(incomplete)
-        progress = f"{len(completed)}/{total}" if total > 0 else "0/0"
-        end_goals = self._clean_bullets(sections.get("End Goal", []))
-        purposes = self._clean_bullets(sections.get("Purpose", []))
-        return {
-            "session_id": session_id,
-            "plan_path": plan_path,
-            "progress": progress,
-            "completed_count": len(completed),
-            "incomplete_count": len(incomplete),
-            "next_step": incomplete[0] if incomplete else None,
-            "purpose": purposes[0] if purposes else None,
-            "end_goal": end_goals[0] if end_goals else None,
-            "has_lanes": has_lanes,
-        }
+        return self._presentation.build_plan_overview(
+            session_id=session_id,
+            plan_path=plan_path,
+            plan_sections=plan_sections,
+            has_lanes=has_lanes,
+        )
 
     def _registered_tools_snapshot(self) -> list[object]:
         from .mcp_server import create_server

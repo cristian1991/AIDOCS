@@ -35,9 +35,13 @@ from .language_descriptors import (
     descriptor_semantics_summary,
     validate_language_descriptors,
 )
+from .git_helpers import run_git_sync as _run_git_sync
 from .project_registry_service import ProjectRegistryService
 from .runtime_service import RuntimeService
 from .service_hub import AidocsServiceHub
+from .skill_resolution import (
+    match_selected_skill_id_for_trigger as _match_selected_skill_id_for_trigger,
+)
 from .skill_provider import BUNDLED_PROVIDER_ID
 
 
@@ -59,75 +63,6 @@ def _coerce_to_list(value: list[str] | str | None) -> list[str] | None:
         except (json.JSONDecodeError, ValueError):
             pass
     return value
-
-
-def _selected_skill_override_identity(
-    selected_skill_id: str, provider_states: dict[str, Any] | None = None
-) -> tuple[str, str] | None:
-    if "/" in selected_skill_id:
-        return tuple(selected_skill_id.split("/", 1))
-    if isinstance(provider_states, dict) and BUNDLED_PROVIDER_ID in provider_states:
-        return _BUNDLED_OVERRIDE_PROVIDER_ID, selected_skill_id
-    return None
-
-
-def _selected_skill_trigger_identity(
-    selected_skill_id: str,
-    *,
-    provider_states: dict[str, Any] | None = None,
-    override_store: Any = None,
-) -> tuple[str, str, str] | None:
-    override_target = _selected_skill_override_identity(
-        selected_skill_id, provider_states=provider_states
-    )
-    if override_target is None:
-        return None
-    policy_provider_id, selected_name = override_target
-    source_provider_id = (
-        selected_skill_id.split("/", 1)[0]
-        if "/" in selected_skill_id
-        else BUNDLED_PROVIDER_ID
-    )
-    resolved_skill_id = selected_skill_id
-    provider = source_provider_id
-    runtime_provider = source_provider_id
-    if override_store is not None:
-        decision = override_store.resolve(policy_provider_id, selected_name)
-        override_mode = str(decision.mode or "").strip()
-        if override_mode in _RUNTIME_OWNED_OVERRIDE_MODES:
-            resolved_skill_id = str(decision.skill_id or selected_name)
-            runtime_provider = "aidocs_runtime"
-        elif override_mode == "provider_content_aidocs_runtime":
-            runtime_provider = "aidocs"
-    elif (
-        selected_name == selected_skill_id and selected_skill_id not in provider_states
-    ):
-        return None
-    return resolved_skill_id, provider, runtime_provider
-
-
-def _match_selected_skill_id_for_trigger(
-    *,
-    selected_skills: list[str],
-    skill_id: str,
-    provider: str,
-    runtime_provider: str,
-    provider_states: dict[str, Any] | None = None,
-    override_store: Any = None,
-) -> str | None:
-    if skill_id in selected_skills:
-        return skill_id
-    matches = [
-        selected_skill_id
-        for selected_skill_id in selected_skills
-        if _selected_skill_trigger_identity(
-            selected_skill_id,
-            provider_states=provider_states,
-            override_store=override_store,
-        )
-        == (skill_id, provider, runtime_provider)
-    ]
-    return sorted(matches)[0] if matches else None
 
 
 # ── Tool timeout infrastructure ──────────────────────────────────────
@@ -301,57 +236,6 @@ def _apply_trace_depth(
             result["ui"] = []
         return result
     return payload
-
-
-def _run_git_sync(cwd: str, *args: str, timeout: int = _GIT_TIMEOUT) -> str:
-    """Run a git command synchronously using temp files (no pipes — avoids MCP stdio conflicts on Windows)."""
-    import subprocess
-    import tempfile
-    import os as _os
-    import sys as _sys
-
-    out_path = err_path = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".out", delete=False) as f:
-            out_path = f.name
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".err", delete=False) as f:
-            err_path = f.name
-        flags = 0
-        startupinfo = None
-        if _sys.platform == "win32":
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
-        with open(out_path, "w") as out_fh, open(err_path, "w") as err_fh:
-            result = subprocess.run(
-                ["git", *_GIT_SAFE_DIR, *args],
-                cwd=cwd,
-                stdin=subprocess.DEVNULL,
-                stdout=out_fh,
-                stderr=err_fh,
-                text=True,
-                timeout=timeout,
-                creationflags=flags,
-                startupinfo=startupinfo,
-                close_fds=True,
-            )
-        stdout = Path(out_path).read_text(encoding="utf-8", errors="ignore").strip()
-        stderr = Path(err_path).read_text(encoding="utf-8", errors="ignore").strip()
-    except FileNotFoundError as exc:
-        raise RuntimeError("git is not installed or not in PATH") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise TimeoutError(f"git timed out after {timeout}s") from exc
-    finally:
-        for p in (out_path, err_path):
-            if p:
-                try:
-                    _os.unlink(p)
-                except OSError:
-                    pass
-    if result.returncode != 0:
-        message = stderr or stdout or f"git exited with code {result.returncode}"
-        raise RuntimeError(message)
-    return stdout
 
 
 async def _run_git(cwd: str, *args: str, timeout: int = _GIT_TIMEOUT) -> str:
@@ -2452,7 +2336,10 @@ def create_server() -> Any:
         """
         root = Path(project_root)
         gate = _require_indexed_read_gate(
-            hub, root, exact_path=path, known_exact_path=known_exact_path,
+            hub,
+            root,
+            exact_path=path,
+            known_exact_path=known_exact_path,
         )
         if gate:
             return gate
@@ -2662,7 +2549,6 @@ def create_server() -> Any:
                         str(item.get("path") or ""),
                     )
         return result
-
 
     @server.tool(
         annotations={

@@ -219,123 +219,58 @@ _GIT_SAMPLE_DIVERGENCE = 1500
 def _grant_indexed_read_gate(
     hub: AidocsServiceHub, project_root: Path, tool_name: str
 ) -> None:
-    managed = hub.managed_mode.get_mode(project_root)
-    session_id = managed.get("session_id") if isinstance(managed, dict) else None
-    if managed.get("active") and session_id:
-        hub.query_gate.set(
-            project_root,
-            str(session_id),
-            allow_read=True,
-            last_tool=tool_name,
-            known_exact_paths=[],
-        )
+    """Legacy shim — blanket allow_read grants are removed.
+
+    Existing _grant closures in tool functions call this. Now a no-op because
+    AccessGate uses per-file discovery only. Tool-specific _grant closures that
+    need per-file grants should call _grant_known_exact_path_read instead.
+    """
 
 
 def _grant_known_exact_path_read(
     hub: AidocsServiceHub, project_root: Path, tool_name: str, path: str
 ) -> None:
+    """Grant per-file read access via AccessGate."""
+    from .access_gate import AccessGate
+
     managed = hub.managed_mode.get_mode(project_root)
     session_id = managed.get("session_id") if isinstance(managed, dict) else None
     if not managed.get("active") or not session_id:
         return
-    canonical_path = path.replace("\\", "/").strip()
-    if not _is_safe_known_exact_read_path(canonical_path):
-        return
-    marker = f"known_exact_path:{tool_name}:{canonical_path}"
-    state = hub.query_gate.get(project_root, str(session_id))
-    known_exact_paths = [
-        str(item)
-        for item in state.get("known_exact_paths", [])
-        if isinstance(item, str)
-    ]
-    if canonical_path not in known_exact_paths:
-        known_exact_paths.append(canonical_path)
-    hub.query_gate.set(
-        project_root,
-        str(session_id),
-        allow_read=False,
-        last_tool=marker,
-        known_exact_paths=known_exact_paths,
+    AccessGate.grant_discovery(
+        hub.query_gate, project_root, str(session_id), tool_name, [path]
     )
 
 
-def _known_exact_path_marker_matches(last_tool: Any, exact_path: str | None) -> bool:
-    if not exact_path or not isinstance(last_tool, str):
-        return False
-    prefix = "known_exact_path:"
-    if not last_tool.startswith(prefix):
-        return False
-    _, _, granted_path = last_tool.partition(":")
-    _, _, granted_path = granted_path.partition(":")
-    return granted_path == exact_path.replace("\\", "/").strip()
-
-
-def _known_exact_path_is_granted(state: dict[str, Any], exact_path: str | None) -> bool:
-    if not _is_safe_known_exact_read_path(exact_path):
-        return False
-    normalized = exact_path.replace("\\", "/").strip()
-    known_exact_paths = state.get("known_exact_paths")
-    if isinstance(known_exact_paths, list) and normalized in known_exact_paths:
-        return True
-    return _known_exact_path_marker_matches(state.get("last_tool"), normalized)
-
-
-_PROTECTED_EXACT_READ_FILENAMES: set[str] = {"aidocs.toml", "aidocs-plugin.json"}
-_PROTECTED_EXACT_READ_PREFIXES: tuple[str, ...] = ("mcp/server/aidocs_mcp/",)
-
-
-def _is_safe_known_exact_read_path(exact_path: str | None) -> bool:
-    if not exact_path:
-        return False
-    normalized = exact_path.replace("\\", "/").strip()
-    if not _is_known_exact_relative_path(normalized):
-        return False
-    lower = normalized.lower()
-    if lower in _PROTECTED_EXACT_READ_FILENAMES:
-        return False
-    if any(lower.startswith(prefix) for prefix in _PROTECTED_EXACT_READ_PREFIXES):
-        return False
-    return True
-
-
-def _lane_exact_path_is_granted(state: dict[str, Any], exact_path: str | None) -> bool:
-    if not exact_path:
-        return False
-    normalized = exact_path.replace("\\", "/").strip()
-    if not _is_known_exact_relative_path(normalized):
-        return False
-    lane_exact_paths = state.get("lane_exact_paths")
-    return isinstance(lane_exact_paths, list) and normalized in lane_exact_paths
-
-
 def _require_indexed_read_gate(
-    hub: AidocsServiceHub, project_root: Path, exact_path: str | None = None
+    hub: AidocsServiceHub,
+    project_root: Path,
+    exact_path: str | None = None,
+    known_exact_path: bool = False,
 ) -> dict[str, Any] | None:
+    """Check read gate via AccessGate — blocks undiscovered files."""
+    from .access_gate import AccessGate, GateContext
+
     managed = hub.managed_mode.get_mode(project_root)
     session_id = managed.get("session_id") if isinstance(managed, dict) else None
     if not managed.get("active") or not session_id:
         return None
     state = hub.query_gate.get(project_root, str(session_id))
-    if state.get("allow_read"):
-        return None
-    if _known_exact_path_is_granted(state, exact_path):
-        return None
-    if _lane_exact_path_is_granted(state, exact_path):
+    decision = AccessGate.check_read(
+        GateContext(
+            managed=True,
+            session_id=str(session_id),
+            dev_mode=False,
+            gate_state=state,
+        ),
+        exact_path or "",
+        known_exact_path=known_exact_path,
+    )
+    if decision.allowed:
         return None
     return {
         "error": render_interaction_text("interaction.errors.indexed_read_gate"),
     }
-
-
-def _is_known_exact_relative_path(path: str) -> bool:
-    clean = path.replace("\\", "/").strip()
-    if not clean or clean.startswith("/") or re.match(r"^[A-Za-z]:/", clean):
-        return False
-    if any(token in clean for token in ("*", "?", "[", "]", "{", "}")):
-        return False
-    if any(part in {"", ".", ".."} for part in clean.split("/")):
-        return False
-    return True
 
 
 def _apply_trace_depth(
@@ -2524,10 +2459,9 @@ def create_server() -> Any:
             known_exact_path: Bypass the indexed-read gate only for an exact relative path.
         """
         root = Path(project_root)
-        exact_path = (
-            path if known_exact_path and _is_known_exact_relative_path(path) else None
+        gate = _require_indexed_read_gate(
+            hub, root, exact_path=path, known_exact_path=known_exact_path,
         )
-        gate = _require_indexed_read_gate(hub, root, exact_path=exact_path)
         if gate:
             return gate
         return _file_get_lines(

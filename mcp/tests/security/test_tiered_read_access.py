@@ -38,9 +38,10 @@ def test_discovery_read_still_requires_indexed_query(tmp_path: Path) -> None:
     assert "Indexed-query prerequisite" in str(data["error"])
 
 
-def test_exact_known_relative_read_still_requires_explicit_grant(
+def test_known_exact_path_bypasses_read_gate(
     tmp_path: Path,
 ) -> None:
+    """known_exact_path=true now bypasses the indexed-read gate."""
     project = tmp_path / "project"
     (project / ".MEMORY").mkdir(parents=True, exist_ok=True)
     (project / "src").mkdir(parents=True, exist_ok=True)
@@ -64,7 +65,8 @@ def test_exact_known_relative_read_still_requires_explicit_grant(
 
     data = _payload_json(asyncio.run(run()))
 
-    assert "Indexed-query prerequisite" in data["error"]
+    assert "error" not in data
+    assert data["content"] == "value = 1"
 
 
 def test_protected_path_stays_blocked_even_with_known_exact_path(

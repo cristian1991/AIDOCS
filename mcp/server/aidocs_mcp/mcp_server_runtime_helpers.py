@@ -12,10 +12,29 @@ def registered_tools(server: Any) -> list[Any]:
 def project_root_from_args(arguments: dict[str, Any] | None) -> Path | None:
     if not isinstance(arguments, dict):
         return None
-    project_root = arguments.get("project_root")
-    if not isinstance(project_root, str) or not project_root.strip():
+    # Support both 'root' (new) and 'project_root' (legacy)
+    raw = arguments.get("root") or arguments.get("project_root")
+    if not isinstance(raw, str) or not raw.strip():
         return None
-    return Path(project_root)
+    return Path(raw)
+
+
+_last_known_project_root: Path | None = None
+
+
+def set_default_project_root(root: Path) -> None:
+    """Called when managed mode activates to set the session default."""
+    global _last_known_project_root
+    _last_known_project_root = root
+
+
+def resolve_project_root(root: str | None) -> Path:
+    """Resolve root param — uses default if not provided."""
+    if root and root.strip():
+        return Path(root)
+    if _last_known_project_root is not None:
+        return _last_known_project_root
+    raise ValueError("root parameter required — no default project root available")
 
 
 def capture_enabled(name: str, arguments: dict[str, Any] | None) -> bool:

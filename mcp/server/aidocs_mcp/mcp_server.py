@@ -526,6 +526,11 @@ def create_server() -> Any:
         run_middleware: bool = True,
         task_meta: Any = None,
     ) -> Any:
+        # Auto-fill root from managed session default if not provided
+        if isinstance(arguments, dict) and not arguments.get("root") and not arguments.get("project_root"):
+            from .mcp_server_runtime_helpers import _last_known_project_root
+            if _last_known_project_root is not None:
+                arguments["root"] = str(_last_known_project_root)
         project_root = _project_root_from_args(arguments)
         if not _capture_enabled(name, arguments) or project_root is None:
             return await original_call_tool(

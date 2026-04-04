@@ -41,6 +41,9 @@ class ManagedModeService:
             "source": source,
         }
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        # Set default project root so tools can omit the root parameter
+        from .mcp_server_runtime_helpers import set_default_project_root
+        set_default_project_root(project_root)
         return payload
 
     def clear_mode(self, project_root: Path) -> dict[str, object]:

@@ -485,13 +485,22 @@ def create_file(
     abs_path.write_text(content, encoding="utf-8")
     canonical_path = _canonical_relative_path(project_root, abs_path)
 
-    return {
+    # Warn if creating planning docs in root instead of .MEMORY/
+    root_planning_warning = None
+    if "/" not in canonical_path and canonical_path.lower().endswith(".md"):
+        name_lower = canonical_path.lower()
+        if name_lower not in {"claude.md", "agents.md", "readme.md", ".gitignore"}:
+            root_planning_warning = "Consider placing planning docs in .MEMORY/roadmaps/ or .MEMORY/specs/ instead of project root."
+
+    result: dict[str, object] = {
         "success": True,
         "path": canonical_path,
-        
         "created": True,
         "lines": len(content.splitlines()),
     }
+    if root_planning_warning:
+        result["warning"] = root_planning_warning
+    return result
 
 
 def edit_lines(

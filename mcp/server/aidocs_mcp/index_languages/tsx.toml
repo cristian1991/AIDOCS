@@ -33,7 +33,6 @@ data = ["model", "store", "context", "type", "types"]
 api = ["api", "route", "server"]
 logic = ["service", "handler", "hook", "middleware"]
 ui = ["component", "page", "view", "form", "dialog", "screen", "layout"]
-ui = ["component", "page", "view", "form", "dialog", "screen", "layout"]
 
 # ── Component sub-block patterns ──
 # Detected inside component/hook functions and added to the outline as sub-symbols.

@@ -75,6 +75,21 @@ def _is_memory_path(path: str) -> bool:
     return normalized.startswith(_MEMORY_PREFIX) or normalized == ".MEMORY"
 
 
+# .MEMORY/ paths where writes affect code execution — require user intent
+_PROTECTED_MEMORY_PREFIXES: tuple[str, ...] = (
+    ".memory/rules/workflow",
+    ".memory/rules/security",
+    ".memory/config/workflow-actions",
+)
+
+
+def _is_protected_memory_path(path: str) -> bool:
+    """Workflow rules, security rules, and compiled workflows are user-intent-only."""
+    normalized = _normalize_path(path).lower()
+    return any(normalized.startswith(prefix) for prefix in _PROTECTED_MEMORY_PREFIXES)
+
+
+
 def _is_sensitive(path: str) -> bool:
     normalized = _normalize_path(path)
     return any(p.search(normalized) for p in _SENSITIVE_PATTERNS)
@@ -287,18 +302,23 @@ class AccessGate:
                 reason=f"Write access to AIDOCS infrastructure blocked (dev_mode required): {normalized}",
             )
 
-        # Level 4: .MEMORY/ writes — require intent verification
+        # Level 4: .MEMORY/ writes — workflow/security rules need user intent
         if _is_memory_path(normalized):
-            if has_intent:
+            if ctx.dev_mode:
                 return GateDecision(allowed=True, level="memory_path_exemption")
-            return GateDecision(
-                allowed=False,
-                level="memory_write_intent_gate",
-                reason=(
-                    f"Write to .MEMORY/ requires user intent. "
-                    f"Workflow rules and session state in .MEMORY/ affect code execution."
-                ),
-            )
+            if _is_protected_memory_path(normalized):
+                if has_intent:
+                    return GateDecision(allowed=True, level="memory_write_intent_gate")
+                return GateDecision(
+                    allowed=False,
+                    level="memory_write_intent_gate",
+                    reason=(
+                        f"Write to workflow/security rules requires user intent. "
+                        f"These files affect how AIDOCS orchestrates code execution: {normalized}"
+                    ),
+                )
+            # Session files, journals, domains, etc. — freely writable
+            return GateDecision(allowed=True, level="memory_path_exemption")
 
         return GateDecision(allowed=True, level="allowed")
 

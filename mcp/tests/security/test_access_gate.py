@@ -159,7 +159,7 @@ class TestLevel3SensitiveFileProtection:
 
 
 class TestLevel4MemoryPathGate:
-    """.MEMORY/ reads always allowed; writes require intent."""
+    """.MEMORY/ reads always allowed; workflow/security rule writes need intent."""
 
     def test_memory_reads_always_allowed(self) -> None:
         decision = AccessGate.check_read(_ctx(), ".MEMORY/sessions/s1/context.md")
@@ -178,18 +178,63 @@ class TestLevel4MemoryPathGate:
         decision = AccessGate.check_read(_ctx(), ".MEMORY/sessions/s1/SESSION.md")
         assert decision.allowed
 
-    def test_memory_write_requires_intent(self) -> None:
-        """Writes to .MEMORY/ are security-gated — returns a gate decision
-        indicating intent verification is needed."""
+    def test_workflow_rules_write_requires_intent(self) -> None:
         decision = AccessGate.check_write(_ctx(), ".MEMORY/rules/workflow-rules.md")
         assert not decision.allowed
         assert decision.level == "memory_write_intent_gate"
 
-    def test_memory_write_allowed_with_intent(self) -> None:
-        """When intent is confirmed, .MEMORY/ writes proceed."""
+    def test_security_rules_write_requires_intent(self) -> None:
+        decision = AccessGate.check_write(_ctx(), ".MEMORY/rules/security.md")
+        assert not decision.allowed
+        assert decision.level == "memory_write_intent_gate"
+
+    def test_workflow_actions_write_requires_intent(self) -> None:
+        decision = AccessGate.check_write(_ctx(), ".MEMORY/rules/workflow-actions.md")
+        assert not decision.allowed
+        assert decision.level == "memory_write_intent_gate"
+
+    def test_compiled_workflow_write_requires_intent(self) -> None:
+        decision = AccessGate.check_write(_ctx(), ".MEMORY/config/workflow-actions.json")
+        assert not decision.allowed
+        assert decision.level == "memory_write_intent_gate"
+
+    def test_workflow_write_allowed_with_intent(self) -> None:
         decision = AccessGate.check_write(
             _ctx(), ".MEMORY/rules/workflow-rules.md", has_intent=True
         )
+        assert decision.allowed
+
+    def test_session_file_write_freely_allowed(self) -> None:
+        """Session operational files are not protected — agents write them normally."""
+        decision = AccessGate.check_write(_ctx(), ".MEMORY/sessions/s1/context.md")
+        assert decision.allowed
+        assert decision.level == "memory_path_exemption"
+
+    def test_journal_write_freely_allowed(self) -> None:
+        decision = AccessGate.check_write(_ctx(), ".MEMORY/sessions/s1/journal.jsonl")
+        assert decision.allowed
+
+    def test_domain_memory_write_freely_allowed(self) -> None:
+        decision = AccessGate.check_write(_ctx(), ".MEMORY/domains/accounting.md")
+        assert decision.allowed
+
+    def test_index_file_write_freely_allowed(self) -> None:
+        decision = AccessGate.check_write(_ctx(), ".MEMORY/INDEX.md")
+        assert decision.allowed
+
+    def test_dev_mode_bypasses_workflow_protection(self) -> None:
+        """dev_mode=true bypasses all .MEMORY/ write protection."""
+        decision = AccessGate.check_write(
+            _ctx(dev_mode=True), ".MEMORY/rules/workflow-rules.md"
+        )
+        assert decision.allowed
+
+    def test_non_workflow_rules_freely_writable(self) -> None:
+        """Rules that aren't workflow/security are operational — freely writable."""
+        decision = AccessGate.check_write(_ctx(), ".MEMORY/rules/standards.md")
+        assert decision.allowed
+
+        decision = AccessGate.check_write(_ctx(), ".MEMORY/rules/communication.md")
         assert decision.allowed
 
 

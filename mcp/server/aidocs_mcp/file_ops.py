@@ -495,7 +495,6 @@ def create_file(
         "created": True,
         "bytes_written": len(content.encode("utf-8")),
         "lines_written": len(content.splitlines()),
-        "error": None,
     }
 
 
@@ -651,7 +650,6 @@ def edit_lines(
             "lines_removed": len(old_lines),
             "lines_added": len(new_lines),
             "dry_run": True,
-            "error": None,
         }
 
     # Write back
@@ -666,8 +664,6 @@ def edit_lines(
         "end_line": end_line,
         "lines_removed": len(old_lines),
         "lines_added": len(new_lines),
-        "dry_run": False,
-        "error": None,
     }
 
 
@@ -732,7 +728,6 @@ def batch_edit(
             "applied": 0,
             "failed": 0,
             "results": [],
-            "error": None,
         }
 
     # Phase 1: Read all files and validate all edits
@@ -832,7 +827,6 @@ def batch_edit(
                     if new_content.strip()
                     else 0,
                     "dry_run": dry_run,
-                    "error": None,
                     # old_content/new_content kept only for dry_run and error cases
                     **({"old_content": old_content, "new_content": new_content} if dry_run else {}),
                 }
@@ -861,7 +855,6 @@ def batch_edit(
             "applied": len(validations) - len(failures),
             "failed": len(failures),
             "results": validations,
-            "error": None,
         }
 
     # Phase 2: Apply edits (process files in reverse line order to preserve line numbers)
@@ -914,7 +907,9 @@ def batch_edit(
         "applied": applied,
         "failed": len(failures),
         "results": validations,
-        "error": None if not failures else f"{len(failures)} edit(s) failed.",
+        **({
+            "error": f"{len(failures)} edit(s) failed."
+        } if failures else {}),
     }
 
 
@@ -925,11 +920,6 @@ def _edit_error(path: str, start: int, end: int, error: str) -> dict[str, object
         "path": path,
         "start_line": start,
         "end_line": end,
-        "old_content": "",
-        "new_content": "",
-        "lines_removed": 0,
-        "lines_added": 0,
-        "dry_run": False,
         "error": error,
     }
 
@@ -1029,7 +1019,6 @@ def str_replace(
         "path": canonical_path,
         "lines_changed": lines_changed,
         "replacements": replacements,
-        "error": None,
     }
 
 
@@ -1103,7 +1092,7 @@ def batch_str_replace(
             else:
                 file_cache[canonical_path] = content.replace(old_str, new_str, 1)
 
-            validations.append({"success": True, "path": canonical_path, "error": None})
+            validations.append({"success": True, "path": canonical_path})
 
         except (ValueError, FileNotFoundError) as exc:
             validations.append({"success": False, "path": path, "error": str(exc)})
@@ -1132,7 +1121,9 @@ def batch_str_replace(
         "applied": applied,
         "failed": len(failures),
         "results": validations,
-        "error": None if not failures else f"{len(failures)} edit(s) failed.",
+        **({
+            "error": f"{len(failures)} edit(s) failed."
+        } if failures else {}),
     }
 
 
@@ -1224,5 +1215,4 @@ def extract_block(
         "lines_extracted": len(block),
         "lines_removed_from_source": lines_removed,
         "target_position": pos,
-        "error": None,
     }

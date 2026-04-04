@@ -637,7 +637,7 @@ class TestCreateFile:
         assert result["created"] is True
         assert result["bytes_written"] == len("alpha\nbeta\n".encode("utf-8"))
         assert result["lines_written"] == 2
-        assert result["error"] is None
+        assert "error" not in result
         assert (project / "notes.txt").read_text(encoding="utf-8") == "alpha\nbeta\n"
 
 

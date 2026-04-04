@@ -1395,7 +1395,7 @@ def create_server() -> Any:
                 hub,
                 root,
                 "code_create_file",
-                str(result.get("canonical_path") or result.get("path") or path),
+                str(result.get("path") or path),
             )
         return result
 
@@ -1451,7 +1451,7 @@ def create_server() -> Any:
                 hub,
                 root,
                 "code_edit_lines",
-                str(result.get("canonical_path") or result.get("path") or path),
+                str(result.get("path") or path),
             )
         return result
 
@@ -1497,7 +1497,7 @@ def create_server() -> Any:
                         hub,
                         root,
                         "code_batch_edit",
-                        str(item.get("canonical_path") or item.get("path") or ""),
+                        str(item.get("path") or ""),
                     )
         return result
 

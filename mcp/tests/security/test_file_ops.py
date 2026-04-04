@@ -40,16 +40,16 @@ def project(tmp_path: Path) -> Path:
 class TestGetLines:
     def test_reads_all_lines(self, project: Path) -> None:
         result = get_lines(project, "hello.txt")
-        assert result["total_lines"] == 5
-        assert result["start_line"] == 1
-        assert result["end_line"] == 5
+        assert result["total"] == 5
+        assert result["start"] == 1
+        assert result["end"] == 5
         assert result["content"].count("\n") == 4  # 5 lines = 4 newlines
         assert not result.get("has_more", False)
 
     def test_reads_specific_range(self, project: Path) -> None:
         result = get_lines(project, "hello.txt", start_line=2, count=2)
-        assert result["start_line"] == 2
-        assert result["end_line"] == 3
+        assert result["start"] == 2
+        assert result["end"] == 3
         assert "line2" in result["content"] and "line3" in result["content"]
         assert result["has_more"] is True
 
@@ -68,7 +68,7 @@ class TestGetLines:
 
     def test_clamps_start_to_valid_range(self, project: Path) -> None:
         result = get_lines(project, "hello.txt", start_line=100)
-        assert result["start_line"] == 5  # Clamped to last line
+        assert result["start"] == 5  # Clamped to last line
         assert result["content"].strip().count("\n") == 0  # single line
 
     def test_clamps_count_to_max(self, project: Path) -> None:
@@ -77,12 +77,12 @@ class TestGetLines:
 
     def test_subdirectory_file(self, project: Path) -> None:
         result = get_lines(project, "src/app.js")
-        assert result["total_lines"] == 3
+        assert result["total"] == 3
         assert "const x = 1;" in result["content"]
 
     def test_backslash_path(self, project: Path) -> None:
         result = get_lines(project, "src\\app.js")
-        assert result["total_lines"] == 3
+        assert result["total"] == 3
 
     def test_nonexistent_file_raises(self, project: Path) -> None:
         with pytest.raises(FileNotFoundError):
@@ -428,7 +428,7 @@ class TestSecurityGuardrails:
     def test_valid_project_with_git_passes(self, project: Path) -> None:
         """Directory with .git marker passes validation."""
         result = get_lines(project, "hello.txt")
-        assert result["total_lines"] == 5
+        assert result["total"] == 5
 
     def test_sensitive_file_blocked_in_batch(self, project: Path) -> None:
         (project / ".git").mkdir(exist_ok=True)
@@ -468,8 +468,8 @@ class TestEditLines:
         )
         assert result["success"] is True
         assert "old_content" not in result
-        assert result["lines_removed"] == 1
-        assert result["lines_added"] == 1
+        assert result["removed"] == 1
+        assert result["added"] == 1
         # Verify file
         lines = (project / "hello.txt").read_text(encoding="utf-8").splitlines()
         assert lines[1] == "REPLACED"
@@ -479,8 +479,8 @@ class TestEditLines:
             project, "hello.txt", start_line=2, end_line=4, new_content="A\nB"
         )
         assert result["success"] is True
-        assert result["lines_removed"] == 3
-        assert result["lines_added"] == 2
+        assert result["removed"] == 3
+        assert result["added"] == 2
         lines = (project / "hello.txt").read_text(encoding="utf-8").splitlines()
         assert lines == ["line1", "A", "B", "line5"]
 
@@ -491,8 +491,8 @@ class TestEditLines:
         )
         assert result["success"] is True
         assert "old_content" not in result
-        assert result["lines_removed"] == 0
-        assert result["lines_added"] == 1
+        assert result["removed"] == 0
+        assert result["added"] == 1
         lines = (project / "hello.txt").read_text(encoding="utf-8").splitlines()
         assert lines[2] == "INSERTED"
         assert lines[3] == "line3"
@@ -573,7 +573,7 @@ class TestEditLines:
             new_content="first\nsecond\nthird",
         )
         assert result["success"] is True
-        assert result["lines_added"] == 3
+        assert result["added"] == 3
         lines = (project / "hello.txt").read_text(encoding="utf-8").splitlines()
         assert lines[0] == "first"
         assert lines[1] == "second"
@@ -589,8 +589,8 @@ class TestEditLines:
             new_content="",
         )
         assert result["success"] is True
-        assert result["lines_removed"] == 3
-        assert result["lines_added"] == 0
+        assert result["removed"] == 3
+        assert result["added"] == 0
         lines = (project / "hello.txt").read_text(encoding="utf-8").splitlines()
         assert lines == ["line1", "line5"]
 
@@ -635,8 +635,7 @@ class TestCreateFile:
         assert result["success"] is True
         assert result["path"] == "notes.txt"
         assert result["created"] is True
-        assert result["bytes_written"] == len("alpha\nbeta\n".encode("utf-8"))
-        assert result["lines_written"] == 2
+        assert result["lines"] == 2
         assert "error" not in result
         assert (project / "notes.txt").read_text(encoding="utf-8") == "alpha\nbeta\n"
 
@@ -794,7 +793,7 @@ class TestBatchEdit:
     def test_empty_batch(self, project: Path) -> None:
         result = batch_edit(project, [])
         assert result["success"] is True
-        assert result["total_edits"] == 0
+        assert result["total"] == 0
 
     def test_too_many_edits_rejected(self, project: Path) -> None:
         edits = [

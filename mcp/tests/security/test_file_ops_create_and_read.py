@@ -50,8 +50,8 @@ def test_known_exact_path_allows_followup_read_after_native_file_create(tmp_path
 
     assert created_data["success"] is True
     assert data["path"] == "src/created.txt"
-    assert data["start_line"] == 2
-    assert data["end_line"] == 2
+    assert data["start"] == 2
+    assert data["end"] == 2
     assert data["content"] == "two"
 
 

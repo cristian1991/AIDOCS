@@ -32,7 +32,7 @@ class TestStrReplace:
     def test_simple_replacement(self, project: Path) -> None:
         result = str_replace(project, "src/app.py", "return 'world'", "return 'earth'")
         assert result["success"] is True
-        assert result["lines_changed"] == 1
+        assert result["changed"] == 1
         content = (project / "src" / "app.py").read_text(encoding="utf-8")
         assert "return 'earth'" in content
 

@@ -383,9 +383,9 @@ def get_lines(
     Returns:
         {
             "path": str,
-            "start_line": int,
-            "end_line": int,
-            "total_lines": int,
+            "start": int,
+            "end": int,
+            "total": int,
             "content": str,          # The requested lines (with optional line numbers)
             "lines": [str],          # Raw lines without numbers
             "has_more": bool,        # True if file has more lines after end_line
@@ -417,9 +417,9 @@ def get_lines(
 
     result: dict[str, object] = {
         "path": path,
-        "start_line": start,
-        "end_line": end,
-        "total_lines": total,
+        "start": start,
+        "end": end,
+        "total": total,
         "content": content,
     }
     if end < total:
@@ -452,8 +452,7 @@ def create_file(
             "success": False,
             "path": path,
             "created": False,
-            "bytes_written": 0,
-            "lines_written": 0,
+            
             "error": str(exc),
         }
 
@@ -462,8 +461,7 @@ def create_file(
             "success": False,
             "path": path,
             "created": False,
-            "bytes_written": 0,
-            "lines_written": 0,
+            
             "error": f"File already exists: {path}",
         }
 
@@ -479,8 +477,7 @@ def create_file(
             "success": False,
             "path": path,
             "created": False,
-            "bytes_written": 0,
-            "lines_written": 0,
+            
             "error": str(exc),
         }
 
@@ -491,10 +488,9 @@ def create_file(
     return {
         "success": True,
         "path": canonical_path,
-        "canonical_path": canonical_path,
+        
         "created": True,
-        "bytes_written": len(content.encode("utf-8")),
-        "lines_written": len(content.splitlines()),
+        "lines": len(content.splitlines()),
     }
 
 
@@ -642,7 +638,7 @@ def edit_lines(
         return {
             "success": True,
             "path": canonical_path,
-            "canonical_path": canonical_path,
+            
             "start_line": start_line,
             "end_line": end_line,
             "old_content": old_content,
@@ -659,11 +655,11 @@ def edit_lines(
     return {
         "success": True,
         "path": canonical_path,
-        "canonical_path": canonical_path,
-        "start_line": start_line,
-        "end_line": end_line,
-        "lines_removed": len(old_lines),
-        "lines_added": len(new_lines),
+        
+        "start": start_line,
+        "end": end_line,
+        "removed": len(old_lines),
+        "added": len(new_lines),
     }
 
 
@@ -692,7 +688,7 @@ def batch_edit(
     Returns:
         {
             "success": bool,
-            "total_edits": int,
+            "total": int,
             "applied": int,
             "failed": int,
             "results": [EditResult],
@@ -704,7 +700,7 @@ def batch_edit(
     except ValueError as exc:
         return {
             "success": False,
-            "total_edits": len(edits),
+            "total": len(edits),
             "applied": 0,
             "failed": len(edits),
             "results": [],
@@ -714,7 +710,7 @@ def batch_edit(
     if len(edits) > MAX_BATCH_EDITS:
         return {
             "success": False,
-            "total_edits": len(edits),
+            "total": len(edits),
             "applied": 0,
             "failed": len(edits),
             "results": [],
@@ -724,7 +720,7 @@ def batch_edit(
     if not edits:
         return {
             "success": True,
-            "total_edits": 0,
+            "total": 0,
             "applied": 0,
             "failed": 0,
             "results": [],
@@ -818,17 +814,14 @@ def batch_edit(
             validations.append(
                 {
                     "success": True,
-                    "path": path,
-                    "canonical_path": canonical_path,
-                    "start_line": start,
-                    "end_line": end,
-                    "lines_removed": len(old_lines),
-                    "lines_added": len(new_content.split("\n"))
+                    "path": canonical_path,
+                    "start": start,
+                    "end": end,
+                    "removed": len(old_lines),
+                    "added": len(new_content.split("\n"))
                     if new_content.strip()
                     else 0,
-                    "dry_run": dry_run,
-                    # old_content/new_content kept only for dry_run and error cases
-                    **({"old_content": old_content, "new_content": new_content} if dry_run else {}),
+                    **({"dry_run": True, "old_content": old_content, "new_content": new_content} if dry_run else {}),
                 }
             )
 
@@ -841,7 +834,7 @@ def batch_edit(
     if atomic and failures:
         return {
             "success": False,
-            "total_edits": len(edits),
+            "total": len(edits),
             "applied": 0,
             "failed": len(failures),
             "results": validations,
@@ -851,7 +844,7 @@ def batch_edit(
     if dry_run:
         return {
             "success": len(failures) == 0,
-            "total_edits": len(edits),
+            "total": len(edits),
             "applied": len(validations) - len(failures),
             "failed": len(failures),
             "results": validations,
@@ -863,7 +856,7 @@ def batch_edit(
     for i, (edit, validation) in enumerate(zip(edits, validations)):
         if not validation["success"]:
             continue
-        canonical_path = str(validation.get("canonical_path", edit.get("path", "")))
+        canonical_path = str(validation.get("path") or edit.get("path") or "")
         if canonical_path not in edits_by_file:
             edits_by_file[canonical_path] = []
         edits_by_file[canonical_path].append((i, edit))
@@ -903,7 +896,7 @@ def batch_edit(
     applied = len(validations) - len(failures)
     return {
         "success": len(failures) == 0,
-        "total_edits": len(edits),
+        "total": len(edits),
         "applied": applied,
         "failed": len(failures),
         "results": validations,
@@ -1017,7 +1010,7 @@ def str_replace(
     return {
         "success": True,
         "path": canonical_path,
-        "lines_changed": lines_changed,
+        "changed": lines_changed,
         "replacements": replacements,
     }
 
@@ -1039,17 +1032,17 @@ def batch_str_replace(
         atomic: All-or-nothing mode (default True).
 
     Returns:
-        { "success": bool, "total_edits": int, "applied": int, "failed": int, "results": [...], "error": str | None }
+        { "success": bool, "total": int, "applied": int, "failed": int, "results": [...], "error": str | None }
     """
     try:
         _validate_project_root(project_root, write=True)
     except ValueError as exc:
-        return {"success": False, "total_edits": len(edits), "applied": 0, "failed": len(edits), "results": [], "error": str(exc)}
+        return {"success": False, "total": len(edits), "applied": 0, "failed": len(edits), "results": [], "error": str(exc)}
 
     if len(edits) > MAX_BATCH_STR_REPLACE:
         return {
             "success": False,
-            "total_edits": len(edits),
+            "total": len(edits),
             "applied": 0,
             "failed": len(edits),
             "results": [],
@@ -1102,7 +1095,7 @@ def batch_str_replace(
     if atomic and failures:
         return {
             "success": False,
-            "total_edits": len(edits),
+            "total": len(edits),
             "applied": 0,
             "failed": len(failures),
             "results": validations,
@@ -1117,7 +1110,7 @@ def batch_str_replace(
     applied = len(validations) - len(failures)
     return {
         "success": len(failures) == 0,
-        "total_edits": len(edits),
+        "total": len(edits),
         "applied": applied,
         "failed": len(failures),
         "results": validations,
@@ -1210,9 +1203,9 @@ def extract_block(
 
     return {
         "success": True,
-        "source_path": src_canonical,
-        "target_path": tgt_canonical,
-        "lines_extracted": len(block),
-        "lines_removed_from_source": lines_removed,
-        "target_position": pos,
+        "source": src_canonical,
+        "target": tgt_canonical,
+        "extracted": len(block),
+        "removed": lines_removed,
+        "position": pos,
     }

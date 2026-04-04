@@ -161,69 +161,22 @@ $claudeTemplate = Join-Path $coreRoot "templates\global-claude.md.tmpl"
 Write-AgentFileWithBackup -TargetPath (Join-Path $opencodeDir "AGENTS.md") -TemplatePath $agentsTemplate -AidocsPath $projectRoot -StopHeader $header
 Write-AgentFileWithBackup -TargetPath (Join-Path $claudeDir "CLAUDE.md") -TemplatePath $claudeTemplate -AidocsPath $projectRoot -StopHeader $header
 
-$opencodePluginSource = Join-Path $coreRoot "plugins\aidocs.js"
-if (-not (Test-Path $opencodePluginSource)) {
-  throw "Missing OpenCode plugin script: $opencodePluginSource"
-}
-$opencodePluginTarget = Join-Path $opencodePluginsDir "aidocs.js"
-[System.IO.File]::WriteAllText($opencodePluginTarget, [System.IO.File]::ReadAllText($opencodePluginSource), $utf8NoBom)
+# ── Smart file installation via manifest-aware Python installer ──
+$installScript = Join-Path $scriptDir "install_files.py"
 
-# Copy plugin config JSON next to plugin
-$pluginConfigSource = Join-Path $projectRoot "aidocs-plugin.json"
-if (Test-Path $pluginConfigSource) {
-  Copy-Item -Path $pluginConfigSource -Destination (Join-Path $opencodePluginsDir "aidocs-plugin.json") -Force
-}
+Write-Host "`nInstalling plugin files..."
+& python $installScript $projectRoot $coreRoot $opencodePluginsDir "plugin"
 
-# Copy action_tokens next to the plugin so it can find them at runtime
+Write-Host "`nInstalling action tokens..."
 $actionTokensRoot = Join-Path $projectRoot "action_tokens"
 if (-not (Test-Path $actionTokensRoot)) {
   $actionTokensRoot = Join-Path $projectRoot "mcp\server\aidocs_mcp\action_tokens"
 }
-if (-not (Test-Path $actionTokensRoot)) {
-  throw "Missing action_tokens directory: $actionTokensRoot"
-}
-
-# Copy action_tokens next to plugin (backup existing user customizations)
 $pluginActionTokensDir = Join-Path $opencodePluginsDir "action_tokens"
-New-Item -ItemType Directory -Force -Path $pluginActionTokensDir | Out-Null
+& python $installScript $projectRoot $coreRoot $pluginActionTokensDir "action_tokens"
 
-$opencodeActionTokenExports = @{}
-foreach ($ext in @("*.yaml", "*.toml")) {
-  Get-ChildItem -Path $actionTokensRoot -Filter $ext -File | ForEach-Object {
-    $target = Join-Path $pluginActionTokensDir $_.Name
-    if (Test-Path $target) {
-      Copy-Item -Path $target -Destination "$target.backup" -Force
-    }
-    Copy-Item -Path $_.FullName -Destination $target -Force
-    $opencodeActionTokenExports[$target] = "copy"
-  }
-}
-
-# Also maintain legacy opencode/ subdir for backward compat
-$opencodeActionTokensDir = Join-Path $actionTokensRoot "opencode"
-New-Item -ItemType Directory -Force -Path $opencodeActionTokensDir | Out-Null
-Get-ChildItem -Path $opencodeActionTokensDir -Filter "*.yaml" -File -ErrorAction SilentlyContinue | Remove-Item -Force
-Get-ChildItem -Path $opencodeActionTokensDir -Filter "*.toml" -File -ErrorAction SilentlyContinue | Remove-Item -Force
-
-foreach ($ext in @("*.yaml", "*.toml")) {
-  Get-ChildItem -Path $actionTokensRoot -Filter $ext -File | ForEach-Object {
-    $target = Join-Path $opencodeActionTokensDir $_.Name
-    $mode = New-LinkOrCopy -Source $_.FullName -Target $target
-    $opencodeActionTokenExports[$target] = $mode
-  }
-}
-
-$actionHooksRoot = Join-Path $projectRoot "action_hooks"
-if (Test-Path $actionHooksRoot) {
-  Get-ChildItem -Path $actionHooksRoot -Filter "*.toml" -File | ForEach-Object {
-    $target = Join-Path $opencodeActionHooksDir $_.Name
-    if (Test-Path $target) {
-      # Backup existing before overwrite — user may have customized
-      Copy-Item -Path $target -Destination "$target.backup" -Force
-    }
-    Copy-Item -Path $_.FullName -Destination $target -Force
-  }
-}
+Write-Host "`nInstalling action hooks..."
+& python $installScript $projectRoot $coreRoot $opencodeActionHooksDir "action_hooks"
 
 if (Test-Path $opencodeSettingsPath) {
   $opencodeSettingsRaw = [System.IO.File]::ReadAllText($opencodeSettingsPath)

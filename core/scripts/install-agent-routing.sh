@@ -111,68 +111,23 @@ if [[ ! -f "$OPENCODE_PLUGIN_SOURCE" ]]; then
   echo "Missing OpenCode plugin script: $OPENCODE_PLUGIN_SOURCE" >&2
   exit 1
 fi
-OPENCODE_PLUGIN_TARGET="$OPENCODE_PLUGINS_DIR/aidocs.js"
-cp "$OPENCODE_PLUGIN_SOURCE" "$OPENCODE_PLUGIN_TARGET"
 
-# Copy plugin config JSON next to plugin
-PLUGIN_CONFIG_SOURCE="$PROJECT_ROOT/aidocs-plugin.json"
-if [[ -f "$PLUGIN_CONFIG_SOURCE" ]]; then
-  cp "$PLUGIN_CONFIG_SOURCE" "$OPENCODE_PLUGINS_DIR/aidocs-plugin.json"
-fi
+# ── Smart file installation via manifest-aware Python installer ──
+INSTALL_SCRIPT="$SCRIPT_DIR/install_files.py"
 
-ACTION_TOKENS_ROOT="$PROJECT_ROOT/action_tokens"
-if [[ ! -d "$ACTION_TOKENS_ROOT" ]]; then
-  ACTION_TOKENS_ROOT="$PROJECT_ROOT/mcp/server/aidocs_mcp/action_tokens"
-fi
-if [[ ! -d "$ACTION_TOKENS_ROOT" ]]; then
-  echo "Missing action_tokens directory: $ACTION_TOKENS_ROOT" >&2
-  exit 1
-fi
+echo ""
+echo "Installing plugin files..."
+python3 "$INSTALL_SCRIPT" "$PROJECT_ROOT" "$CORE_ROOT" "$OPENCODE_PLUGINS_DIR" "plugin" 2>/dev/null || python "$INSTALL_SCRIPT" "$PROJECT_ROOT" "$CORE_ROOT" "$OPENCODE_PLUGINS_DIR" "plugin"
 
-# Copy action_tokens next to plugin (primary runtime path)
+echo ""
+echo "Installing action tokens..."
 PLUGIN_ACTION_TOKENS_DIR="$OPENCODE_PLUGINS_DIR/action_tokens"
-mkdir -p "$PLUGIN_ACTION_TOKENS_DIR"
-declare -a OPENCODE_ACTION_TOKEN_EXPORTS=()
-for token_file in "$ACTION_TOKENS_ROOT"/*.yaml "$ACTION_TOKENS_ROOT"/*.toml; do
-  [[ -f "$token_file" ]] || continue
-  target="$PLUGIN_ACTION_TOKENS_DIR/$(basename "$token_file")"
-  [[ -f "$target" ]] && cp "$target" "${target}.backup"
-  cp "$token_file" "$target"
-  OPENCODE_ACTION_TOKEN_EXPORTS+=("$target (copy)")
-done
+python3 "$INSTALL_SCRIPT" "$PROJECT_ROOT" "$CORE_ROOT" "$PLUGIN_ACTION_TOKENS_DIR" "action_tokens" 2>/dev/null || python "$INSTALL_SCRIPT" "$PROJECT_ROOT" "$CORE_ROOT" "$PLUGIN_ACTION_TOKENS_DIR" "action_tokens"
 
-# Also maintain legacy opencode/ subdir for backward compat
-link_or_copy() {
-  local source="$1"
-  local target="$2"
-  rm -f "$target"
-  if ln -s "$source" "$target" 2>/dev/null; then
-    OPENCODE_ACTION_TOKEN_EXPORTS+=("$target (link)")
-  else
-    cp "$source" "$target"
-    OPENCODE_ACTION_TOKEN_EXPORTS+=("$target (copy)")
-  fi
-}
+echo ""
+echo "Installing action hooks..."
+python3 "$INSTALL_SCRIPT" "$PROJECT_ROOT" "$CORE_ROOT" "$OPENCODE_ACTION_HOOKS_DIR" "action_hooks" 2>/dev/null || python "$INSTALL_SCRIPT" "$PROJECT_ROOT" "$CORE_ROOT" "$OPENCODE_ACTION_HOOKS_DIR" "action_hooks"
 
-OPENCODE_ACTION_TOKENS_DIR="$ACTION_TOKENS_ROOT/opencode"
-mkdir -p "$OPENCODE_ACTION_TOKENS_DIR"
-
-for token_file in "$ACTION_TOKENS_ROOT"/*.yaml "$ACTION_TOKENS_ROOT"/*.toml; do
-  [[ -f "$token_file" ]] || continue
-  target="$OPENCODE_ACTION_TOKENS_DIR/$(basename "$token_file")"
-  [[ -f "$target" ]] && cp "$target" "${target}.backup"
-  link_or_copy "$token_file" "$target"
-done
-
-ACTION_HOOKS_ROOT="$PROJECT_ROOT/action_hooks"
-if [[ -d "$ACTION_HOOKS_ROOT" ]]; then
-  for hook_file in "$ACTION_HOOKS_ROOT"/*.toml; do
-    [[ -f "$hook_file" ]] || continue
-    target="$OPENCODE_ACTION_HOOKS_DIR/$(basename "$hook_file")"
-    [[ -f "$target" ]] && cp "$target" "${target}.backup"
-    cp "$hook_file" "$target"
-  done
-fi
 
 PYTHON_BIN=""
 for candidate in python3 python py; do

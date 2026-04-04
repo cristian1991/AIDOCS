@@ -4,7 +4,8 @@ import asyncio
 import json
 from pathlib import Path
 
-from aidocs_mcp.mcp_server import _is_known_exact_relative_path, create_server
+from aidocs_mcp.access_gate import _is_safe_grantable_path
+from aidocs_mcp.mcp_server import create_server
 
 
 def _payload_json(result: object) -> dict[str, object]:
@@ -91,10 +92,10 @@ def test_known_exact_path_requires_project_relative_path_even_after_grant(tmp_pa
     data = _payload_json(lines)
 
     assert created_data["success"] is True
-    assert _is_known_exact_relative_path(str(created_path)) is False
+    assert _is_safe_grantable_path(str(created_path)) is False
     assert "error" in data
 
 
 def test_known_exact_path_rejects_drive_qualified_absolute_path() -> None:
-    assert _is_known_exact_relative_path("C:/temp/file.txt") is False
+    assert _is_safe_grantable_path("C:/temp/file.txt") is False
 

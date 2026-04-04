@@ -42,6 +42,7 @@ class LanguageDescriptor:
     role_suffix_patterns: tuple[tuple[str, str], ...]  # (file_suffix, role)
     role_path_tokens: tuple[tuple[str, str | None, str], ...]  # (token, optional_contains_suffix, role)
     layer_tokens: dict[str, tuple[str, ...]]           # {layer: (token, ...)}
+    component_semantics: dict[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)  # {category: (pattern, ...)}
 
 
 # Auto-derived from LanguageDescriptor field names — any field change invalidates cache
@@ -193,6 +194,12 @@ def _load_descriptor_file(file: Path, source: str) -> LanguageDescriptor | None:
             if token and role:
                 role_path_tokens.append((token, contains_suffix, role))
 
+    component_semantics_raw = data.get("component_semantics", {})
+    component_semantics: dict[str, tuple[str, ...]] = {}
+    if isinstance(component_semantics_raw, dict):
+        for category, patterns in component_semantics_raw.items():
+            component_semantics[str(category)] = _normalize_list(patterns)
+
     layer_tokens_raw = data.get("layer_tokens", {})
     layer_tokens: dict[str, tuple[str, ...]] = {}
     if isinstance(layer_tokens_raw, dict):
@@ -222,6 +229,7 @@ def _load_descriptor_file(file: Path, source: str) -> LanguageDescriptor | None:
         role_suffix_patterns=tuple(role_suffix_patterns),
         role_path_tokens=tuple(role_path_tokens),
         layer_tokens=layer_tokens,
+        component_semantics=component_semantics,
     )
 
 

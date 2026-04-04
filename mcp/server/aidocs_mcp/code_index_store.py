@@ -5158,6 +5158,10 @@ class CodeIndexStore:
                     initializer = self._extract_js_initializer(line)
                     if initializer is not None:
                         outlines.append((initializer, "initializer", line_number, None, False))
+                # Detect component sub-blocks from TOML component_semantics
+                self._extract_component_semantics(
+                    project_root, code_language, text, ast_outline, outlines
+                )
             else:
                 patterns = [
                     (r"^\s*(?:export\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)", "class"),
@@ -5364,6 +5368,63 @@ class CodeIndexStore:
                 outlines.append((node.name, kind, node.lineno, None, False))
 
         return outlines
+
+    def _extract_component_semantics(
+        self,
+        project_root: Path,
+        code_language: str,
+        text: str,
+        ast_outline: list[tuple[str, str, int, str | None, bool]],
+        outlines: list[tuple[str, str, int, str | None, bool]],
+    ) -> None:
+        """Scan component/hook function bodies for semantic sub-blocks defined in TOML."""
+        import re as _re
+
+        descriptor = descriptor_for_language(project_root, "", f".{code_language}")
+        if descriptor is None:
+            return
+        semantics = descriptor.component_semantics
+        if not semantics:
+            return
+
+        lines = text.splitlines()
+        # Only scan inside component and hook functions
+        component_symbols = [
+            (name, kind, line_num)
+            for name, kind, line_num, _container, _partial in ast_outline
+            if kind in {"component", "hook", "context_provider"}
+        ]
+
+        for comp_name, comp_kind, comp_start in component_symbols:
+            # Find end of component using brace balance
+            start_idx = comp_start - 1
+            comp_end = self._find_brace_end(lines, start_idx)
+
+            for category, patterns in semantics.items():
+                for line_num in range(comp_start, min(comp_end + 1, len(lines) + 1)):
+                    line = lines[line_num - 1] if line_num <= len(lines) else ""
+                    for pattern in patterns:
+                        if pattern.startswith("^"):
+                            if _re.search(pattern, line):
+                                outlines.append((f"{category}@L{line_num}", category, line_num, comp_name, False))
+                                break
+                        elif pattern in line:
+                            outlines.append((f"{category}@L{line_num}", category, line_num, comp_name, False))
+                            break
+
+    @staticmethod
+    def _find_brace_end(lines: list[str], start_idx: int) -> int:
+        """Find the closing brace line for a function starting at start_idx."""
+        balance = 0
+        seen_open = False
+        for i in range(start_idx, len(lines)):
+            balance += lines[i].count("{") - lines[i].count("}")
+            if lines[i].count("{") > 0:
+                seen_open = True
+            if seen_open and balance <= 0:
+                return i + 1
+        return min(start_idx + 50, len(lines))
+
 
     def _extract_js_initializer(self, line: str) -> str | None:
         checks = [

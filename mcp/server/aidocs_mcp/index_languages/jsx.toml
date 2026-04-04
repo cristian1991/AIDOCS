@@ -29,4 +29,12 @@ data = ["model", "store", "context"]
 api = ["api", "route"]
 logic = ["service", "handler", "hook"]
 ui = ["component", "page", "view", "form", "dialog", "screen", "layout"]
+ui = ["component", "page", "view", "form", "dialog", "screen", "layout"]
 
+# ── Component sub-block patterns ──
+[component_semantics]
+state = ["useState", "useReducer", "useContext", "useStore", "useAtom"]
+effect = ["useEffect", "useLayoutEffect", "useMemo", "useCallback", "useRef"]
+handler = ["^\\s*(?:const|let|function)\\s+handle[A-Z]"]
+query = ["useQuery", "useMutation", "useSWR", "useFetch"]
+form = ["useForm", "useFormik", "useFormContext"]

@@ -33,4 +33,14 @@ data = ["model", "store", "context", "type", "types"]
 api = ["api", "route", "server"]
 logic = ["service", "handler", "hook", "middleware"]
 ui = ["component", "page", "view", "form", "dialog", "screen", "layout"]
+ui = ["component", "page", "view", "form", "dialog", "screen", "layout"]
 
+# ── Component sub-block patterns ──
+# Detected inside component/hook functions and added to the outline as sub-symbols.
+# Each entry: regex pattern matched against trimmed source lines inside the component body.
+[component_semantics]
+state = ["useState", "useReducer", "useContext", "useStore", "useAtom"]
+effect = ["useEffect", "useLayoutEffect", "useMemo", "useCallback", "useRef"]
+handler = ["^\\s*(?:const|let|function)\\s+handle[A-Z]"]
+query = ["useQuery", "useMutation", "useSWR", "useFetch"]
+form = ["useForm", "useFormik", "useFormContext"]

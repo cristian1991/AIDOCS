@@ -20,7 +20,8 @@ code_trace = "Trace relationships: field flow, service usage, model usage, compo
 # ── Code editing ──
 code_str_replace = "Quick string-match edit (old_str must be under 500 chars, unique in file). No line numbers needed. For large blocks use code_edit_lines."
 code_batch_str_replace = "Multiple string-match replacements across files, atomic. Max 20 edits. Use for scattered small changes."
-code_edit_lines = "Replace a line range with new content. Only sends new content (saves context). Use for large block replacements where you know the line numbers."
+code_edit_lines = "Replace a line range with new content. Only sends new content (saves context). Use for large block replacements."
+code_insert_lines = "Insert content before a specific line. Simpler than code_edit_lines insert mode."
 code_batch_edit = "Multiple line-range edits atomically across files. Bottom-up application preserves line numbers. Max 20 edits."
 code_create_file = "Create a new file. Planning docs go in .MEMORY/roadmaps/ or .MEMORY/specs/, not project root."
 code_extract_block = "Move a code block by line range from source to target file. Both files auto-reindexed."

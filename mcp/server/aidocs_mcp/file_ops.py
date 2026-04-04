@@ -661,15 +661,17 @@ def edit_lines(
     _write_lines(abs_path, result_lines, final_newline=final_newline)
 
     # Omit old_content/new_content on success — agent already knows both
-    return {
+    result: dict[str, object] = {
         "success": True,
         "path": canonical_path,
-        
         "start": start_line,
         "end": end_line,
         "removed": len(old_lines),
         "added": len(new_lines),
     }
+    if new_lines:
+        result["preview"] = new_lines[0].rstrip()[:80]
+    return result
 
 
 def batch_edit(
@@ -1036,6 +1038,13 @@ def str_replace(
         }
 
     old_lines = content.splitlines()
+    # Find first match line for preview
+    first_match_line = None
+    for i, line in enumerate(old_lines, 1):
+        if old_str in line:
+            first_match_line = i
+            break
+
     if replace_all:
         new_content = content.replace(old_str, new_str)
         replacements = count
@@ -1048,12 +1057,15 @@ def str_replace(
 
     abs_path.write_text(new_content, encoding="utf-8")
 
-    return {
+    result: dict[str, object] = {
         "success": True,
         "path": canonical_path,
         "changed": lines_changed,
         "replacements": replacements,
     }
+    if first_match_line:
+        result["first_match_line"] = first_match_line
+    return result
 
 
 def batch_str_replace(
@@ -1095,7 +1107,7 @@ def batch_str_replace(
     file_paths: dict[str, Path] = {}
     validations: list[dict[str, object]] = []
 
-    for edit in edits:
+    for edit_index, edit in enumerate(edits):
         path = str(edit.get("path", ""))
         old_str = str(edit.get("old_str", ""))
         new_str = str(edit.get("new_str", ""))
@@ -1114,10 +1126,12 @@ def batch_str_replace(
             count = content.count(old_str)
 
             if count == 0:
-                validations.append({"success": False, "path": canonical_path, "error": f"No match found for old_str in {canonical_path}."})
+                preview = old_str[:50] + ("..." if len(old_str) > 50 else "")
+                validations.append({"success": False, "path": canonical_path, "edit_index": edit_index, "error": f"Edit #{edit_index}: no match in {canonical_path} for: {preview}"})
                 continue
             if count > 1 and not replace_all:
-                validations.append({"success": False, "path": canonical_path, "error": f"Found {count} matches in {canonical_path}. Use replace_all=True or more context."})
+                preview = old_str[:50] + ("..." if len(old_str) > 50 else "")
+                validations.append({"success": False, "path": canonical_path, "edit_index": edit_index, "error": f"Edit #{edit_index}: {count} matches in {canonical_path} for: {preview}"})
                 continue
 
             # Apply to cached content so subsequent edits on same file see prior changes

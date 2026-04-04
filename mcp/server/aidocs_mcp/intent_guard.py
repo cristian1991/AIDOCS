@@ -154,6 +154,7 @@ TOOL_INTENT_MAP: dict[str, str] = {
     "code_batch_edit": "edit",
     "code_str_replace": "edit",
     "code_batch_str_replace": "edit",
+    "code_insert_lines": "edit",
     "code_extract_block": "edit",
     "planning_step_mark": "edit",
     "code_extract_symbol": "edit",

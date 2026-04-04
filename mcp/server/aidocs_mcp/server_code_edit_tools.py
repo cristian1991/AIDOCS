@@ -52,8 +52,16 @@ def register_code_edit_tools(
             count=count,
             show_line_numbers=show_line_numbers,
         )
-        if isinstance(result, dict) and hub.code.is_file_stale(project_root, path):
-            result["stale"] = "File modified outside AIDOCS — run code_index_sync to refresh."
+        if isinstance(result, dict):
+            # Skip stale check for files we recently edited (they're in known_exact_paths from post-edit grant)
+            managed = hub.managed_mode.get_mode(project_root)
+            session_id = str(managed.get("session_id") or "") if managed.get("active") else ""
+            gate_state = hub.query_gate.get(project_root, session_id) if session_id else {}
+            known = [str(p).replace("\\", "/") for p in (gate_state.get("known_exact_paths") or [])]
+            canonical = path.replace("\\", "/").strip()
+            recently_edited = canonical in known
+            if not recently_edited and hub.code.is_file_stale(project_root, path):
+                result["stale"] = "File modified outside AIDOCS — run code_index_sync to refresh."
         return result
 
     @server.tool(
@@ -85,6 +93,36 @@ def register_code_edit_tools(
                 str(result.get("path") or path),
             )
         return result
+
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Insert Lines",
+        }
+    )
+    def code_insert_lines(
+        root: str,
+        path: str,
+        before_line: int,
+        content: str,
+        config_edit_mode: Literal["explicit_user_permitted"] | None = None,
+    ) -> dict[str, Any]:
+        """Insert content before a specific line. Clearer than code_edit_lines insert mode."""
+        project_root = Path(root)
+        result = file_edit_lines(
+            project_root, path,
+            start_line=before_line,
+            end_line=before_line - 1,
+            new_content=content,
+            mode="insert",
+            config_edit_mode=config_edit_mode,
+        )
+        if result.get("success"):
+            post_edit_reindex_and_grant(hub, project_root, "code_insert_lines", str(result.get("path") or path))
+        return result
+
+
 
     @server.tool(
         annotations={

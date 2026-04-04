@@ -52,16 +52,8 @@ def register_code_edit_tools(
             count=count,
             show_line_numbers=show_line_numbers,
         )
-        if isinstance(result, dict):
-            # Skip stale check for files we recently edited (they're in known_exact_paths from post-edit grant)
-            managed = hub.managed_mode.get_mode(project_root)
-            session_id = str(managed.get("session_id") or "") if managed.get("active") else ""
-            gate_state = hub.query_gate.get(project_root, session_id) if session_id else {}
-            known = [str(p).replace("\\", "/") for p in (gate_state.get("known_exact_paths") or [])]
-            canonical = path.replace("\\", "/").strip()
-            recently_edited = canonical in known
-            if not recently_edited and hub.code.is_file_stale(project_root, path):
-                result["stale"] = "File modified outside AIDOCS — run code_index_sync to refresh."
+        if isinstance(result, dict) and hub.code.is_file_stale(project_root, path):
+            result["stale"] = "File modified since last index — content may differ from indexed symbols. Run code_index_sync if needed."
         return result
 
     @server.tool(

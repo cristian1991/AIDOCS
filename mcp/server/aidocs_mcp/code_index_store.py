@@ -921,7 +921,7 @@ class CodeIndexStore:
         ]
 
     def is_file_stale(self, project_root: Path, path: str) -> bool:
-        """Check if a file has been modified outside AIDOCS since last index."""
+        """Check if a file has been modified since last index sync."""
         self.init_db(project_root)
         rel = path.replace("\\", "/").strip()
         abs_path = project_root / rel
@@ -935,7 +935,17 @@ class CodeIndexStore:
             return True
         try:
             stat = abs_path.stat()
-            return int(stat.st_mtime_ns) != int(row["mtime_ns"]) or int(stat.st_size) != int(row["size_bytes"])
+            size_match = int(stat.st_size) == int(row["size_bytes"])
+            mtime_match = int(stat.st_mtime_ns) == int(row["mtime_ns"])
+            if mtime_match and size_match:
+                return False
+            # Size changed = definitely stale
+            if not size_match:
+                return True
+            # Mtime changed but size same = might be filesystem flush lag after our own edit
+            # Only flag stale if mtime difference is > 2 seconds (rules out flush lag)
+            mtime_diff_ns = abs(int(stat.st_mtime_ns) - int(row["mtime_ns"]))
+            return mtime_diff_ns > 2_000_000_000
         except Exception:
             return False
 

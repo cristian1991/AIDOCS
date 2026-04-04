@@ -41,8 +41,13 @@ class GateDecision:
 
 _BLOCKED_RAW_FILE_TOOLS: set[str] = {"read", "grep", "glob", "edit", "write"}
 
+def _gate_msg(key: str, **kwargs: str) -> str:
+    """Load gate message from action_hooks TOML with variable substitution."""
+    from .config import render_interaction_text
+    return render_interaction_text(f"interaction.gate_messages.{key}", **kwargs)
+
+
 def _get_raw_tool_replacement(tool: str) -> str:
-    """Load replacement guidance from action_hooks TOML."""
     from .config import render_interaction_text
     text = render_interaction_text(f"interaction.raw_tool_replacements.{tool}")
     if text and not text.startswith("{"):
@@ -152,11 +157,7 @@ class AccessGate:
             return GateDecision(
                 allowed=False,
                 level="managed_mode_gate",
-                reason=(
-                    "Agent delegation is disabled. Use AIDOCS indexed tools directly "
-                    "— code_investigate, code_find, code_trace can answer most "
-                    "questions in 5-10 calls."
-                ),
+                reason=_gate_msg("agent_disabled"),
             )
 
         if not ctx.managed:
@@ -167,7 +168,7 @@ class AccessGate:
             return GateDecision(
                 allowed=False,
                 level="managed_mode_gate",
-                reason=f"AIDOCS managed mode is active — raw `{normalized_tool}` is blocked. {replacement}",
+                reason=_gate_msg("raw_tool_blocked", tool=normalized_tool, replacement=replacement),
             )
 
         return GateDecision(allowed=True, level="managed_mode_gate")
@@ -189,7 +190,7 @@ class AccessGate:
             return GateDecision(
                 allowed=False,
                 level="sensitive_file_protection",
-                reason=f"Access to sensitive file blocked: {normalized}",
+                reason=_gate_msg("sensitive_file_blocked", path=normalized),
             )
 
         # Level 2: Protected config reads — block always
@@ -197,7 +198,7 @@ class AccessGate:
             return GateDecision(
                 allowed=False,
                 level="infrastructure_protection",
-                reason=f"Read access to AIDOCS config file blocked: {normalized}",
+                reason=_gate_msg("infrastructure_read_blocked", path=normalized),
             )
 
         # Level 4: .MEMORY/ reads — always allowed
@@ -218,11 +219,7 @@ class AccessGate:
         return GateDecision(
             allowed=False,
             level="read_gate",
-            reason=(
-                f"Indexed-read gate: \"{normalized}\" has not been discovered. "
-                "Use code_investigate, code_find, code_trace, or code_bundle first, "
-                "or pass known_exact_path=true if you know the exact path."
-            ),
+            reason=_gate_msg("read_gate_blocked", path=normalized),
         )
 
     # ── Level 2+3+4+6: Edit path checks ──
@@ -259,10 +256,7 @@ class AccessGate:
         return GateDecision(
             allowed=False,
             level="edit_gate",
-            reason=(
-                f"Edit gate: \"{normalized}\" has not been read/discovered. "
-                "Read the file with code_get_lines first."
-            ),
+            reason=_gate_msg("edit_gate_blocked", path=normalized),
         )
 
     # ── Level 2+3+4: Write path checks (new file creation) ──
@@ -291,7 +285,7 @@ class AccessGate:
             return GateDecision(
                 allowed=False,
                 level="infrastructure_protection",
-                reason=f"Write access to AIDOCS config file blocked: {normalized}",
+                reason=_gate_msg("infrastructure_config_blocked", path=normalized),
             )
 
         # Level 2: Infrastructure paths — blocked unless dev_mode
@@ -299,7 +293,7 @@ class AccessGate:
             return GateDecision(
                 allowed=False,
                 level="infrastructure_protection",
-                reason=f"Write access to AIDOCS infrastructure blocked (dev_mode required): {normalized}",
+                reason=_gate_msg("infrastructure_source_blocked", path=normalized),
             )
 
         # Level 4: .MEMORY/ writes — workflow/security rules need user intent
@@ -312,10 +306,7 @@ class AccessGate:
                 return GateDecision(
                     allowed=False,
                     level="memory_write_intent_gate",
-                    reason=(
-                        f"Write to workflow/security rules requires user intent. "
-                        f"These files affect how AIDOCS orchestrates code execution: {normalized}"
-                    ),
+                    reason=_gate_msg("memory_write_blocked", path=normalized),
                 )
             # Session files, journals, domains, etc. — freely writable
             return GateDecision(allowed=True, level="memory_path_exemption")

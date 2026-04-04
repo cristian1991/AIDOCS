@@ -51,6 +51,19 @@ read_error = "`aidocs_code_find(symbol, mode=\"symbols\")` → `aidocs_code_find
 investigate = "`session_resume_bundle` (overview) → `action_surface_current_session_bundle` (common path) → `code_investigate(concept)` for guided navigation. Or: `code_bundle(concept, mode=\"subsystem\")` → `code_find(concept, mode=\"mutations\"|\"validation\"|\"policy\")`."
 inspect = "`session_resume_bundle` (overview) → `action_surface_current_session_bundle` (common path) → `code_get_dependencies` / `code_find_dependents` → `code_get_modules`. Read only after narrowing."
 
+[interaction.gate_messages]
+raw_tool_blocked = "AIDOCS managed mode is active — raw `{tool}` is blocked. {replacement}"
+agent_disabled = "Agent delegation is disabled. Use AIDOCS indexed tools directly — code_investigate, code_find, code_trace can answer most questions in 5-10 calls."
+read_gate_blocked = "Indexed-read gate: \"{path}\" has not been discovered. Use code_investigate, code_find, code_trace, or code_bundle first, or pass known_exact_path=true if you know the exact path."
+edit_gate_blocked = "Edit gate: \"{path}\" has not been read/discovered. Read the file with code_get_lines first."
+sensitive_file_blocked = "Access to sensitive file blocked: {path}"
+infrastructure_config_blocked = "Write access to AIDOCS config file blocked: {path}"
+infrastructure_source_blocked = "Write access to AIDOCS infrastructure blocked (dev_mode required): {path}"
+infrastructure_read_blocked = "Read access to AIDOCS config file blocked: {path}"
+memory_write_blocked = "Write to workflow/security rules requires user intent. These files affect how AIDOCS orchestrates code execution: {path}"
+comment_quality = "Comments must explain WHY not WHAT. No vague qualifiers (just, simply, basically). No restating code."
+mcp_nudge_prefix = "WARNING: You are using a raw tool. AIDOCS MCP tools should be used first. Try these instead:"
+
 [interaction.mcp_server]
 instructions = "AIDOCS is your primary workflow for all code tasks. ALWAYS use AIDOCS MCP tools (code_investigate, code_find, code_trace, code_bundle) before reading files with code_get_lines. Never use raw grep or glob when AIDOCS indexed tools can answer your question. Follow TDD: write failing tests before production code. Do not create git commits unless explicitly asked. Keep all task output in /.MEMORY/sessions/<session-id>/ under the active session. Use the session journal for significant decisions and outcomes. When in doubt, call aidocs_orchestrate or aidocs_handle_prompt to route through AIDOCS."
 

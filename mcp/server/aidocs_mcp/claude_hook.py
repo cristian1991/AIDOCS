@@ -316,7 +316,7 @@ class ClaudeHookHandler:
             from .config import CODE_QUALITY_COMMENT_ENFORCEMENT
 
             if CODE_QUALITY_COMMENT_ENFORCEMENT in ("strict", "advisory"):
-                comment_nudge = "Comments must explain WHY not WHAT. No vague qualifiers (just, simply, basically). No restating code."
+                comment_nudge = render_interaction_text("interaction.gate_messages.comment_quality")
 
         parts = [p for p in (mcp_nudge, comment_nudge) if p]
         if not parts:
@@ -568,7 +568,7 @@ class ClaudeHookHandler:
 
         # Build a contextual suggestion based on what the tool appears to be doing
         parts = [
-            "WARNING: You are using a raw tool. AIDOCS MCP tools should be used first. Try these instead:"
+            render_interaction_text("interaction.gate_messages.mcp_nudge_prefix")
         ]
 
         if lower == "grep":
@@ -579,22 +579,18 @@ class ClaudeHookHandler:
                     kw in pattern.lower()
                     for kw in ("class ", "interface ", "def ", "function ", "enum ")
                 ):
-                    parts.append(
-                        '`aidocs_code_find(query, mode="symbols")` — search indexed outlines by name/kind/role.'
-                    )
+                    parts.append(render_interaction_text("interaction.mcp_alternative_nudges.grep_symbols"))
                 elif any(
                     kw in pattern.lower() for kw in (".css", "class=", "className")
                 ):
-                    parts.append(
-                        '`aidocs_code_trace(query, mode="css_class")` — find CSS rules matching class names.'
-                    )
+                    parts.append(render_interaction_text("interaction.mcp_alternative_nudges.grep_css"))
                 elif "." in pattern and not pattern.startswith("."):
-                    parts.append(
-                        '`aidocs_code_find(query, mode="references")` — find all usages of a symbol.'
-                    )
+                    parts.append(render_interaction_text("interaction.mcp_alternative_nudges.grep_references"))
                 else:
                     parts.append(
-                        '`aidocs_code_find(query, mode="symbols")` for symbol search, `aidocs_code_find(query, mode="references")` for usage tracing.'
+                        render_interaction_text("interaction.mcp_alternative_nudges.grep_symbols")
+                        + " "
+                        + render_interaction_text("interaction.mcp_alternative_nudges.grep_references")
                     )
             else:
                 parts.append(
@@ -606,21 +602,15 @@ class ClaudeHookHandler:
             offset = tool_input.get("offset")
             if path and not offset:
                 # Reading a whole file — suggest outline first
-                parts.append(
-                    '`aidocs_code_bundle(path, mode="file")` to understand structure, then `aidocs_code_get_symbol_snippet` for exact code.'
-                )
+                parts.append(render_interaction_text("interaction.mcp_alternative_nudges.read_bundle"))
             elif path and offset:
                 # Reading a specific section — suggest snippet
-                parts.append(
-                    'Use `aidocs_code_find(query, mode="symbols")` first if the exact symbol is not known, then `aidocs_code_get_symbol_snippet` for the exact symbol.'
-                )
+                parts.append(render_interaction_text("interaction.mcp_alternative_nudges.read_symbol"))
             else:
-                parts.append(
-                    '`aidocs_code_find(query, mode="symbols")` to locate the exact symbol first, then `aidocs_code_get_symbol_snippet` to read only that symbol.'
-                )
+                parts.append(render_interaction_text("interaction.mcp_alternative_nudges.read_symbol"))
 
         elif lower == "glob":
-            parts.append("`aidocs_code_search` for indexed file search by keywords.")
+            parts.append(render_interaction_text("interaction.mcp_alternative_nudges.glob_search"))
 
         else:
             parts.append(

@@ -74,24 +74,17 @@ class ActionSurfaceService:
 
         return {
             "query": needle,
-            "session_id": session_id,
-            "should": procedures,
-            "can": capabilities[:limit],
-            "did": {
-                "events": events,
-                "runs": runs,
-            },
-            "links": links,
             "coverage": {
-                "has_definition": bool(procedures),
-                "has_capability": bool(capabilities),
-                "has_execution": bool(events or runs),
-                "resolved_link_count": resolved_link_count,
-                "unresolved_link_count": unresolved_link_count,
+                "definitions": len(procedures),
+                "capabilities": len(capabilities),
+                "events": len(events),
+                "runs": len(runs),
+                "links_resolved": resolved_link_count,
+                "links_unresolved": unresolved_link_count,
             },
-            "history_summary": history_summary,
-            "gap_summary": gap_summary,
             "assessment": assessment,
+            "history": history_summary,
+            "gaps": gap_summary,
         }
 
     def assess(self, project_root: Path, query: str, session_id: str | None = None, limit: int = 20) -> dict[str, Any]:
@@ -104,15 +97,10 @@ class ActionSurfaceService:
 
         return {
             "query": comparison.get("query"),
-            "session_id": comparison.get("session_id"),
             "state": state,
             "headline": self._headline_for_state(state),
             "findings": self._build_findings(coverage=coverage, history=history, gaps=gaps),
-            "recommended_next_steps": list(assessment.get("recommended_next_steps") or []),
-            "candidate_summary": dict(assessment.get("candidate_summary") or {}),
-            "coverage": coverage,
-            "history_summary": history,
-            "gap_summary": gaps,
+            "next_steps": list(assessment.get("recommended_next_steps") or []),
         }
 
     def status_bundle(
@@ -171,7 +159,6 @@ class ActionSurfaceService:
             },
             "attention_items": attention_items[:10],
             "ready_items": ready_items[:10],
-            "assessments": assessments,
         }
 
     def session_status_bundle(

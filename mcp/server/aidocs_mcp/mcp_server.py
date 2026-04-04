@@ -182,6 +182,19 @@ def _grant_known_exact_path_read(
     )
 
 
+def _post_edit_grant_and_reindex(
+    hub: AidocsServiceHub, project_root: Path, tool_name: str, path: str
+) -> None:
+    """Grant read access + reindex the edited file so indexed tools see the change."""
+    _grant_known_exact_path_read(hub, project_root, tool_name, path)
+    canonical = path.replace("\\", "/").strip()
+    try:
+        hub.code.sync_code_files(project_root, paths=[canonical])
+    except Exception:
+        pass
+
+
+
 def _require_indexed_read_gate(
     hub: AidocsServiceHub,
     project_root: Path,
@@ -1312,7 +1325,7 @@ def create_server() -> Any:
             root, path, content, config_edit_mode=config_edit_mode
         )
         if result.get("success"):
-            _grant_known_exact_path_read(
+            _post_edit_grant_and_reindex(
                 hub,
                 root,
                 "code_create_file",
@@ -1368,7 +1381,7 @@ def create_server() -> Any:
             config_edit_mode=config_edit_mode,
         )
         if result.get("success") and not result.get("dry_run"):
-            _grant_known_exact_path_read(
+            _post_edit_grant_and_reindex(
                 hub,
                 root,
                 "code_edit_lines",
@@ -1414,7 +1427,7 @@ def create_server() -> Any:
         if result.get("success") and not dry_run:
             for item in result.get("results", []):
                 if isinstance(item, dict) and item.get("success"):
-                    _grant_known_exact_path_read(
+                    _post_edit_grant_and_reindex(
                         hub,
                         root,
                         "code_batch_edit",
@@ -1448,7 +1461,7 @@ def create_server() -> Any:
             config_edit_mode=config_edit_mode,
         )
         if result.get("success"):
-            _grant_known_exact_path_read(
+            _post_edit_grant_and_reindex(
                 hub,
                 root,
                 "code_str_replace",
@@ -1480,7 +1493,7 @@ def create_server() -> Any:
         if result.get("success"):
             for item in result.get("results", []):
                 if isinstance(item, dict) and item.get("success"):
-                    _grant_known_exact_path_read(
+                    _post_edit_grant_and_reindex(
                         hub,
                         root,
                         "code_batch_str_replace",

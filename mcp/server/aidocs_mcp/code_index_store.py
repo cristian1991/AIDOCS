@@ -1069,20 +1069,25 @@ class CodeIndexStore:
         import ast
         import re as _re
 
-        # Parse the block to find all Name references
+        # Parse the block to find all Name references and self.* accesses
         block_names: set[str] = set()
+        self_attrs: set[str] = set()
         try:
             block_tree = ast.parse(block_text)
             for node in ast.walk(block_tree):
                 if isinstance(node, ast.Name):
                     block_names.add(node.id)
-                elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-                    block_names.add(node.value.id)
+                elif isinstance(node, ast.Attribute):
+                    if isinstance(node.value, ast.Name):
+                        if node.value.id == "self":
+                            self_attrs.add(node.attr)
+                        else:
+                            block_names.add(node.value.id)
         except SyntaxError:
-            # Fallback to regex if block doesn't parse standalone
             block_names = set(_re.findall(r'\b([A-Za-z_]\w*)\b', block_text))
+            self_attrs = set(_re.findall(r'self\.([A-Za-z_]\w*)', block_text))
 
-        # Find what's defined in the block itself (so we exclude self-references)
+        # Find what's defined in the block itself
         block_defined: set[str] = set()
         try:
             for node in ast.walk(ast.parse(block_text)):
@@ -1103,10 +1108,9 @@ class CodeIndexStore:
         except SyntaxError:
             pass
 
-        # Names used in block but not defined in block = external dependencies
         external_names = block_names - block_defined - {"self", "cls", "True", "False", "None"}
 
-        # Categorize: which are imports, which are module-level definitions
+        # Categorize external names
         imports_needed: list[str] = []
         helpers_needed: list[str] = []
         try:
@@ -1134,7 +1138,33 @@ class CodeIndexStore:
         except SyntaxError:
             pass
 
-        return {
+        # Classify self.* references — find which class methods/properties are used
+        self_methods: list[str] = []
+        self_properties: list[str] = []
+        if self_attrs:
+            try:
+                # Find the containing class and its method/property names
+                class_methods: set[str] = set()
+                class_properties: set[str] = set()
+                for node in ast.walk(ast.parse(full_text)):
+                    if isinstance(node, ast.ClassDef):
+                        for child in node.body:
+                            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                class_methods.add(child.name)
+                            elif isinstance(child, ast.Assign):
+                                for target in child.targets:
+                                    if isinstance(target, ast.Name):
+                                        class_properties.add(target.id)
+
+                for attr in sorted(self_attrs):
+                    if attr in class_methods:
+                        self_methods.append(attr)
+                    else:
+                        self_properties.append(attr)
+            except SyntaxError:
+                self_methods = sorted(self_attrs)
+
+        result: dict[str, object] = {
             "path": path,
             "start": start_line,
             "end": end_line,
@@ -1142,6 +1172,15 @@ class CodeIndexStore:
             "helpers_needed": helpers_needed,
             "total_external_deps": len(imports_needed) + len(helpers_needed),
         }
+        if self_methods or self_properties:
+            result["self_methods_used"] = self_methods
+            result["self_properties_used"] = self_properties
+            result["ownership_warning"] = (
+                f"Block uses {len(self_methods)} self.method() calls and "
+                f"{len(self_properties)} self.property references that need "
+                f"rewiring after extraction to a new class."
+            )
+        return result
 
     @staticmethod
     def _preview_deps_js(

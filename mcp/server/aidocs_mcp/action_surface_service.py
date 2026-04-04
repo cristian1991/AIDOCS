@@ -129,12 +129,15 @@ class ActionSurfaceService:
         for assessment in assessments:
             state = str(assessment.get("state") or "unmapped")
             by_state[state] = by_state.get(state, 0) + 1
-            item = {
+            gap_type = assessment.get("gap_type")
+            item: dict[str, Any] = {
                 "query": assessment.get("query"),
                 "state": state,
                 "headline": assessment.get("headline"),
-                "recommended_next_steps": assessment.get("recommended_next_steps") or [],
+                "next_steps": assessment.get("next_steps") or [],
             }
+            if gap_type:
+                item["gap_type"] = gap_type
             if state in {"aligned", "ready_but_unexecuted"}:
                 ready_items.append(item)
             else:
@@ -338,28 +341,43 @@ class ActionSurfaceService:
         if not recommended_next_steps:
             recommended_next_steps.append("No immediate gap detected; continue monitoring execution history and drift.")
 
-        return {
+        # Classify as architectural gap (not designed) vs implementation gap (designed but not built/used)
+        gap_type = None
+        if state == "definition_without_capability":
+            gap_type = "implementation_gap"
+        elif state == "execution_without_definition":
+            gap_type = "architectural_gap"
+        elif state == "execution_only":
+            gap_type = "architectural_gap"
+        elif state == "capability_without_history":
+            gap_type = "implementation_gap"
+        elif state == "ready_but_unexecuted":
+            gap_type = "implementation_gap"
+        elif state == "unmapped":
+            gap_type = "architectural_gap"
+        elif state == "partially_mapped":
+            gap_type = "implementation_gap"
+
+        result: dict[str, Any] = {
             "state": state,
-            "recommended_next_steps": recommended_next_steps[:4],
-            "candidate_summary": {
-                action: candidates[:3]
-                for action, candidates in candidate_capabilities.items()
-                if candidates
-            },
+            "next_steps": recommended_next_steps[:4],
         }
+        if gap_type:
+            result["gap_type"] = gap_type
+        return result
 
     def _headline_for_state(self, state: str) -> str:
         mapping = {
-            "aligned": "Procedure, capability, and execution history are aligned.",
-            "ready_but_unexecuted": "Procedure and capability exist, but execution history is still missing.",
-            "partially_mapped": "Procedure and capability exist, but the mapping or history is incomplete.",
-            "definition_without_capability": "A procedure exists, but there is no callable capability yet.",
-            "execution_without_definition": "Capability and execution history exist, but procedure definition is missing.",
-            "capability_without_history": "Capability exists, but there is no execution history yet.",
-            "execution_only": "Execution history exists without mapped definition or capability context.",
-            "unmapped": "The action surface is not mapped yet.",
+            "aligned": "Fully aligned — designed, built, and used.",
+            "ready_but_unexecuted": "Implementation gap — designed and built, but never used.",
+            "partially_mapped": "Implementation gap — partially wired, needs completion.",
+            "definition_without_capability": "Implementation gap — designed but not built yet.",
+            "execution_without_definition": "Architectural gap — built and used, but not in the design spec.",
+            "capability_without_history": "Implementation gap — built but never used.",
+            "execution_only": "Architectural gap — used without design or declared capability.",
+            "unmapped": "Architectural gap — not in the design spec yet.",
         }
-        return mapping.get(state, "The action surface needs review.")
+        return mapping.get(state, "Needs review.")
 
     def _build_findings(
         self,

@@ -132,10 +132,10 @@ fi
 # Copy action_tokens next to plugin (primary runtime path)
 PLUGIN_ACTION_TOKENS_DIR="$OPENCODE_PLUGINS_DIR/action_tokens"
 mkdir -p "$PLUGIN_ACTION_TOKENS_DIR"
-find "$PLUGIN_ACTION_TOKENS_DIR" -maxdepth 1 -type f -name '*.yaml' -delete
+find "$PLUGIN_ACTION_TOKENS_DIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.toml' \) -delete
 
 declare -a OPENCODE_ACTION_TOKEN_EXPORTS=()
-for token_file in "$ACTION_TOKENS_ROOT"/*.yaml; do
+for token_file in "$ACTION_TOKENS_ROOT"/*.yaml "$ACTION_TOKENS_ROOT"/*.toml; do
   [[ -f "$token_file" ]] || continue
   target="$PLUGIN_ACTION_TOKENS_DIR/$(basename "$token_file")"
   cp "$token_file" "$target"
@@ -157,9 +157,9 @@ link_or_copy() {
 
 OPENCODE_ACTION_TOKENS_DIR="$ACTION_TOKENS_ROOT/opencode"
 mkdir -p "$OPENCODE_ACTION_TOKENS_DIR"
-find "$OPENCODE_ACTION_TOKENS_DIR" -maxdepth 1 -type f -name '*.yaml' -delete
+find "$OPENCODE_ACTION_TOKENS_DIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.toml' \) -delete
 
-for token_file in "$ACTION_TOKENS_ROOT"/*.yaml; do
+for token_file in "$ACTION_TOKENS_ROOT"/*.yaml "$ACTION_TOKENS_ROOT"/*.toml; do
   [[ -f "$token_file" ]] || continue
   link_or_copy "$token_file" "$OPENCODE_ACTION_TOKENS_DIR/$(basename "$token_file")"
 done

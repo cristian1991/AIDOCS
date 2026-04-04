@@ -187,9 +187,15 @@ if (-not (Test-Path $actionTokensRoot)) {
 $pluginActionTokensDir = Join-Path $opencodePluginsDir "action_tokens"
 New-Item -ItemType Directory -Force -Path $pluginActionTokensDir | Out-Null
 Get-ChildItem -Path $pluginActionTokensDir -Filter "*.yaml" -File -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem -Path $pluginActionTokensDir -Filter "*.toml" -File -ErrorAction SilentlyContinue | Remove-Item -Force
 
 $opencodeActionTokenExports = @{}
 Get-ChildItem -Path $actionTokensRoot -Filter "*.yaml" -File | ForEach-Object {
+  $target = Join-Path $pluginActionTokensDir $_.Name
+  Copy-Item -Path $_.FullName -Destination $target -Force
+  $opencodeActionTokenExports[$target] = "copy"
+}
+Get-ChildItem -Path $actionTokensRoot -Filter "*.toml" -File | ForEach-Object {
   $target = Join-Path $pluginActionTokensDir $_.Name
   Copy-Item -Path $_.FullName -Destination $target -Force
   $opencodeActionTokenExports[$target] = "copy"
@@ -199,11 +205,14 @@ Get-ChildItem -Path $actionTokensRoot -Filter "*.yaml" -File | ForEach-Object {
 $opencodeActionTokensDir = Join-Path $actionTokensRoot "opencode"
 New-Item -ItemType Directory -Force -Path $opencodeActionTokensDir | Out-Null
 Get-ChildItem -Path $opencodeActionTokensDir -Filter "*.yaml" -File -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem -Path $opencodeActionTokensDir -Filter "*.toml" -File -ErrorAction SilentlyContinue | Remove-Item -Force
 
-Get-ChildItem -Path $actionTokensRoot -Filter "*.yaml" -File | ForEach-Object {
-  $target = Join-Path $opencodeActionTokensDir $_.Name
-  $mode = New-LinkOrCopy -Source $_.FullName -Target $target
-  $opencodeActionTokenExports[$target] = $mode
+foreach ($ext in @("*.yaml", "*.toml")) {
+  Get-ChildItem -Path $actionTokensRoot -Filter $ext -File | ForEach-Object {
+    $target = Join-Path $opencodeActionTokensDir $_.Name
+    $mode = New-LinkOrCopy -Source $_.FullName -Target $target
+    $opencodeActionTokenExports[$target] = $mode
+  }
 }
 
 $actionHooksRoot = Join-Path $projectRoot "action_hooks"

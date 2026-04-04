@@ -6,12 +6,12 @@
 # ── Code reading ──
 code_get_lines = "Read specific lines from a file. Use after indexed tools narrow the target. Supports known_exact_path=true to skip discovery gate."
 code_get_symbol_snippet = "Read exact code for one symbol at a known location. Faster than reading whole file."
-code_bundle = "Get structural overview of a file, service, component, or subsystem. Use before reading code to understand what's there."
+code_bundle = "Get structural overview of a file or subsystem. Use to understand architecture before diving into code."
 
 # ── Code search ──
-code_investigate = "START HERE for any new concept, feature, or bug area. Returns navigation guide + suggested next tools."
-code_find = "Find symbols, references, routes, hotspots, entrypoints, duplicates, and more. Many modes — use mode='symbols' for names, mode='references' for usages."
-code_search = "Find files by path or summary keywords. Use when you know the filename pattern."
+code_investigate = "START HERE for any new concept, feature, or bug area. Returns navigation guide + suggested next tools. Use when you don't know where to look."
+code_find = "Find symbols by name (mode='symbols') or usages (mode='references'). Use for 'where is this function?' or 'what calls this?'."
+code_search = "Find files by path or summary keywords. Use when you know the filename but not the exact path."
 code_text_search = "Literal text search across indexed files. Use | or OR between terms. Set regex=true for patterns. Glob filters files."
 code_find_stale_references = "After renaming/deleting symbols, find remaining references that need updating. Pass the old symbol names."
 code_find_dead_code = "Find dead imports and unused locals in a file. Use after refactors to clean up. Supports Python and JS/TS."

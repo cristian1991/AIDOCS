@@ -1003,12 +1003,18 @@ def str_replace(
     count = content.count(old_str)
 
     if count == 0:
+        # Try whitespace-normalized match to give a helpful hint
+        import re as _re
+        normalized_pattern = _re.sub(r'\s+', r'\\s+', _re.escape(old_str.strip()))
+        ws_match = _re.search(normalized_pattern, content)
+        hint = ""
+        if ws_match:
+            match_line = content[:ws_match.start()].count("\n") + 1
+            hint = f" Whitespace-normalized match found at line {match_line} — check indentation or trailing spaces."
         return {
             "success": False,
             "path": canonical_path,
-            "lines_changed": 0,
-            "replacements": 0,
-            "error": f"No match found for old_str in {canonical_path}.",
+            "error": f"No match found for old_str in {canonical_path}.{hint}",
         }
 
     if count > 1 and not replace_all:

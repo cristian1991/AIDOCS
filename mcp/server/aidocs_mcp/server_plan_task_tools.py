@@ -28,7 +28,7 @@ def register_plan_task_tools(
     ) -> dict[str, Any]:
         """Connect to an existing session plan and surface next decisions."""
         return runtime.plan_connect(
-            Path(project_root), session_id=session_id, run_preflight=run_preflight
+            Path(root), session_id=session_id, run_preflight=run_preflight
         )
 
     @server.tool(
@@ -49,7 +49,7 @@ def register_plan_task_tools(
     ) -> dict[str, Any]:
         """Create or replace the session plan from a deterministic spec format."""
         return runtime.plan_create_from_spec(
-            Path(project_root),
+            Path(root),
             session_id=session_id,
             spec_text=spec_text,
             scope=scope,
@@ -70,7 +70,7 @@ def register_plan_task_tools(
         timeout: int | None = None,
     ) -> dict[str, Any]:
         """Validate that the session plan is executable and has real verification steps."""
-        return runtime.plan_validate(Path(project_root), session_id=session_id)
+        return runtime.plan_validate(Path(root), session_id=session_id)
 
     @server.tool(
         annotations={
@@ -86,7 +86,7 @@ def register_plan_task_tools(
         timeout: int | None = None,
     ) -> dict[str, Any]:
         """Return the conductor lane graph for a lane-aware session plan."""
-        return runtime.plan_conductor_graph(Path(project_root), session_id=session_id)
+        return runtime.plan_conductor_graph(Path(root), session_id=session_id)
 
     @server.tool(
         annotations={
@@ -102,7 +102,7 @@ def register_plan_task_tools(
         timeout: int | None = None,
     ) -> dict[str, Any]:
         """Return the conductor graph plus runnable lane status for a lane-aware session plan."""
-        return runtime.plan_conductor_status(Path(project_root), session_id=session_id)
+        return runtime.plan_conductor_status(Path(root), session_id=session_id)
 
     @server.tool(
         annotations={
@@ -118,7 +118,7 @@ def register_plan_task_tools(
         timeout: int | None = None,
     ) -> dict[str, Any]:
         """Return the runtime-owned execution mode selection for a session plan."""
-        return runtime.execution_mode_select(Path(project_root), session_id=session_id)
+        return runtime.execution_mode_select(Path(root), session_id=session_id)
 
     @server.tool(
         annotations={
@@ -134,7 +134,7 @@ def register_plan_task_tools(
         timeout: int | None = None,
     ) -> dict[str, Any]:
         """Return the next delegated lane task packet for a session plan."""
-        return runtime.plan_dispatch_next(Path(project_root), session_id=session_id)
+        return runtime.plan_dispatch_next(Path(root), session_id=session_id)
 
     @server.tool(
         annotations={
@@ -152,7 +152,7 @@ def register_plan_task_tools(
     ) -> dict[str, Any]:
         """Ingest one delegated lane result and update conductor state."""
         return runtime.plan_dispatch_report(
-            Path(project_root), session_id=session_id, packet_result=packet_result
+            Path(root), session_id=session_id, packet_result=packet_result
         )
 
     @server.tool(
@@ -169,7 +169,7 @@ def register_plan_task_tools(
         timeout: int | None = None,
     ) -> dict[str, Any]:
         """Return the next execution-loop state for a session plan."""
-        return runtime.execution_loop_next(Path(project_root), session_id=session_id)
+        return runtime.execution_loop_next(Path(root), session_id=session_id)
 
     @server.tool(
         annotations={
@@ -189,7 +189,7 @@ def register_plan_task_tools(
     ) -> dict[str, Any]:
         """Pause a lane when another in-flight lane reports emergent file overlap."""
         return runtime.plan_conductor_report_inflight_overlap(
-            Path(project_root),
+            Path(root),
             session_id=session_id,
             paused_lane_id=paused_lane_id,
             conflicting_lane_id=conflicting_lane_id,
@@ -212,7 +212,7 @@ def register_plan_task_tools(
     ) -> dict[str, Any]:
         """Resume a paused lane after explicit user override or conflict resolution."""
         return runtime.plan_conductor_resume_lane(
-            Path(project_root), session_id=session_id, lane_id=lane_id
+            Path(root), session_id=session_id, lane_id=lane_id
         )
 
     @server.tool(
@@ -232,7 +232,7 @@ def register_plan_task_tools(
     ) -> dict[str, Any]:
         """Mark a contract lane ready so compatible dependent lanes can run."""
         return runtime.plan_conductor_mark_contract_ready(
-            Path(project_root),
+            Path(root),
             session_id=session_id,
             lane_id=lane_id,
             ready=ready,
@@ -257,7 +257,7 @@ def register_plan_task_tools(
     ) -> dict[str, Any]:
         """Record a structured signal from one lane about another lane."""
         return runtime.plan_conductor_record_lane_signal(
-            Path(project_root),
+            Path(root),
             session_id=session_id,
             lane_id=lane_id,
             signal_kind=signal_kind,
@@ -280,7 +280,7 @@ def register_plan_task_tools(
         timeout: int | None = None,
     ) -> dict[str, Any]:
         """Analyze a session plan before implementation."""
-        return runtime.plan_preflight(Path(project_root), session_id=session_id)
+        return runtime.plan_preflight(Path(root), session_id=session_id)
 
     @server.tool(
         annotations={
@@ -309,7 +309,7 @@ def register_plan_task_tools(
     ) -> dict[str, Any]:
         """Begin work in a selected session and update session/context state."""
         return runtime.task_begin(
-            Path(project_root),
+            Path(root),
             session_id=session_id,
             goal=goal,
             state=state,
@@ -352,7 +352,7 @@ def register_plan_task_tools(
     ) -> dict[str, Any]:
         """Update an active task session and optional context state."""
         return runtime.task_update(
-            Path(project_root),
+            Path(root),
             session_id=session_id,
             state=state,
             upcoming=upcoming,
@@ -387,7 +387,7 @@ def register_plan_task_tools(
     ) -> dict[str, Any]:
         """Complete task work in a session and update session state."""
         return runtime.task_complete(
-            Path(project_root),
+            Path(root),
             session_id=session_id,
             result_summary=result_summary,
             next_status=next_status,
@@ -413,7 +413,7 @@ def register_plan_task_tools(
     ) -> dict[str, Any]:
         """Return runtime-owned verification status for a session or lane."""
         return runtime.verification_gate(
-            Path(project_root),
+            Path(root),
             session_id=session_id,
             lane_id=lane_id,
             verification_evidence=verification_evidence,
@@ -433,7 +433,7 @@ def register_plan_task_tools(
     ) -> dict[str, Any]:
         """Update a pending roadmap step after user feedback."""
         return runtime.update_roadmap_feedback_state(
-            Path(project_root),
+            Path(root),
             step_text=step_text,
             feedback=feedback,
         )
@@ -451,7 +451,7 @@ def register_plan_task_tools(
     ) -> dict[str, Any]:
         """Preserve prose-only plan additions and append normalized steps awaiting feedback."""
         return hub.sessions.normalize_plan_feedback_sections(
-            Path(project_root), session_id=session_id
+            Path(root), session_id=session_id
         )
 
     @server.tool(
@@ -467,5 +467,5 @@ def register_plan_task_tools(
     ) -> dict[str, Any]:
         """Normalize explicit session artifacts and report changed vs untouched items."""
         return hub.sessions.normalize_session_artifacts(
-            Path(project_root), session_id=session_id
+            Path(root), session_id=session_id
         )

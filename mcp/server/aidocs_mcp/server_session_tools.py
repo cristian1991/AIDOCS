@@ -24,7 +24,7 @@ def register_session_tools(
     )
     def session_list(root: str) -> list[dict[str, Any]]:
         """List sessions from project-local /.MEMORY/sessions/."""
-        summaries = hub.sessions.list_sessions(Path(project_root))
+        summaries = hub.sessions.list_sessions(Path(root))
         return [session_summary_to_dict(item) for item in summaries]
 
     @server.tool(
@@ -37,7 +37,7 @@ def register_session_tools(
     )
     def session_read(root: str, session_id: str) -> dict[str, Any]:
         """Read a single session router file and return its parsed sections."""
-        session = hub.sessions.read_session(Path(project_root), session_id)
+        session = hub.sessions.read_session(Path(root), session_id)
         return {
             "session_id": session.session_id,
             "path": str(session.path),
@@ -54,7 +54,7 @@ def register_session_tools(
     )
     def session_select(root: str, session_id: str) -> dict[str, Any]:
         """Select an existing session and return its summary."""
-        session = hub.sessions.select_session(Path(project_root), session_id)
+        session = hub.sessions.select_session(Path(root), session_id)
         return session_summary_to_dict(session)
 
     @server.tool(
@@ -74,7 +74,7 @@ def register_session_tools(
     ) -> dict[str, Any]:
         """Run the startup/session-selection flow and return ready context."""
         return runtime.session_start(
-            Path(project_root),
+            Path(root),
             session_id=session_id,
             include_code_bundle=include_code_bundle,
             sync_indexes=sync_indexes,
@@ -93,7 +93,7 @@ def register_session_tools(
     ) -> dict[str, Any]:
         """Return lightweight startup readiness and imported skill state for a session."""
         return annotate_skill_result(
-            runtime.session_start_state(Path(project_root), session_id=session_id),
+            runtime.session_start_state(Path(root), session_id=session_id),
             override_store=runtime._skill_overrides,
         )
 
@@ -115,7 +115,7 @@ def register_session_tools(
     ) -> dict[str, Any]:
         """Run the mandatory project setup/index/session bootstrap flow."""
         return runtime.project_bootstrap_or_resume(
-            Path(project_root),
+            Path(root),
             session_id=session_id,
             include_code_bundle=include_code_bundle,
             include_tests=include_tests,
@@ -140,7 +140,7 @@ def register_session_tools(
     ) -> dict[str, Any]:
         """Run the AIDOCS bootstrap/session/retrieval flow as one high-level entrypoint."""
         return runtime.aidocs_orchestrate(
-            Path(project_root),
+            Path(root),
             user_request=user_request,
             action_kind=action_kind,
             session_id=session_id,
@@ -154,7 +154,7 @@ def register_session_tools(
     )
     def aidocs_mode_get(root: str) -> dict[str, Any]:
         """Read the current runtime/session-binding AIDOCS-managed mode state."""
-        return hub.managed_mode.get_mode(Path(project_root))
+        return hub.managed_mode.get_mode(Path(root))
 
     @server.tool(
         annotations={
@@ -168,7 +168,7 @@ def register_session_tools(
     ) -> dict[str, Any]:
         """Set runtime/session-binding AIDOCS-managed mode for a selected session."""
         return hub.managed_mode.set_mode(
-            Path(project_root), session_id=session_id, source=source
+            Path(root), session_id=session_id, source=source
         )
 
     @server.tool(
@@ -180,7 +180,7 @@ def register_session_tools(
     )
     def aidocs_mode_clear(root: str) -> dict[str, Any]:
         """Clear the current runtime/session-binding AIDOCS-managed mode state."""
-        return hub.managed_mode.clear_mode(Path(project_root))
+        return hub.managed_mode.clear_mode(Path(root))
 
     @server.tool(
         annotations={
@@ -198,7 +198,7 @@ def register_session_tools(
         """Return the deterministic MCP routing decision for a normal user prompt."""
         return annotate_skill_result(
             runtime.aidocs_route_prompt(
-                Path(project_root),
+                Path(root),
                 user_request=user_request,
                 action_kind=action_kind,
                 explicit_targets=explicit_targets,
@@ -240,7 +240,7 @@ def register_session_tools(
     ) -> dict[str, Any]:
         """Handle a normal user prompt through the MCP-first routing/orchestration flow."""
         return runtime.aidocs_handle_prompt(
-            Path(project_root),
+            Path(root),
             user_request=user_request,
             action_kind=action_kind,
             explicit_targets=explicit_targets,
@@ -267,7 +267,7 @@ def register_session_tools(
     ) -> dict[str, Any]:
         """Create a new session folder from canonical templates."""
         session = hub.sessions.create_session(
-            Path(project_root),
+            Path(root),
             session_id=session_id,
             title=title,
             owner=owner,
@@ -294,7 +294,7 @@ def register_session_tools(
     ) -> dict[str, Any]:
         """List advisory session claims and whether they are stale."""
         claims = hub.sessions.list_claims(
-            Path(project_root), session_id, stale_after_minutes=stale_after_minutes
+            Path(root), session_id, stale_after_minutes=stale_after_minutes
         )
         return {"session_id": session_id, "claims": claims}
 
@@ -314,7 +314,7 @@ def register_session_tools(
     ) -> dict[str, Any]:
         """Add or refresh an advisory agent claim on a session."""
         session = hub.sessions.claim_session(
-            Path(project_root), session_id, agent_id=agent_id, run_id=run_id, mode=mode
+            Path(root), session_id, agent_id=agent_id, run_id=run_id, mode=mode
         )
         return {
             "session_id": session.session_id,
@@ -334,7 +334,7 @@ def register_session_tools(
     ) -> dict[str, Any]:
         """Release one advisory agent claim from a session."""
         session = hub.sessions.release_claim(
-            Path(project_root), session_id, agent_id=agent_id, run_id=run_id
+            Path(root), session_id, agent_id=agent_id, run_id=run_id
         )
         return {
             "session_id": session.session_id,
@@ -354,7 +354,7 @@ def register_session_tools(
     ) -> dict[str, Any]:
         """Remove stale advisory claims from a session."""
         session = hub.sessions.prune_stale_claims(
-            Path(project_root), session_id, stale_after_minutes=stale_after_minutes
+            Path(root), session_id, stale_after_minutes=stale_after_minutes
         )
         return {
             "session_id": session.session_id,
@@ -371,7 +371,7 @@ def register_session_tools(
     )
     def session_handoff_get(root: str, session_id: str) -> dict[str, Any]:
         """Read the structured collaboration handoff for a session."""
-        handoff = hub.sessions.read_handoff(Path(project_root), session_id)
+        handoff = hub.sessions.read_handoff(Path(root), session_id)
         return {
             "session_id": handoff.session_id,
             "path": str(handoff.path),
@@ -451,7 +451,7 @@ def register_session_tools(
         if freshness is not None:
             patch["Freshness"] = runtime._as_bullets(freshness)
         handoff = hub.sessions.update_handoff(
-            Path(project_root), session_id, patch, append=append
+            Path(root), session_id, patch, append=append
         )
         return {
             "session_id": handoff.session_id,
@@ -470,7 +470,7 @@ def register_session_tools(
         """Read structured handoff steps for a session."""
         return {
             "session_id": session_id,
-            "steps": hub.sessions.read_handoff_steps(Path(project_root), session_id),
+            "steps": hub.sessions.read_handoff_steps(Path(root), session_id),
         }
 
     @server.tool(
@@ -484,7 +484,7 @@ def register_session_tools(
         root: str, session_id: str
     ) -> dict[str, Any]:
         """Normalize legacy/drifted handoff step markers into canonical step states."""
-        return hub.sessions.normalize_handoff_steps(Path(project_root), session_id)
+        return hub.sessions.normalize_handoff_steps(Path(root), session_id)
 
     @server.tool(
         annotations={
@@ -503,7 +503,7 @@ def register_session_tools(
     ) -> dict[str, Any]:
         """Create or update one structured handoff step."""
         handoff = hub.sessions.upsert_handoff_step(
-            Path(project_root),
+            Path(root),
             session_id,
             step_id=step_id,
             text=text,
@@ -526,4 +526,4 @@ def register_session_tools(
     )
     def session_compliance_get(root: str, session_id: str) -> dict[str, Any]:
         """Return task/logging debt and actionable continuity state for a session."""
-        return runtime.session_compliance_summary(Path(project_root), session_id)
+        return runtime.session_compliance_summary(Path(root), session_id)

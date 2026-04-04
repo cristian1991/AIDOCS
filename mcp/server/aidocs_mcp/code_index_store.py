@@ -1231,13 +1231,13 @@ class CodeIndexStore:
     def _find_dead_code_js(path: str, text: str) -> dict[str, object]:
         import re
 
-        # Regex-based for JS/TS — no AST dependency
         import_pattern = re.compile(
-            r"""(?:import\s+(?:\{([^}]+)\}|(\w+)).*?from|import\s+(\w+)\s+from)""",
+            r"""(?:import\s+(?:type\s+)?(?:\{([^}]+)\}|(\w+)).*?from|import\s+(\w+)\s+from)""",
             re.MULTILINE,
         )
+        all_lines = text.splitlines()
         dead_imports: list[dict[str, object]] = []
-        for i, line in enumerate(text.splitlines(), 1):
+        for i, line in enumerate(all_lines, 1):
             m = import_pattern.search(line)
             if not m:
                 continue
@@ -1248,8 +1248,8 @@ class CodeIndexStore:
                 names = [m.group(2)]
             elif m.group(3):
                 names = [m.group(3)]
-            # Check each imported name against rest of file
-            rest = text[text.index("\n", text.index(line)) + 1:] if "\n" in text[text.index(line):] else ""
+            # Check each imported name against all lines AFTER this import
+            rest = "\n".join(all_lines[i:])
             for name in names:
                 if name and not re.search(r'\b' + re.escape(name) + r'\b', rest):
                     dead_imports.append({"name": name, "line": i})

@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+
+def register_memory_index_tools(
+    *,
+    server: Any,
+    hub: Any,
+    timed_sync: Any,
+) -> None:
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Read Memory",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
+    def memory_read(root: str, targets: list[str]) -> dict[str, str]:
+        """Read canonical memory files by target path."""
+        return hub.memory.read_memory(Path(root), targets)
+
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Sync Memory Index",
+        }
+    )
+    def index_sync(root: str) -> dict[str, int]:
+        """Rebuild the derived SQLite memory/session index from files."""
+        return hub.index.sync_all(Path(root))
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Memory Index Status",
+        }
+    )
+    def index_status(root: str) -> dict[str, Any]:
+        """Report current derived index status for the project."""
+        return hub.index.status(Path(root))
+
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Sync Schema Index",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
+    @timed_sync
+    def schema_index_sync(root: str, timeout: int | None = None) -> dict[str, int]:
+        """Rebuild the derived schema catalog from code and SQL files."""
+        return hub.schema.sync_schema(Path(root))
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Search Memory",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
+    def memory_search(root: str, query: str, limit: int = 10) -> list[dict[str, str]]:
+        """Search the derived memory index by path, title, or body text."""
+        return hub.index.search_memory(Path(root), query=query, limit=limit)
+
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Sync Code Index",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
+    @timed_sync
+    def code_index_sync(
+        root: str, include_tests: bool = False, timeout: int | None = None
+    ) -> dict[str, int]:
+        """Rebuild the derived code file manifest and summary index."""
+        return {
+            "code_files": hub.code.sync_code_files(Path(root), include_tests=include_tests),
+            "modules": hub.code.sync_modules(Path(root)),
+        }
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Modules",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
+    def code_get_modules(root: str, kind: str | None = None) -> list[dict[str, Any]]:
+        """List detected project modules (workspaces, subprojects, informal modules)."""
+        return hub.code.get_modules(Path(root), kind=kind)
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Get Module Files",
+        },
+        meta={"anthropic/alwaysLoad": True},
+    )
+    def code_get_module_files(
+        root: str, module_path: str, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """List all indexed source files belonging to a specific module."""
+        return hub.code.get_module_files(Path(root), module_path=module_path, limit=limit)
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Code Index Status",
+        }
+    )
+    def code_index_status(root: str) -> dict[str, Any]:
+        """Report current derived code index status for the project."""
+        return hub.code.code_status(Path(root))

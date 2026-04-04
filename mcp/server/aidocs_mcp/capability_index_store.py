@@ -148,21 +148,53 @@ class CapabilityIndexStore:
         }
 
     def find_capabilities(self, project_root: Path, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """Fuzzy search across name, title, description, aliases, tags, and family."""
         self.init_db(project_root)
-        sql = (
-            "SELECT name, capability_kind, capability_family, source_kind, title, description, aliases_json, tags_json, parameters_json, output_schema_json, meta_json, task_mode, timeout_seconds, discovered_at "
-            "FROM capability_definitions"
-        )
-        params: list[Any] = []
-        if query and query.strip():
-            sql += " WHERE name LIKE ? OR description LIKE ? OR aliases_json LIKE ?"
-            needle = f"%{query.strip()}%"
-            params.extend([needle, needle, needle])
-        sql += " ORDER BY name ASC LIMIT ?"
-        params.append(limit)
         with self.connect(project_root) as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [self._row_to_dict(row) for row in rows]
+            rows = conn.execute(
+                "SELECT name, capability_kind, capability_family, source_kind, title, description, "
+                "aliases_json, tags_json, parameters_json, output_schema_json, meta_json, task_mode, "
+                "timeout_seconds, discovered_at FROM capability_definitions ORDER BY name ASC"
+            ).fetchall()
+
+        if not query or not query.strip():
+            return [self._row_to_dict(row) for row in rows[:limit]]
+
+        needle = query.strip().lower()
+        terms = needle.split()
+        scored: list[tuple[int, dict[str, Any]]] = []
+
+        for row in rows:
+            score = 0
+            name = (row["name"] or "").lower()
+            title = (row["title"] or "").lower()
+            desc = (row["description"] or "").lower()
+            family = (row["capability_family"] or "").lower()
+            aliases = (row["aliases_json"] or "[]").lower()
+            tags = (row["tags_json"] or "[]").lower()
+            searchable = f"{name} {title} {desc} {family} {aliases} {tags}"
+
+            for term in terms:
+                if term == name:
+                    score += 100
+                elif term in name:
+                    score += 60
+                if term in family:
+                    score += 40
+                if term in title:
+                    score += 30
+                if term in tags:
+                    score += 25
+                if term in aliases:
+                    score += 20
+                if term in desc:
+                    score += 10
+
+            if score > 0:
+                scored.append((score, self._row_to_dict(row)))
+
+        scored.sort(key=lambda x: -x[0])
+        return [item for _, item in scored[:limit]]
 
     def get_capability(self, project_root: Path, name: str) -> dict[str, Any] | None:
         self.init_db(project_root)

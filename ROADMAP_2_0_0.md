@@ -293,3 +293,21 @@ High-value contribution areas:
 - extensible for more ecosystems
 - much better at collaboration continuity
 - credible in its benchmark and contribution story
+
+
+## Deferred Items (from v1.3.0+ work sessions)
+
+### Installer: Full TOML merge
+Current manifest-based installer preserves user files or backs up on conflict, but doesn't merge AIDOCS changes into user-modified TOML files. Need per-section merge that adds new AIDOCS keys while preserving user-added keys/sections.
+
+### Conductor: Lane isolation refactor
+7 xfailed tests for lane-scoped read gating. known_exact_path bypass conflicts with lane isolation semantics. Needs redesign of how lane ownership interacts with the AccessGate cascade.
+
+### Bash gating
+No gating on shell commands. Too many legitimate use cases (tests, git, packages) to gate properly. Needs a command allow/deny framework with user-configurable rules.
+
+### OpenCode gate → MCP delegation
+OpenCode plugin has its own JS gate logic (GUARDED_TOOLS). Should delegate to the same Python AccessGate via MCP call for single-source enforcement.
+
+### Agentic workflow refactor
+Conductor lane isolation, agent context sharing, worktree enforcement. Deferred until core gate and tool quality are stable.

@@ -1031,6 +1031,59 @@ def create_server() -> Any:
         annotations={
             "readOnlyHint": True,
             "openWorldHint": False,
+            "title": "Find Symbol Range",
+        },
+    )
+    def code_find_symbol_range(
+        root: str,
+        path: str,
+        symbol: str,
+        kind: str | None = None,
+        line_number: int | None = None,
+    ) -> dict[str, Any]:
+        """Find start and end line of a symbol using the index. Use before extract_block to avoid manual line counting."""
+        return hub.code.find_symbol_range(Path(root), path, symbol, kind=kind, line_number=line_number)
+
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Extract Symbol",
+        },
+    )
+    def code_extract_symbol(
+        root: str,
+        source_path: str,
+        symbol: str,
+        target_path: str,
+        kind: str | None = None,
+        target_position: str = "append",
+        remove_from_source: bool = True,
+    ) -> dict[str, Any]:
+        """Move a symbol (function/class/method) from source to target file by name. No line numbers needed — uses the index to find boundaries."""
+        rng = hub.code.find_symbol_range(Path(root), source_path, symbol, kind=kind)
+        if "error" in rng:
+            return {"success": False, "error": rng["error"]}
+        result = _file_extract_block(
+            Path(root),
+            source_path,
+            int(rng["start"]),
+            int(rng["end"]),
+            target_path,
+            target_position=target_position,
+            remove_from_source=remove_from_source,
+        )
+        if result.get("success"):
+            _post_edit_reindex_and_grant(hub, Path(root), "code_extract_symbol", source_path)
+            _post_edit_reindex_and_grant(hub, Path(root), "code_extract_symbol", target_path)
+        return result
+
+
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
             "title": "Get Dependencies",
         },
         meta={"anthropic/searchHint": True},

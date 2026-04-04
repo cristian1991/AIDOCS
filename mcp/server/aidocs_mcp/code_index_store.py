@@ -985,6 +985,64 @@ class CodeIndexStore:
         return matches
 
 
+    def find_symbol_range(
+        self,
+        project_root: Path,
+        path: str,
+        symbol: str,
+        kind: str | None = None,
+        line_number: int | None = None,
+    ) -> dict[str, object]:
+        """Find the start and end line of a symbol using indexed outlines + block extraction."""
+        self.init_db(project_root)
+        with self.connect(project_root) as conn:
+            if line_number is not None:
+                row = conn.execute(
+                    "SELECT o.symbol, o.kind, o.line_number, f.language FROM code_outlines o "
+                    "JOIN code_files f ON f.path = o.path WHERE o.path = ? AND o.symbol = ? AND o.line_number = ? LIMIT 1",
+                    (path, symbol, line_number),
+                ).fetchone()
+            elif kind is not None:
+                row = conn.execute(
+                    "SELECT o.symbol, o.kind, o.line_number, f.language FROM code_outlines o "
+                    "JOIN code_files f ON f.path = o.path WHERE o.path = ? AND o.symbol = ? AND o.kind = ? ORDER BY o.line_number ASC LIMIT 1",
+                    (path, symbol, kind),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT o.symbol, o.kind, o.line_number, f.language FROM code_outlines o "
+                    "JOIN code_files f ON f.path = o.path WHERE o.path = ? AND o.symbol = ? ORDER BY o.line_number ASC LIMIT 1",
+                    (path, symbol),
+                ).fetchone()
+
+        if row is None:
+            return {"error": f"Symbol '{symbol}' not found in {path}"}
+
+        abs_path = project_root / path
+        text = abs_path.read_text(encoding="utf-8", errors="ignore")
+        lines = text.splitlines()
+        start_idx = max(0, int(row["line_number"]) - 1)
+        lang = row["language"]
+
+        if lang == "python":
+            snippet = self._extract_indent_block(lines, start_idx)
+        elif lang in {"javascript", "typescript", "jsx", "tsx", "csharp"}:
+            snippet = self._extract_brace_block(lines, start_idx)
+        else:
+            snippet = "\n".join(lines[start_idx:min(len(lines), start_idx + 20)])
+
+        end_line = int(row["line_number"]) + snippet.count("\n")
+
+        return {
+            "path": path,
+            "symbol": row["symbol"],
+            "kind": row["kind"],
+            "start": int(row["line_number"]),
+            "end": end_line,
+            "lines": end_line - int(row["line_number"]) + 1,
+        }
+
+
     def find_stale_references(
         self,
         project_root: Path,

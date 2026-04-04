@@ -657,14 +657,13 @@ def edit_lines(
     # Write back
     _write_lines(abs_path, result_lines, final_newline=final_newline)
 
+    # Omit old_content/new_content on success — agent already knows both
     return {
         "success": True,
         "path": canonical_path,
         "canonical_path": canonical_path,
         "start_line": start_line,
         "end_line": end_line,
-        "old_content": old_content,
-        "new_content": new_content,
         "lines_removed": len(old_lines),
         "lines_added": len(new_lines),
         "dry_run": False,
@@ -828,14 +827,14 @@ def batch_edit(
                     "canonical_path": canonical_path,
                     "start_line": start,
                     "end_line": end,
-                    "old_content": old_content,
-                    "new_content": new_content,
                     "lines_removed": len(old_lines),
                     "lines_added": len(new_content.split("\n"))
                     if new_content.strip()
                     else 0,
                     "dry_run": dry_run,
                     "error": None,
+                    # old_content/new_content kept only for dry_run and error cases
+                    **({"old_content": old_content, "new_content": new_content} if dry_run else {}),
                 }
             )
 

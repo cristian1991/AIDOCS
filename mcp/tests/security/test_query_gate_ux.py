@@ -851,58 +851,41 @@ def test_precision_tools_do_not_grant_blanket_read_access(tmp_path: Path) -> Non
     assert data["gate"]["allow_read"] is False
 
 
-def test_blanket_grant_expires_after_ttl(tmp_path: Path) -> None:
-    """A blanket allow_read grant should expire after the TTL window."""
-    from aidocs_mcp.query_gate import _GRANT_TTL_MINUTES
-    from datetime import datetime, timedelta
+def test_blanket_allow_read_no_ttl_expiry(tmp_path: Path) -> None:
+    """TTL-based expiry was removed — allow_read is now a legacy passthrough field.
+
+    The QueryGateStore no longer expires allow_read grants based on granted_at
+    timestamps. AccessGate ignores allow_read entirely (per-file discovery only),
+    but the store still preserves the field for backward compat with callers that
+    haven't been migrated yet.
+    """
     import json
+    from datetime import datetime, timedelta
 
     project = tmp_path / "project"
     (project / ".MEMORY" / "sessions" / "s1").mkdir(parents=True, exist_ok=True)
-    src = project / "src"
-    src.mkdir(parents=True, exist_ok=True)
-    (src / "app.py").write_text("before\n", encoding="utf-8")
 
     gate_path = project / ".MEMORY" / "sessions" / "s1" / "query-gate.json"
-    expired_time = (
-        datetime.now() - timedelta(minutes=_GRANT_TTL_MINUTES + 1)
-    ).strftime("%Y-%m-%d %H:%M:%S")
+    old_time = (datetime.now() - timedelta(minutes=999)).strftime("%Y-%m-%d %H:%M:%S")
     gate_path.write_text(
         json.dumps(
             {
                 "allow_read": True,
-                "granted_at": expired_time,
+                "granted_at": old_time,
                 "last_tool": "code_search",
                 "known_exact_paths": [],
                 "current_lane_id": None,
                 "lane_exact_paths": [],
-                "updated_at": expired_time,
+                "updated_at": old_time,
             }
         ),
         encoding="utf-8",
     )
 
-    async def run() -> dict[str, dict[str, object]]:
-        server = create_server()
-        hub = server._aidocs_test_hub
-        hub.managed_mode.set_mode(project, session_id="s1")
+    from aidocs_mcp.query_gate import QueryGateStore
 
-        gate_before = hub.query_gate.get(project, "s1")
-        blocked_read = _payload_json(
-            await server.call_tool(
-                "aidocs_code_get_lines",
-                {
-                    "project_root": str(project),
-                    "path": "src/app.py",
-                    "start_line": 1,
-                    "count": 1,
-                    "show_line_numbers": False,
-                },
-            )
-        )
-        return {"gate_before": gate_before, "blocked_read": blocked_read}
+    store = QueryGateStore()
+    state = store.get(project, "s1")
 
-    data = asyncio.run(run())
-
-    assert data["gate_before"]["allow_read"] is False
-    assert "Indexed-query prerequisite" in str(data["blocked_read"]["error"])
+    # No TTL expiry — the value passes through as-is from JSON
+    assert state["allow_read"] is True

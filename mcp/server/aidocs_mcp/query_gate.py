@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-
-_GRANT_TTL_MINUTES = 30
 
 
 class QueryGateStore:
-    """Session-scoped gate tracking whether indexed-query tools were used recently."""
+    """Session-scoped gate tracking per-file discovery grants for indexed-read enforcement."""
 
     _KEEP = object()
 
@@ -59,22 +57,11 @@ class QueryGateStore:
         except Exception:
             payload = {}
 
-        allow_read = bool(payload.get("allow_read", False))
-        granted_at = payload.get("granted_at")
-        if allow_read and granted_at:
-            try:
-                granted_time = datetime.strptime(granted_at, "%Y-%m-%d %H:%M:%S")
-                if datetime.now() - granted_time > timedelta(
-                    minutes=_GRANT_TTL_MINUTES
-                ):
-                    allow_read = False
-            except (ValueError, TypeError):
-                pass
-
         return {
             "session_id": session_id,
             "path": str(path),
-            "allow_read": allow_read,
+            # Legacy field — AccessGate ignores this; kept for backward compat
+            "allow_read": bool(payload.get("allow_read", False)),
             "last_tool": payload.get("last_tool"),
             "known_exact_paths": self._normalize_known_exact_paths(payload),
             "current_lane_id": self._normalize_current_lane_id(payload),
@@ -86,8 +73,9 @@ class QueryGateStore:
         self,
         project_root: Path,
         session_id: str,
-        allow_read: bool,
-        last_tool: str | None,
+        *,
+        allow_read: bool = False,
+        last_tool: str | None = None,
         known_exact_paths: list[str] | None | object = _KEEP,
         current_lane_id: str | None | object = _KEEP,
         lane_exact_paths: list[str] | None | object = _KEEP,

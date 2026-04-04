@@ -467,7 +467,7 @@ class TestEditLines:
             project, "hello.txt", start_line=2, end_line=2, new_content="REPLACED"
         )
         assert result["success"] is True
-        assert result["old_content"] == "line2"
+        assert "old_content" not in result
         assert result["lines_removed"] == 1
         assert result["lines_added"] == 1
         # Verify file
@@ -490,7 +490,7 @@ class TestEditLines:
             project, "hello.txt", start_line=3, end_line=2, new_content="INSERTED"
         )
         assert result["success"] is True
-        assert result["old_content"] == ""
+        assert "old_content" not in result
         assert result["lines_removed"] == 0
         assert result["lines_added"] == 1
         lines = (project / "hello.txt").read_text(encoding="utf-8").splitlines()

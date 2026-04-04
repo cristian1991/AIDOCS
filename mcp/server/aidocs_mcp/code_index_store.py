@@ -1043,6 +1043,66 @@ class CodeIndexStore:
         }
 
 
+
+    def suggest_extractions(
+        self,
+        project_root: Path,
+        path: str,
+        min_lines: int = 20,
+        limit: int = 10,
+    ) -> list[dict[str, object]]:
+        """Suggest symbols that are good extraction candidates based on size and cohesion."""
+        self.init_db(project_root)
+        abs_path = (project_root / path.replace("\\", "/")).resolve()
+        if not abs_path.is_file():
+            return []
+        text = abs_path.read_text(encoding="utf-8", errors="ignore")
+        lines = text.splitlines()
+
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                "SELECT symbol, kind, line_number, container FROM code_outlines WHERE path = ? ORDER BY line_number",
+                (path.replace("\\", "/"),),
+            ).fetchall()
+
+        if not rows:
+            return []
+
+        # Get language for block extraction
+        lang_row = conn.execute("SELECT language FROM code_files WHERE path = ?", (path.replace("\\", "/"),)).fetchone()
+        language = lang_row["language"] if lang_row else "unknown"
+
+        candidates: list[dict[str, object]] = []
+        for row in rows:
+            start_idx = max(0, int(row["line_number"]) - 1)
+            if language == "python":
+                snippet = self._extract_indent_block(lines, start_idx)
+            elif language in {"javascript", "typescript", "jsx", "tsx", "csharp"}:
+                snippet = self._extract_brace_block(lines, start_idx)
+            else:
+                continue
+            line_count = snippet.count("\n") + 1
+            if line_count < min_lines:
+                continue
+
+            kind = row["kind"]
+            container = row["container"]
+            # Skip nested functions — they move with their parent
+            if container and kind == "function":
+                continue
+
+            candidates.append({
+                "symbol": row["symbol"],
+                "kind": kind,
+                "start": int(row["line_number"]),
+                "lines": line_count,
+                "container": container,
+            })
+
+        candidates.sort(key=lambda c: -c["lines"])
+        return candidates[:limit]
+
+
     def find_stale_references(
         self,
         project_root: Path,

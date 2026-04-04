@@ -1079,6 +1079,78 @@ def create_server() -> Any:
         return result
 
 
+    @server.tool(
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "Suggest Extractions",
+        },
+    )
+    def code_suggest_extractions(
+        root: str,
+        path: str,
+        min_lines: int = 20,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Show the largest symbols in a file that are good extraction candidates. Use to plan deslopification."""
+        candidates = hub.code.suggest_extractions(Path(root), path, min_lines=min_lines, limit=limit)
+        return {"path": path, "candidates": candidates, "total": len(candidates)}
+
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Refactor Extract",
+        },
+    )
+    def code_refactor_extract(
+        root: str,
+        source_path: str,
+        symbol: str,
+        target_path: str,
+        kind: str | None = None,
+    ) -> dict[str, Any]:
+        """Full refactor pipeline: find symbol → extract to target → reindex both → detect stale references + dead code. Returns extraction result plus cleanup suggestions."""
+        r = Path(root)
+
+        # 1. Find symbol range
+        rng = hub.code.find_symbol_range(r, source_path, symbol, kind=kind)
+        if "error" in rng:
+            return {"success": False, "step": "find_range", "error": rng["error"]}
+
+        # 2. Extract
+        extract_result = _file_extract_block(
+            r, source_path, int(rng["start"]), int(rng["end"]), target_path,
+            target_position="append", remove_from_source=True,
+        )
+        if not extract_result.get("success"):
+            return {"success": False, "step": "extract", "error": extract_result.get("error")}
+
+        # 3. Reindex both files
+        _post_edit_reindex_and_grant(hub, r, "code_refactor_extract", source_path)
+        _post_edit_reindex_and_grant(hub, r, "code_refactor_extract", target_path)
+
+        # 4. Find stale references to the moved symbol
+        stale = hub.code.find_stale_references(r, [symbol], exclude_path=target_path, limit=20)
+
+        # 5. Find dead code in source (imports that became unused after extraction)
+        dead = hub.code.find_dead_code(r, source_path)
+
+        return {
+            "success": True,
+            "extracted": {
+                "symbol": symbol,
+                "source": source_path,
+                "target": target_path,
+                "lines": rng["lines"],
+            },
+            "stale_references": stale,
+            "dead_code": {
+                "dead_imports": dead.get("dead_imports", []),
+                "unused_locals": dead.get("unused_locals", []),
+            },
+        }
+
 
     @server.tool(
         annotations={

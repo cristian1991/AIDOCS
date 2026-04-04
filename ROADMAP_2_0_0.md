@@ -96,8 +96,8 @@ Still incomplete or not yet at end-goal level:
 
 ### Goal E: Tool/Host UX Cleanup
 - Host integrations are thinner and more runtime-driven.
-- Tool surface is reorganized into a cleaner primary/debug taxonomy.
-- Discoverability is materially improved.
+- ~~Tool surface is reorganized into a cleaner primary/debug taxonomy.~~ **Partially done** — tool descriptions externalized to TOML, prefix removed, search-mode guidance added
+- ~~Discoverability is materially improved.~~ **Done** — terse tool descriptions, when-to-use guidance, search-mode hints
 
 ## v2.0.0 End Goals
 
@@ -158,8 +158,8 @@ The most important promise of AIDOCS is that agents can work deeply and correctl
   - entity properties
   - batch retrieval
 - keep tuning breadth/depth/focus/noise controls based on real feedback
-- close the last-mile editing-context gap where agents still need exact local HTML/text blocks to make safe replacements
-- add a line/snippet-context retrieval surface for surgical editing workflows where symbol-based retrieval is not enough
+- ~~close the last-mile editing-context gap where agents still need exact local HTML/text blocks to make safe replacements~~ **Done** — `code_str_replace`, `code_edit_lines`, auto-reindex
+- ~~add a line/snippet-context retrieval surface for surgical editing workflows where symbol-based retrieval is not enough~~ **Done** — `code_get_lines`, `code_get_symbol_snippet`, `code_find_symbol_range`
 
 ### Done when
 - broad modes are consistently usable, not only precision tools
@@ -189,8 +189,8 @@ The first continuity layer exists, but it is still only a foundation.
 Task state still depends too much on agents remembering to close loops manually.
 
 ### Continue / finish
-- edit-count or work-count based lifecycle nudges
-- stronger journaling guarantees
+- edit-count or work-count based lifecycle nudges (requires automated prompt injection — not a simple nudge)
+- ~~stronger journaling guarantees~~ **Done** — auto-journal on task_begin/task_complete
 - session summaries that reflect what actually happened, not just what was intended
 
 ### Done when
@@ -203,11 +203,11 @@ Task state still depends too much on agents remembering to close loops manually.
 Real projects use more languages and structures than the built-in list can cover deeply.
 
 ### Continue / finish
-- declarative language registration
+- ~~declarative language registration~~ **Done** — TOML language descriptors
 - include/exclude and module/role hint extensions
-- support tiers for indexing quality
+- ~~support tiers for indexing quality~~ **Done** — rich/heuristic/summary tiers
 - heuristic structure rules
-- validation for custom indexing config
+- ~~validation for custom indexing config~~ **Done** — `code_index_sync` now validates descriptors and surfaces parse errors
 - clear community contribution path for richer language support
 - richer hybrid-language semantics for files like Razor where symbol-only models are insufficient
 - descriptor/family support for constructs such as partial refs, tag-helper refs, translation keys, and model-binding references where they materially improve retrieval

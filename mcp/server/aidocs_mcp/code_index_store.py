@@ -930,11 +930,18 @@ class CodeIndexStore:
         limit: int = 50,
         include_tests: bool = False,
     ) -> list[dict[str, object]]:
-        """Search indexed file contents for literal text. Replaces grep for indexed projects."""
+        """Search indexed file contents for literal text. Supports | as OR delimiter."""
         self.init_db(project_root)
-        needle = text if case_sensitive else text.lower()
-        if not needle.strip():
+        raw = text.strip()
+        if not raw:
             return []
+
+        # Split on | for OR queries; each term is a separate needle
+        needles = [t.strip() for t in raw.split("|") if t.strip()]
+        if not needles:
+            return []
+        if not case_sensitive:
+            needles = [n.lower() for n in needles]
 
         with self.connect(project_root) as conn:
             query_sql = "SELECT path FROM code_files"
@@ -957,19 +964,19 @@ class CodeIndexStore:
             except Exception:
                 continue
             search_content = content if case_sensitive else content.lower()
-            if needle not in search_content:
+            if not any(n in search_content for n in needles):
                 continue
-            # Collect matching lines
             lines_matched: list[dict[str, object]] = []
             for i, line in enumerate(content.splitlines(), 1):
                 check_line = line if case_sensitive else line.lower()
-                if needle in check_line:
+                if any(n in check_line for n in needles):
                     lines_matched.append({"line_number": i, "line": line.rstrip()})
                     if len(lines_matched) >= 5:
                         break
+            total_count = sum(search_content.count(n) for n in needles)
             matches.append({
                 "path": rel_path,
-                "match_count": search_content.count(needle),
+                "match_count": total_count,
                 "lines": lines_matched,
             })
             if len(matches) >= limit:

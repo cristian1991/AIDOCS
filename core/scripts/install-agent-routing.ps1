@@ -183,22 +183,20 @@ if (-not (Test-Path $actionTokensRoot)) {
   throw "Missing action_tokens directory: $actionTokensRoot"
 }
 
-# Copy action_tokens next to plugin (primary runtime path)
+# Copy action_tokens next to plugin (backup existing user customizations)
 $pluginActionTokensDir = Join-Path $opencodePluginsDir "action_tokens"
 New-Item -ItemType Directory -Force -Path $pluginActionTokensDir | Out-Null
-Get-ChildItem -Path $pluginActionTokensDir -Filter "*.yaml" -File -ErrorAction SilentlyContinue | Remove-Item -Force
-Get-ChildItem -Path $pluginActionTokensDir -Filter "*.toml" -File -ErrorAction SilentlyContinue | Remove-Item -Force
 
 $opencodeActionTokenExports = @{}
-Get-ChildItem -Path $actionTokensRoot -Filter "*.yaml" -File | ForEach-Object {
-  $target = Join-Path $pluginActionTokensDir $_.Name
-  Copy-Item -Path $_.FullName -Destination $target -Force
-  $opencodeActionTokenExports[$target] = "copy"
-}
-Get-ChildItem -Path $actionTokensRoot -Filter "*.toml" -File | ForEach-Object {
-  $target = Join-Path $pluginActionTokensDir $_.Name
-  Copy-Item -Path $_.FullName -Destination $target -Force
-  $opencodeActionTokenExports[$target] = "copy"
+foreach ($ext in @("*.yaml", "*.toml")) {
+  Get-ChildItem -Path $actionTokensRoot -Filter $ext -File | ForEach-Object {
+    $target = Join-Path $pluginActionTokensDir $_.Name
+    if (Test-Path $target) {
+      Copy-Item -Path $target -Destination "$target.backup" -Force
+    }
+    Copy-Item -Path $_.FullName -Destination $target -Force
+    $opencodeActionTokenExports[$target] = "copy"
+  }
 }
 
 # Also maintain legacy opencode/ subdir for backward compat
@@ -217,9 +215,12 @@ foreach ($ext in @("*.yaml", "*.toml")) {
 
 $actionHooksRoot = Join-Path $projectRoot "action_hooks"
 if (Test-Path $actionHooksRoot) {
-  Get-ChildItem -Path $opencodeActionHooksDir -Filter "*.toml" -File -ErrorAction SilentlyContinue | Remove-Item -Force
   Get-ChildItem -Path $actionHooksRoot -Filter "*.toml" -File | ForEach-Object {
     $target = Join-Path $opencodeActionHooksDir $_.Name
+    if (Test-Path $target) {
+      # Backup existing before overwrite — user may have customized
+      Copy-Item -Path $target -Destination "$target.backup" -Force
+    }
     Copy-Item -Path $_.FullName -Destination $target -Force
   }
 }

@@ -132,12 +132,11 @@ fi
 # Copy action_tokens next to plugin (primary runtime path)
 PLUGIN_ACTION_TOKENS_DIR="$OPENCODE_PLUGINS_DIR/action_tokens"
 mkdir -p "$PLUGIN_ACTION_TOKENS_DIR"
-find "$PLUGIN_ACTION_TOKENS_DIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.toml' \) -delete
-
 declare -a OPENCODE_ACTION_TOKEN_EXPORTS=()
 for token_file in "$ACTION_TOKENS_ROOT"/*.yaml "$ACTION_TOKENS_ROOT"/*.toml; do
   [[ -f "$token_file" ]] || continue
   target="$PLUGIN_ACTION_TOKENS_DIR/$(basename "$token_file")"
+  [[ -f "$target" ]] && cp "$target" "${target}.backup"
   cp "$token_file" "$target"
   OPENCODE_ACTION_TOKEN_EXPORTS+=("$target (copy)")
 done
@@ -157,19 +156,21 @@ link_or_copy() {
 
 OPENCODE_ACTION_TOKENS_DIR="$ACTION_TOKENS_ROOT/opencode"
 mkdir -p "$OPENCODE_ACTION_TOKENS_DIR"
-find "$OPENCODE_ACTION_TOKENS_DIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.toml' \) -delete
 
 for token_file in "$ACTION_TOKENS_ROOT"/*.yaml "$ACTION_TOKENS_ROOT"/*.toml; do
   [[ -f "$token_file" ]] || continue
-  link_or_copy "$token_file" "$OPENCODE_ACTION_TOKENS_DIR/$(basename "$token_file")"
+  target="$OPENCODE_ACTION_TOKENS_DIR/$(basename "$token_file")"
+  [[ -f "$target" ]] && cp "$target" "${target}.backup"
+  link_or_copy "$token_file" "$target"
 done
 
 ACTION_HOOKS_ROOT="$PROJECT_ROOT/action_hooks"
 if [[ -d "$ACTION_HOOKS_ROOT" ]]; then
-  find "$OPENCODE_ACTION_HOOKS_DIR" -maxdepth 1 -type f -name '*.toml' -delete
   for hook_file in "$ACTION_HOOKS_ROOT"/*.toml; do
     [[ -f "$hook_file" ]] || continue
-    cp "$hook_file" "$OPENCODE_ACTION_HOOKS_DIR/$(basename "$hook_file")"
+    target="$OPENCODE_ACTION_HOOKS_DIR/$(basename "$hook_file")"
+    [[ -f "$target" ]] && cp "$target" "${target}.backup"
+    cp "$hook_file" "$target"
   done
 fi
 

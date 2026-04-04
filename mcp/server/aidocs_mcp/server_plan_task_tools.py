@@ -21,7 +21,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def plan_connect(
-        project_root: str,
+        root: str,
         session_id: str,
         run_preflight: bool = True,
         timeout: int | None = None,
@@ -40,7 +40,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def plan_create_from_spec(
-        project_root: str,
+        root: str,
         session_id: str,
         spec_text: str,
         scope: str | None = None,
@@ -65,7 +65,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def plan_validate(
-        project_root: str,
+        root: str,
         session_id: str,
         timeout: int | None = None,
     ) -> dict[str, Any]:
@@ -81,7 +81,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def plan_conductor_graph(
-        project_root: str,
+        root: str,
         session_id: str,
         timeout: int | None = None,
     ) -> dict[str, Any]:
@@ -97,7 +97,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def plan_conductor_status(
-        project_root: str,
+        root: str,
         session_id: str,
         timeout: int | None = None,
     ) -> dict[str, Any]:
@@ -113,7 +113,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def execution_mode_select(
-        project_root: str,
+        root: str,
         session_id: str,
         timeout: int | None = None,
     ) -> dict[str, Any]:
@@ -129,7 +129,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def plan_dispatch_next(
-        project_root: str,
+        root: str,
         session_id: str,
         timeout: int | None = None,
     ) -> dict[str, Any]:
@@ -145,7 +145,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def plan_dispatch_report(
-        project_root: str,
+        root: str,
         session_id: str,
         packet_result: dict[str, Any],
         timeout: int | None = None,
@@ -164,7 +164,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def execution_loop_next(
-        project_root: str,
+        root: str,
         session_id: str,
         timeout: int | None = None,
     ) -> dict[str, Any]:
@@ -180,7 +180,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def plan_conductor_report_inflight_overlap(
-        project_root: str,
+        root: str,
         session_id: str,
         paused_lane_id: str,
         conflicting_lane_id: str,
@@ -205,7 +205,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def plan_conductor_resume_lane(
-        project_root: str,
+        root: str,
         session_id: str,
         lane_id: str,
         timeout: int | None = None,
@@ -224,7 +224,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def plan_conductor_mark_contract_ready(
-        project_root: str,
+        root: str,
         session_id: str,
         lane_id: str,
         ready: bool = True,
@@ -247,7 +247,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def plan_conductor_record_lane_signal(
-        project_root: str,
+        root: str,
         session_id: str,
         lane_id: str,
         signal_kind: str,
@@ -275,7 +275,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def plan_preflight(
-        project_root: str,
+        root: str,
         session_id: str,
         timeout: int | None = None,
     ) -> dict[str, Any]:
@@ -291,7 +291,7 @@ def register_plan_task_tools(
         meta={"anthropic/alwaysLoad": True},
     )
     def task_begin(
-        project_root: str,
+        root: str,
         session_id: str,
         goal: str | None = None,
         state: list[str] | None = None,
@@ -335,7 +335,7 @@ def register_plan_task_tools(
         meta={"anthropic/alwaysLoad": True},
     )
     def task_update(
-        project_root: str,
+        root: str,
         session_id: str,
         state: list[str] | None = None,
         upcoming: list[str] | None = None,
@@ -377,7 +377,7 @@ def register_plan_task_tools(
         meta={"anthropic/alwaysLoad": True},
     )
     def task_complete(
-        project_root: str,
+        root: str,
         session_id: str,
         result_summary: str,
         next_status: str = "done",
@@ -405,7 +405,7 @@ def register_plan_task_tools(
     )
     @timed_sync
     def verification_gate(
-        project_root: str,
+        root: str,
         session_id: str,
         lane_id: str | None = None,
         verification_evidence: dict[str, Any] | None = None,
@@ -427,7 +427,7 @@ def register_plan_task_tools(
         }
     )
     def roadmap_feedback_update(
-        project_root: str,
+        root: str,
         step_text: str,
         feedback: str,
     ) -> dict[str, Any]:
@@ -446,7 +446,7 @@ def register_plan_task_tools(
         }
     )
     def plan_normalize_prose(
-        project_root: str,
+        root: str,
         session_id: str,
     ) -> dict[str, Any]:
         """Preserve prose-only plan additions and append normalized steps awaiting feedback."""
@@ -462,7 +462,7 @@ def register_plan_task_tools(
         }
     )
     def session_artifacts_normalize(
-        project_root: str,
+        root: str,
         session_id: str,
     ) -> dict[str, Any]:
         """Normalize explicit session artifacts and report changed vs untouched items."""

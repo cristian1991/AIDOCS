@@ -40,6 +40,7 @@ from .git_helpers import run_git_sync as _run_git_sync
 from .project_registry_service import ProjectRegistryService
 from .runtime_service import RuntimeService
 from .server_plan_task_tools import register_plan_task_tools
+from .server_runtime_context_tools import register_runtime_context_tools
 from .server_session_tools import register_session_tools
 from .server_skill_tools import register_skill_tools
 from .service_hub import AidocsServiceHub
@@ -266,14 +267,14 @@ async def _run_git(cwd: str, *args: str, timeout: int = _GIT_TIMEOUT) -> str:
     )
 
 
-def _find_git_root(project_root: str) -> Path:
+def _find_git_root(root: str) -> Path:
     """Find the actual git root, walking up from project_root if needed.
 
     Raises RuntimeError if no git repository is found.
     """
     import subprocess
 
-    root = Path(project_root)
+    root = Path(root)
     if not root.is_dir():
         raise RuntimeError(f"Directory does not exist: {project_root}")
     try:
@@ -514,7 +515,8 @@ def create_server() -> Any:
     raw_server_tool = server.tool
 
     def _prefixed_public_tool_name(name: str) -> str:
-        return name if name.startswith("aidocs_") else f"aidocs_{name}"
+        # No prefix — hosts already brand tool calls with the MCP server name
+        return name.removeprefix("aidocs_") if name.startswith("aidocs_") else name
 
     def _taxonomy_tool(*args: Any, **kwargs: Any) -> Any:
         explicit_name = kwargs.pop("name", None)
@@ -721,7 +723,7 @@ def create_server() -> Any:
 
     server.call_tool = MethodType(_instrumented_call_tool, server)
 
-    def _resolve_related_root(project_root: str, name: str) -> Path:
+    def _resolve_related_root(root: str, name: str) -> Path:
         resolved = hub.related.resolve_related_project_path(Path(project_root), name)
         if resolved is None:
             raise FileNotFoundError(
@@ -753,97 +755,11 @@ def create_server() -> Any:
         timed_sync=timed_sync,
     )
 
-    @server.tool(
-        annotations={
-            "readOnlyHint": True,
-            "openWorldHint": False,
-            "title": "Read Session Journal",
-        }
+    register_runtime_context_tools(
+        server=server,
+        hub=hub,
     )
-    def session_journal_read(
-        project_root: str,
-        session_id: str,
-        last_n: int | None = None,
-    ) -> list[dict[str, str]]:
-        """Read the session journal — a rolling log of significant decisions and outcomes.
 
-        Use this to refresh your memory when resuming a stale session.
-
-        Args:
-            last_n: Only return the last N entries. None returns all.
-        """
-        return hub.sessions.read_journal(Path(project_root), session_id, last_n=last_n)
-
-    @server.tool(
-        annotations={
-            "destructiveHint": True,
-            "openWorldHint": False,
-            "title": "Log to Session Journal",
-        }
-    )
-    def session_journal_log(
-        project_root: str,
-        session_id: str,
-        action_kind: str,
-        intent: str,
-        outcome: str,
-    ) -> dict[str, Any]:
-        """Log a significant decision or outcome to the session journal.
-
-        Only log meaningful work — not greetings, trivial commands, or minor edits.
-        The journal auto-evicts oldest entries to archive when full (default: 100 entries).
-
-        Args:
-            action_kind: The type of action (edit, trace, investigate, read_error, etc.).
-            intent: What the user asked for (1-2 sentences, max 120 chars).
-            outcome: What happened (1-2 sentences, max 120 chars).
-        """
-        return hub.sessions.write_journal_entry(
-            Path(project_root),
-            session_id,
-            action_kind=action_kind,
-            intent=intent,
-            outcome=outcome,
-        )
-
-    @server.tool(
-        annotations={
-            "readOnlyHint": True,
-            "openWorldHint": False,
-            "title": "Runtime Preflight",
-        }
-    )
-    def runtime_preflight(
-        project_root: str,
-        action_kind: str,
-        session_id: str | None = None,
-        user_explicit_targets: list[str] | None = None,
-    ) -> dict[str, Any]:
-        """Return host/runtime policy guidance before performing an action."""
-        return hub.policy.preflight_action(
-            Path(project_root),
-            action_kind=action_kind,
-            session_id=session_id,
-            user_explicit_targets=user_explicit_targets,
-        )
-
-    @server.tool(
-        annotations={
-            "destructiveHint": True,
-            "openWorldHint": False,
-            "title": "Update Session",
-        }
-    )
-    def session_update(
-        project_root: str, session_id: str, patch: dict[str, list[str]]
-    ) -> dict[str, Any]:
-        """Update structured sections in an existing SESSION.md file."""
-        session = hub.sessions.update_session(Path(project_root), session_id, patch)
-        return {
-            "session_id": session.session_id,
-            "path": str(session.path),
-            "sections": session.sections,
-        }
 
     @server.tool(
         annotations={
@@ -853,7 +769,7 @@ def create_server() -> Any:
         },
         meta={"anthropic/alwaysLoad": True},
     )
-    def memory_read(project_root: str, targets: list[str]) -> dict[str, str]:
+    def memory_read(root: str, targets: list[str]) -> dict[str, str]:
         """Read canonical memory files by target path."""
         return hub.memory.read_memory(Path(project_root), targets)
 
@@ -864,7 +780,7 @@ def create_server() -> Any:
             "title": "Sync Memory Index",
         }
     )
-    def index_sync(project_root: str) -> dict[str, int]:
+    def index_sync(root: str) -> dict[str, int]:
         """Rebuild the derived SQLite memory/session index from files."""
         return hub.index.sync_all(Path(project_root))
 
@@ -875,7 +791,7 @@ def create_server() -> Any:
             "title": "Memory Index Status",
         }
     )
-    def index_status(project_root: str) -> dict[str, Any]:
+    def index_status(root: str) -> dict[str, Any]:
         """Report current derived index status for the project."""
         return hub.index.status(Path(project_root))
 
@@ -889,7 +805,7 @@ def create_server() -> Any:
     )
     @timed_sync
     def schema_index_sync(
-        project_root: str, timeout: int | None = None
+        root: str, timeout: int | None = None
     ) -> dict[str, int]:
         """Rebuild the derived schema catalog from code and SQL files."""
         return hub.schema.sync_schema(Path(project_root))
@@ -903,7 +819,7 @@ def create_server() -> Any:
         meta={"anthropic/alwaysLoad": True},
     )
     def memory_search(
-        project_root: str, query: str, limit: int = 10
+        root: str, query: str, limit: int = 10
     ) -> list[dict[str, str]]:
         """Search the derived memory index by path, title, or body text."""
         return hub.index.search_memory(Path(project_root), query=query, limit=limit)
@@ -918,7 +834,7 @@ def create_server() -> Any:
     )
     @timed_sync
     def code_index_sync(
-        project_root: str, include_tests: bool = False, timeout: int | None = None
+        root: str, include_tests: bool = False, timeout: int | None = None
     ) -> dict[str, int]:
         """Rebuild the derived code file manifest and summary index."""
         return {
@@ -937,7 +853,7 @@ def create_server() -> Any:
         meta={"anthropic/alwaysLoad": True},
     )
     def code_get_modules(
-        project_root: str, kind: str | None = None
+        root: str, kind: str | None = None
     ) -> list[dict[str, Any]]:
         """List detected project modules (workspaces, subprojects, informal modules).
 
@@ -958,7 +874,7 @@ def create_server() -> Any:
         meta={"anthropic/alwaysLoad": True},
     )
     def code_get_module_files(
-        project_root: str, module_path: str, limit: int = 200
+        root: str, module_path: str, limit: int = 200
     ) -> list[dict[str, Any]]:
         """List all indexed source files belonging to a specific module.
 
@@ -976,7 +892,7 @@ def create_server() -> Any:
             "title": "Code Index Status",
         }
     )
-    def code_index_status(project_root: str) -> dict[str, Any]:
+    def code_index_status(root: str) -> dict[str, Any]:
         """Report current derived code index status for the project."""
         return hub.code.code_status(Path(project_root))
 
@@ -989,10 +905,10 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def code_search(
-        project_root: str, query: str, limit: int = 10
+        root: str, query: str, limit: int = 10
     ) -> list[dict[str, Any]]:
         """Search the derived code index by file path and lightweight summary."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.code.search_code(root, query=query, limit=limit)
         if result:
             _grant_indexed_read_gate(hub, root, "code_search")
@@ -1007,7 +923,7 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def code_text_search(
-        project_root: str,
+        root: str,
         text: str,
         glob: str | None = None,
         case_sensitive: bool = False,
@@ -1015,7 +931,7 @@ def create_server() -> Any:
         include_tests: bool = False,
     ) -> dict[str, Any]:
         """Fast literal text search across indexed files. Use instead of grep for 'does this string exist?'. Glob filters by file pattern (e.g. '*.py')."""
-        root = Path(project_root)
+        root = Path(root)
         matches = hub.code.search_text(
             root,
             text,
@@ -1039,14 +955,14 @@ def create_server() -> Any:
         },
     )
     def code_find_stale_references(
-        project_root: str,
+        root: str,
         symbols: list[str],
         exclude_path: str | None = None,
         include_tests: bool = False,
         limit: int = 50,
     ) -> dict[str, Any]:
         """After renaming/deleting symbols, find remaining references that need updating."""
-        root = Path(project_root)
+        root = Path(root)
         results = hub.code.find_stale_references(
             root,
             symbols,
@@ -1064,7 +980,7 @@ def create_server() -> Any:
         }
     )
     def code_extract_block(
-        project_root: str,
+        root: str,
         source_path: str,
         start_line: int,
         end_line: int,
@@ -1074,7 +990,7 @@ def create_server() -> Any:
         remove_from_source: bool = True,
     ) -> dict[str, Any]:
         """Move a code block from source to target file. Atomic: extracts lines, places in target, removes from source. Use for refactoring large files into modules."""
-        root = Path(project_root)
+        root = Path(root)
         result = _file_extract_block(
             root,
             source_path,
@@ -1104,7 +1020,7 @@ def create_server() -> Any:
         },
         meta={"anthropic/searchHint": True},
     )
-    def code_get_dependencies(project_root: str, path: str) -> list[dict[str, str]]:
+    def code_get_dependencies(root: str, path: str) -> list[dict[str, str]]:
         """Return lightweight dependency edges for one indexed code file."""
         return hub.code.get_dependencies(Path(project_root), path=path)
 
@@ -1117,14 +1033,14 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def code_get_symbol_snippet(
-        project_root: str,
+        root: str,
         path: str,
         symbol: str,
         kind: str | None = None,
         line_number: int | None = None,
     ) -> dict[str, Any]:
         """Return an exact code snippet for an indexed outline symbol."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.code.get_symbol_snippet(
             root,
             path=path,
@@ -1145,13 +1061,13 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def code_get_method_signature(
-        project_root: str,
+        root: str,
         method: str,
         container: str | None = None,
         limit: int = 20,
     ) -> dict[str, Any]:
         """Return exact method signatures so agents can call methods correctly without reading whole files."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.code.get_method_signature(
             root, method_name=method, container=container, limit=limit
         )
@@ -1168,13 +1084,13 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def code_get_method_signature(
-        project_root: str,
+        root: str,
         method: str,
         container: str | None = None,
         limit: int = 20,
     ) -> dict[str, Any]:
         """Return exact method signatures so agents can call methods correctly without reading whole files."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.code.get_method_signature(
             root, method_name=method, container=container, limit=limit
         )
@@ -1191,13 +1107,13 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def code_get_method_signatures(
-        project_root: str,
+        root: str,
         methods: list[str],
         container: str | None = None,
         limit_per_method: int = 20,
     ) -> dict[str, Any]:
         """Return exact signatures for multiple methods in one call."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.code.get_method_signatures(
             root,
             methods=methods,
@@ -1217,13 +1133,13 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def code_get_enum_values(
-        project_root: str,
+        root: str,
         enum_name: str,
         limit: int = 50,
         include_related: bool = False,
     ) -> dict[str, Any]:
         """Return indexed enum definitions with their enum members."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.code.get_enum_values(
             root, enum_name=enum_name, limit=limit, include_related=include_related
         )
@@ -1240,13 +1156,13 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def code_get_constructor_params(
-        project_root: str,
+        root: str,
         type_name: str,
         limit: int = 20,
         include_related: bool = False,
     ) -> dict[str, Any]:
         """Return constructor or record positional parameter information for a type."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.code.get_constructor_params(
             root, type_name=type_name, limit=limit, include_related=include_related
         )
@@ -1263,13 +1179,13 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def code_get_constructor_params_batch(
-        project_root: str,
+        root: str,
         types: list[str],
         include_related: bool = False,
         limit_per_type: int = 20,
     ) -> dict[str, Any]:
         """Return constructor or record positional parameter information for multiple types."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.code.get_constructor_params_batch(
             root,
             types=types,
@@ -1289,12 +1205,12 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def code_get_service_api(
-        project_root: str,
+        root: str,
         service_name: str,
         limit: int = 100,
     ) -> dict[str, Any]:
         """Return all indexed public method signatures for a service-like class."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.code.get_service_api(root, service_name=service_name, limit=limit)
         if result.get("methods"):
             pass  # Precision tool - no blanket read grant
@@ -1309,11 +1225,11 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def code_get_entity_properties(
-        project_root: str,
+        root: str,
         entity_name: str,
     ) -> dict[str, Any]:
         """Return a lightweight property list for an entity or DTO."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.code.get_entity_properties(root, entity_name=entity_name)
         if result.get("entity_name") and (
             result.get("properties") or result.get("note")
@@ -1332,7 +1248,7 @@ def create_server() -> Any:
         meta={"anthropic/alwaysLoad": True},
     )
     def code_get_lines(
-        project_root: str,
+        root: str,
         path: str,
         start_line: int = 1,
         count: int = 30,
@@ -1351,7 +1267,7 @@ def create_server() -> Any:
             show_line_numbers: Prefix each line with its number for easy reference.
             known_exact_path: Bypass the indexed-read gate only for an exact relative path.
         """
-        root = Path(project_root)
+        root = Path(root)
         gate = _require_indexed_read_gate(
             hub,
             root,
@@ -1376,7 +1292,7 @@ def create_server() -> Any:
         }
     )
     def code_create_file(
-        project_root: str,
+        root: str,
         path: str,
         content: str,
         config_edit_mode: Literal["explicit_user_permitted"] | None = None,
@@ -1386,7 +1302,7 @@ def create_server() -> Any:
         The path must stay inside the project root and still respects the
         existing sensitive-path and self-edit guardrails.
         """
-        root = Path(project_root)
+        root = Path(root)
         result = _file_create_file(
             root, path, content, config_edit_mode=config_edit_mode
         )
@@ -1407,7 +1323,7 @@ def create_server() -> Any:
         }
     )
     def code_edit_lines(
-        project_root: str,
+        root: str,
         path: str,
         start_line: int,
         end_line: int,
@@ -1434,7 +1350,7 @@ def create_server() -> Any:
             dry_run: Preview changes without writing.
             mode: `auto`, `insert`, or `replace`.
         """
-        root = Path(project_root)
+        root = Path(root)
         result = _file_edit_lines(
             root,
             path,
@@ -1463,7 +1379,7 @@ def create_server() -> Any:
         }
     )
     def code_batch_edit(
-        project_root: str,
+        root: str,
         edits: list[dict[str, Any]],
         dry_run: bool = False,
         atomic: bool = True,
@@ -1482,7 +1398,7 @@ def create_server() -> Any:
             dry_run: Preview all changes without writing.
             atomic: All-or-nothing mode (default True).
         """
-        root = Path(project_root)
+        root = Path(root)
         result = _file_batch_edit(
             root,
             edits,
@@ -1509,7 +1425,7 @@ def create_server() -> Any:
         }
     )
     def code_str_replace(
-        project_root: str,
+        root: str,
         path: str,
         old_str: str,
         new_str: str,
@@ -1517,7 +1433,7 @@ def create_server() -> Any:
         config_edit_mode: Literal["explicit_user_permitted"] | None = None,
     ) -> dict[str, Any]:
         """Quick string-match edit for small changes (old_str under 500 chars, must be unique in file). For large block replacements use code_edit_lines with line numbers."""
-        root = Path(project_root)
+        root = Path(root)
         result = _file_str_replace(
             root,
             path,
@@ -1543,13 +1459,13 @@ def create_server() -> Any:
         }
     )
     def code_batch_str_replace(
-        project_root: str,
+        root: str,
         edits: list[dict[str, Any]],
         atomic: bool = True,
         config_edit_mode: Literal["explicit_user_permitted"] | None = None,
     ) -> dict[str, Any]:
         """Multiple string-match replacements across files, atomic. Each edit: { "path": str, "old_str": str, "new_str": str, "replace_all": bool? }. Max 20 edits."""
-        root = Path(project_root)
+        root = Path(root)
         result = _file_batch_str_replace(
             root,
             edits,
@@ -1596,7 +1512,7 @@ def create_server() -> Any:
     )
     @timed_tool
     def code_investigate(
-        project_root: str,
+        root: str,
         concept: str,
         limit: int = 5,
         depth: str = "standard",
@@ -1615,7 +1531,7 @@ def create_server() -> Any:
             depth: `shallow`, `standard`, or `deep`.
             focus: `general`, `workflow`, `service`, `schema`, `ui`, or `backend`.
         """
-        root = Path(project_root)
+        root = Path(root)
         result = hub.code.investigate(
             root, concept=concept, limit=limit, depth=depth, focus=focus
         )
@@ -1680,7 +1596,7 @@ def create_server() -> Any:
     )
     @timed_tool
     def code_find(
-        project_root: str,
+        root: str,
         query: str,
         mode: str = "symbols",
         kind: str | None = None,
@@ -1703,7 +1619,7 @@ def create_server() -> Any:
             role: Filter by file role (only for mode=symbols).
             include_tests: Include test/fixture files in search. Default False. Auto-enabled for mode=factories.
         """
-        root = Path(project_root)
+        root = Path(root)
         m = mode.strip().lower()
 
         # Auto-enable include_tests for modes that commonly need test/fixture content
@@ -1829,7 +1745,7 @@ def create_server() -> Any:
     )
     @timed_tool
     def code_trace(
-        project_root: str,
+        root: str,
         query: str,
         mode: str = "field_flow",
         limit: int = 50,
@@ -1844,7 +1760,7 @@ def create_server() -> Any:
             query: What to trace (field name, service name, component name, CSS class, etc.).
             mode: Which trace mode to use.
         """
-        root = Path(project_root)
+        root = Path(root)
         m = mode.strip().lower()
 
         def _grant(result: dict[str, Any]) -> dict[str, Any]:
@@ -1935,7 +1851,7 @@ def create_server() -> Any:
     )
     @timed_tool
     def code_bundle(
-        project_root: str,
+        root: str,
         target: str,
         mode: str = "file",
         session_id: str | None = None,
@@ -1952,7 +1868,7 @@ def create_server() -> Any:
             mode: Which bundle mode to use.
             session_id: Required for session/context modes.
         """
-        root = Path(project_root)
+        root = Path(root)
         m = mode.strip().lower()
 
         def _grant(
@@ -2080,7 +1996,7 @@ def create_server() -> Any:
     )
     @timed_tool
     def schema_query(
-        project_root: str,
+        root: str,
         query: str,
         mode: str = "entities",
         limit: int = 50,
@@ -2095,7 +2011,7 @@ def create_server() -> Any:
             query: Entity name, field name, or "source→target" for trace_path mode.
             mode: Which schema operation to run.
         """
-        root = Path(project_root)
+        root = Path(root)
         m = mode.strip().lower()
 
         def _grant(
@@ -2181,7 +2097,7 @@ def create_server() -> Any:
         meta={"anthropic/alwaysLoad": True},
     )
     def memory_capture(
-        project_root: str,
+        root: str,
         kind: str,
         content: str,
         target_hint: str | None = None,
@@ -2224,7 +2140,7 @@ def create_server() -> Any:
     )
     @timed_sync
     def project_init(
-        project_root: str,
+        root: str,
         init_git: bool = True,
         create_remote: bool = False,
         timeout: int | None = None,
@@ -2250,7 +2166,7 @@ def create_server() -> Any:
             "title": "Ensure MCP Config",
         }
     )
-    def project_ensure_mcp_config(project_root: str) -> dict[str, Any]:
+    def project_ensure_mcp_config(root: str) -> dict[str, Any]:
         """Ensure the target project has a .mcp.json with the aidocs MCP server entry for Claude Code.
 
         Idempotent — safe to call repeatedly. Creates or updates .mcp.json as needed.
@@ -2265,7 +2181,7 @@ def create_server() -> Any:
             "title": "Check Project",
         }
     )
-    def project_check(project_root: str) -> dict[str, Any]:
+    def project_check(root: str) -> dict[str, Any]:
         """Run strict session-era structural check on a project."""
         return hub.updater.run_check(Path(project_root))
 
@@ -2276,7 +2192,7 @@ def create_server() -> Any:
             "title": "Check Project (Legacy)",
         }
     )
-    def project_check_legacy(project_root: str) -> dict[str, Any]:
+    def project_check_legacy(root: str) -> dict[str, Any]:
         """Run legacy-compatible structural check on a project."""
         return hub.updater.run_check_legacy(Path(project_root))
 
@@ -2287,7 +2203,7 @@ def create_server() -> Any:
             "title": "Fix Project",
         }
     )
-    def project_fix(project_root: str) -> dict[str, Any]:
+    def project_fix(root: str) -> dict[str, Any]:
         """Run safe deterministic structural fixes on a project."""
         return hub.updater.run_fix(Path(project_root))
 
@@ -2298,7 +2214,7 @@ def create_server() -> Any:
             "title": "Inspect Legacy",
         }
     )
-    def project_inspect_legacy(project_root: str) -> dict[str, Any]:
+    def project_inspect_legacy(root: str) -> dict[str, Any]:
         """Inspect whether legacy runtime files/folders are still present."""
         return hub.updater.inspect_legacy_runtime(Path(project_root))
 
@@ -2312,10 +2228,10 @@ def create_server() -> Any:
     )
     @timed_sync
     def project_sync_indexes(
-        project_root: str, include_tests: bool = False, timeout: int | None = None
+        root: str, include_tests: bool = False, timeout: int | None = None
     ) -> dict[str, Any]:
         """Refresh all derived indexes for a project in one call."""
-        root = Path(project_root)
+        root = Path(root)
         capability_count = hub.capabilities.sync_capabilities(root, _registered_tools())
         workflow_sync = hub.workflow.compile_project_rules(root)
         procedure_count = hub.procedures.sync_procedures(
@@ -2350,9 +2266,9 @@ def create_server() -> Any:
         },
         meta={"anthropic/searchHint": True},
     )
-    def project_status(project_root: str) -> dict[str, Any]:
+    def project_status(root: str) -> dict[str, Any]:
         """Return a consolidated status view for memory, code, and schema indexes."""
-        root = Path(project_root)
+        root = Path(root)
         return {
             "origins": runtime.project_origins(root),
             "repo_summary": runtime.repo_summary(root),
@@ -2374,9 +2290,9 @@ def create_server() -> Any:
             "title": "Project Origins",
         }
     )
-    def project_origins_get(project_root: str) -> dict[str, Any]:
+    def project_origins_get(root: str) -> dict[str, Any]:
         """Return git remote/origin context, including private/public split hints."""
-        root = Path(project_root)
+        root = Path(root)
         return runtime.project_origins(root)
 
     @server.tool(
@@ -2386,7 +2302,7 @@ def create_server() -> Any:
             "title": "Language Descriptors",
         }
     )
-    def index_language_descriptors_get(project_root: str) -> dict[str, Any]:
+    def index_language_descriptors_get(root: str) -> dict[str, Any]:
         """Return the active built-in + project-local language descriptor registry summary."""
         return descriptor_registry_summary(Path(project_root))
 
@@ -2397,7 +2313,7 @@ def create_server() -> Any:
             "title": "Validate Language Descriptors",
         }
     )
-    def index_language_descriptors_validate(project_root: str) -> dict[str, Any]:
+    def index_language_descriptors_validate(root: str) -> dict[str, Any]:
         """Validate built-in and project-local TOML language descriptors."""
         return validate_language_descriptors(Path(project_root))
 
@@ -2420,7 +2336,7 @@ def create_server() -> Any:
         }
     )
     def index_language_descriptor_match_get(
-        project_root: str, relative_path: str
+        root: str, relative_path: str
     ) -> dict[str, Any]:
         """Show which descriptor would classify a given project-relative path."""
         return descriptor_match_summary(Path(project_root), relative_path)
@@ -2432,7 +2348,7 @@ def create_server() -> Any:
             "title": "Capability Index Status",
         }
     )
-    def capability_index_status(project_root: str) -> dict[str, Any]:
+    def capability_index_status(root: str) -> dict[str, Any]:
         """Return current MCP capability index status for a project."""
         return hub.capabilities.capability_status(Path(project_root))
 
@@ -2445,10 +2361,10 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def capability_definitions_get(
-        project_root: str, query: str | None = None, limit: int = 50
+        root: str, query: str | None = None, limit: int = 50
     ) -> dict[str, Any]:
         """Return indexed MCP capability definitions, optionally filtered by query."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.capabilities.find_capabilities(root, query=query, limit=limit)
         return runtime.build_artifact_backed_result(
             root,
@@ -2469,7 +2385,7 @@ def create_server() -> Any:
             "title": "Procedure Index Status",
         }
     )
-    def procedure_index_status(project_root: str) -> dict[str, Any]:
+    def procedure_index_status(root: str) -> dict[str, Any]:
         """Return current procedure-definition index status for a project."""
         return hub.procedures.procedure_status(Path(project_root))
 
@@ -2482,10 +2398,10 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def procedure_definitions_get(
-        project_root: str, query: str | None = None, limit: int = 50
+        root: str, query: str | None = None, limit: int = 50
     ) -> dict[str, Any]:
         """Return indexed procedure definitions, optionally filtered by query."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.procedures.find_procedures(root, query=query, limit=limit)
         return runtime.build_artifact_backed_result(
             root,
@@ -2506,7 +2422,7 @@ def create_server() -> Any:
             "title": "Procedure Capability Link Status",
         }
     )
-    def procedure_capability_link_status(project_root: str) -> dict[str, Any]:
+    def procedure_capability_link_status(root: str) -> dict[str, Any]:
         """Return current procedure-to-capability link status for a project."""
         return hub.procedure_links.link_status(Path(project_root))
 
@@ -2518,13 +2434,13 @@ def create_server() -> Any:
         }
     )
     def procedure_capability_links_get(
-        project_root: str,
+        root: str,
         procedure_id: str | None = None,
         unresolved_only: bool = False,
         limit: int = 50,
     ) -> dict[str, Any]:
         """Return indexed procedure-to-capability links, optionally filtered by procedure or unresolved status."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.procedure_links.list_links(
             root,
             procedure_id=procedure_id,
@@ -2551,7 +2467,7 @@ def create_server() -> Any:
             "title": "Execution Index Status",
         }
     )
-    def execution_index_status(project_root: str) -> dict[str, Any]:
+    def execution_index_status(root: str) -> dict[str, Any]:
         """Return current execution-evidence index status for a project."""
         return hub.execution.execution_status(Path(project_root))
 
@@ -2564,10 +2480,10 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def execution_runs_get(
-        project_root: str, session_id: str | None = None, limit: int = 50
+        root: str, session_id: str | None = None, limit: int = 50
     ) -> dict[str, Any]:
         """Return indexed execution runs, optionally filtered by session."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.execution.list_runs(root, session_id=session_id, limit=limit)
         return runtime.build_artifact_backed_result(
             root,
@@ -2591,13 +2507,13 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def execution_events_get(
-        project_root: str,
+        root: str,
         query: str | None = None,
         session_id: str | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
         """Return indexed execution events, optionally filtered by query/session."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.execution.list_events(
             root, query=query, session_id=session_id, limit=limit
         )
@@ -2623,7 +2539,7 @@ def create_server() -> Any:
         }
     )
     def execution_run_record(
-        project_root: str,
+        root: str,
         run_kind: str,
         source_kind: str,
         session_id: str | None = None,
@@ -2661,7 +2577,7 @@ def create_server() -> Any:
         }
     )
     def execution_event_record(
-        project_root: str,
+        root: str,
         event_kind: str,
         source_kind: str,
         session_id: str | None = None,
@@ -2702,14 +2618,14 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def execution_query_last(
-        project_root: str,
+        root: str,
         action_kind: str | None = None,
         capability_name: str | None = None,
         session_id: str | None = None,
         limit: int = 5,
     ) -> dict[str, Any]:
         """Query: 'What actually ran last time?' — returns recent execution events matching filters."""
-        root = Path(project_root)
+        root = Path(root)
         result = hub.execution.query_last_execution(
             root,
             action_kind=action_kind,
@@ -2741,7 +2657,7 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def execution_query_summary(
-        project_root: str, session_id: str | None = None
+        root: str, session_id: str | None = None
     ) -> dict[str, Any]:
         """Query: 'What happened in this session?' — returns aggregate execution summary with ad-hoc vs procedure-linked breakdown."""
         return hub.execution.query_execution_summary(
@@ -2757,12 +2673,12 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def dashboard_snapshot(
-        project_root: str,
+        root: str,
         session_id: str | None = None,
         event_limit: int = 12,
     ) -> dict[str, Any]:
         """Return an operator-friendly dashboard snapshot for sessions, conductor state, config, execution, and usage proxies."""
-        root = Path(project_root)
+        root = Path(root)
         payload = runtime.dashboard_snapshot(
             root,
             session_id=session_id,
@@ -2812,7 +2728,7 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def execution_query_compliance(
-        project_root: str, session_id: str | None = None, limit: int = 20
+        root: str, session_id: str | None = None, limit: int = 20
     ) -> dict[str, Any]:
         """Query: 'Did execution follow the intended procedure?' — compares procedure-linked runs vs ad-hoc runs."""
         return hub.execution.query_procedure_compliance(
@@ -2827,7 +2743,7 @@ def create_server() -> Any:
         }
     )
     def execution_prune(
-        project_root: str, max_age_days: int = 30, max_events: int = 10000
+        root: str, max_age_days: int = 30, max_events: int = 10000
     ) -> dict[str, Any]:
         """Prune old execution events by age and count. Runs automatically on project_sync_indexes."""
         return hub.execution.prune_old_events(
@@ -2843,7 +2759,7 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def action_surface_compare(
-        project_root: str,
+        root: str,
         query: str,
         session_id: str | None = None,
         limit: int = 20,
@@ -2862,7 +2778,7 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def action_surface_assess(
-        project_root: str,
+        root: str,
         query: str,
         session_id: str | None = None,
         limit: int = 20,
@@ -2881,7 +2797,7 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def action_surface_status_bundle(
-        project_root: str,
+        root: str,
         queries: list[str],
         session_id: str | None = None,
         limit: int = 20,
@@ -2900,7 +2816,7 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def action_surface_session_bundle(
-        project_root: str,
+        root: str,
         session_id: str,
         limit: int = 20,
         max_queries: int = 12,
@@ -2922,7 +2838,7 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def action_surface_current_session_bundle(
-        project_root: str,
+        root: str,
         limit: int = 20,
         max_queries: int = 12,
     ) -> dict[str, Any]:
@@ -2938,7 +2854,7 @@ def create_server() -> Any:
             "title": "Compile Workflow Actions",
         }
     )
-    def workflow_actions_compile(project_root: str) -> dict[str, Any]:
+    def workflow_actions_compile(root: str) -> dict[str, Any]:
         """Compile human-readable workflow rules into the runtime workflow artifact."""
         return hub.workflow.compile_project_rules(Path(project_root))
 
@@ -2950,7 +2866,7 @@ def create_server() -> Any:
         },
         meta={"anthropic/searchHint": True},
     )
-    def workflow_actions_get(project_root: str) -> dict[str, Any] | None:
+    def workflow_actions_get(root: str) -> dict[str, Any] | None:
         """Read the compiled runtime workflow artifact for a project if present."""
         return hub.workflow.read_compiled(Path(project_root))
 
@@ -2963,7 +2879,7 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def workflow_triggers_for_action(
-        project_root: str, action_kind: str
+        root: str, action_kind: str
     ) -> dict[str, Any]:
         """Find workflow triggers that would fire after an action_kind completes."""
         triggers = hub.workflow.triggers_for_action_kind(action_kind)
@@ -2986,7 +2902,7 @@ def create_server() -> Any:
         },
         meta={"anthropic/searchHint": True},
     )
-    def project_status_model_get(project_root: str) -> dict[str, Any] | None:
+    def project_status_model_get(root: str) -> dict[str, Any] | None:
         """Read the deterministic project status model if present."""
         return hub.project_status.read_model(Path(project_root))
 
@@ -2998,7 +2914,7 @@ def create_server() -> Any:
         },
         meta={"anthropic/searchHint": True},
     )
-    def project_status_evaluate(project_root: str) -> dict[str, Any]:
+    def project_status_evaluate(root: str) -> dict[str, Any]:
         """Evaluate the deterministic project status model."""
         return hub.project_status.evaluate(Path(project_root))
 
@@ -3011,7 +2927,7 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def project_status_area_bundle(
-        project_root: str, area_id: str, limit: int = 20
+        root: str, area_id: str, limit: int = 20
     ) -> dict[str, Any]:
         """Return status details plus a subsystem bundle for one declared project-status area."""
         return hub.project_status.get_area_bundle(
@@ -3027,7 +2943,7 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def related_project_code_search(
-        project_root: str, name: str, query: str, limit: int = 10
+        root: str, name: str, query: str, limit: int = 10
     ) -> list[dict[str, Any]]:
         """Search code in a configured related project using the same generic code index."""
         related_root = _resolve_related_root(project_root, name)
@@ -3043,7 +2959,7 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def related_project_symbol_bundle(
-        project_root: str,
+        root: str,
         name: str,
         symbol: str,
         path: str | None = None,
@@ -3066,7 +2982,7 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def related_project_subsystem_bundle(
-        project_root: str, name: str, concept: str, limit: int = 20
+        root: str, name: str, concept: str, limit: int = 20
     ) -> dict[str, Any]:
         """Build a broad subsystem bundle from a configured related project."""
         related_root = _resolve_related_root(project_root, name)
@@ -3083,10 +2999,10 @@ def create_server() -> Any:
         meta={"anthropic/searchHint": True},
     )
     def related_project_compare_concept(
-        project_root: str, name: str, concept: str, limit: int = 20
+        root: str, name: str, concept: str, limit: int = 20
     ) -> dict[str, Any]:
         """Compare a concept between the current project and a configured related project."""
-        root = Path(project_root)
+        root = Path(root)
         related_root = _resolve_related_root(project_root, name)
         hub.code.sync_code_manifest(root, include_tests=False)
         hub.schema.sync_schema(root)
@@ -3114,7 +3030,7 @@ def create_server() -> Any:
             "title": "Legacy Read Runtime",
         }
     )
-    def legacy_read_runtime(project_root: str) -> dict[str, Any]:
+    def legacy_read_runtime(root: str) -> dict[str, Any]:
         """Inspect legacy NOW/plans state without mutating the project."""
         return hub.legacy.inspect_legacy(Path(project_root))
 
@@ -3126,7 +3042,7 @@ def create_server() -> Any:
         }
     )
     def legacy_build_session_proposal(
-        project_root: str, session_id: str | None = None
+        root: str, session_id: str | None = None
     ) -> dict[str, Any]:
         """Build a non-destructive session proposal from legacy NOW/plans state."""
         return hub.legacy.build_session_proposal(
@@ -3145,7 +3061,7 @@ def create_server() -> Any:
         }
     )
     def db_query(
-        project_root: str,
+        root: str,
         sql: str,
         connection_string: str | None = None,
     ) -> dict[str, Any]:
@@ -3171,7 +3087,7 @@ def create_server() -> Any:
             }
 
         # Resolve connection params
-        root = Path(project_root)
+        root = Path(root)
         host = "localhost"
         port = "5432"
         database = "dentalapp"
@@ -3300,7 +3216,7 @@ def create_server() -> Any:
 
     @server.tool()
     async def git_diag(
-        project_root: str,
+        root: str,
         upstream: str = "upstream/main",
         local: str = "HEAD",
     ) -> dict[str, Any]:
@@ -3314,7 +3230,7 @@ def create_server() -> Any:
         import time
 
         start = time.perf_counter()
-        root = Path(project_root)
+        root = Path(root)
         if not (root / ".git").exists():
             for child in root.iterdir():
                 if child.is_dir() and (child / ".git").exists():
@@ -3367,7 +3283,7 @@ def create_server() -> Any:
     @server.tool()
     @timed_git_async
     async def git_fork_status(
-        project_root: str,
+        root: str,
         upstream: str = "upstream/main",
         local: str = "HEAD",
         include_files: bool = False,
@@ -3395,7 +3311,7 @@ def create_server() -> Any:
             times[name] = round(time.perf_counter() - start, 3)
 
         # Find git root — check project_root itself first, then one level down
-        root = Path(project_root)
+        root = Path(root)
         if not (root / ".git").exists():
             for child in root.iterdir():
                 if child.is_dir() and (child / ".git").exists():
@@ -3568,7 +3484,7 @@ def create_server() -> Any:
     @server.tool()
     @timed_git_async
     async def git_upstream_changes(
-        project_root: str,
+        root: str,
         upstream: str = "upstream/main",
         path_filter: str | None = None,
         limit: int = 50,
@@ -3584,7 +3500,7 @@ def create_server() -> Any:
         """
         import subprocess
 
-        root = Path(project_root)
+        root = Path(root)
         if not (root / ".git").exists():
             for child in root.iterdir():
                 if child.is_dir() and (child / ".git").exists():
@@ -3651,7 +3567,7 @@ def create_server() -> Any:
     @server.tool()
     @timed_git_async
     async def git_conflict_analysis(
-        project_root: str,
+        root: str,
         file_path: str,
         upstream: str = "upstream/main",
         timeout: int | None = None,
@@ -3666,7 +3582,7 @@ def create_server() -> Any:
         """
         import subprocess
 
-        root = Path(project_root)
+        root = Path(root)
         if not (root / ".git").exists():
             for child in root.iterdir():
                 if child.is_dir() and (child / ".git").exists():
@@ -3736,7 +3652,7 @@ def create_server() -> Any:
     @server.tool()
     @timed_git_async
     async def git_merge_plan(
-        project_root: str,
+        root: str,
         upstream: str = "upstream/main",
         local: str = "HEAD",
         limit: int = 50,
@@ -3757,7 +3673,7 @@ def create_server() -> Any:
         def mark(name: str) -> None:
             times[name] = round(time.perf_counter() - start, 3)
 
-        root = Path(project_root)
+        root = Path(root)
         if not (root / ".git").exists():
             for child in root.iterdir():
                 if child.is_dir() and (child / ".git").exists():
@@ -3916,8 +3832,6 @@ def _patch_tool_descriptions_sync(server: FastMCP) -> None:
     descriptions = _get_dotted(_ACTION_HOOK_DEFAULTS, "tool_descriptions")
     if not isinstance(descriptions, dict):
         return
-    prefix = "aidocs_"
-
     provider = getattr(server, "_local_provider", None)
     if provider is None:
         return
@@ -3928,9 +3842,7 @@ def _patch_tool_descriptions_sync(server: FastMCP) -> None:
     for short_name, desc in descriptions.items():
         if not isinstance(desc, str):
             continue
-        full_name = f"{prefix}{short_name}"
-        # FastMCP stores tools with key format "tool:{name}@"
-        key = f"tool:{full_name}@"
+        key = f"tool:{short_name}@"
         tool = components.get(key)
         if tool is not None and hasattr(tool, "description"):
             tool.description = desc

@@ -22,7 +22,7 @@ def register_session_tools(
         },
         meta={"anthropic/alwaysLoad": True},
     )
-    def session_list(project_root: str) -> list[dict[str, Any]]:
+    def session_list(root: str) -> list[dict[str, Any]]:
         """List sessions from project-local /.MEMORY/sessions/."""
         summaries = hub.sessions.list_sessions(Path(project_root))
         return [session_summary_to_dict(item) for item in summaries]
@@ -35,7 +35,7 @@ def register_session_tools(
         },
         meta={"anthropic/alwaysLoad": True},
     )
-    def session_read(project_root: str, session_id: str) -> dict[str, Any]:
+    def session_read(root: str, session_id: str) -> dict[str, Any]:
         """Read a single session router file and return its parsed sections."""
         session = hub.sessions.read_session(Path(project_root), session_id)
         return {
@@ -52,7 +52,7 @@ def register_session_tools(
         },
         meta={"anthropic/alwaysLoad": True},
     )
-    def session_select(project_root: str, session_id: str) -> dict[str, Any]:
+    def session_select(root: str, session_id: str) -> dict[str, Any]:
         """Select an existing session and return its summary."""
         session = hub.sessions.select_session(Path(project_root), session_id)
         return session_summary_to_dict(session)
@@ -66,7 +66,7 @@ def register_session_tools(
         meta={"anthropic/alwaysLoad": True},
     )
     def session_start(
-        project_root: str,
+        root: str,
         session_id: str | None = None,
         include_code_bundle: bool = False,
         sync_indexes: bool = True,
@@ -89,7 +89,7 @@ def register_session_tools(
         }
     )
     def session_start_state_get(
-        project_root: str, session_id: str | None = None
+        root: str, session_id: str | None = None
     ) -> dict[str, Any]:
         """Return lightweight startup readiness and imported skill state for a session."""
         return annotate_skill_result(
@@ -107,7 +107,7 @@ def register_session_tools(
     )
     @timed_sync
     def project_bootstrap_or_resume(
-        project_root: str,
+        root: str,
         session_id: str | None = None,
         include_code_bundle: bool = False,
         include_tests: bool = False,
@@ -130,7 +130,7 @@ def register_session_tools(
         meta={"anthropic/alwaysLoad": True},
     )
     def aidocs_orchestrate(
-        project_root: str,
+        root: str,
         user_request: str,
         action_kind: str = "understand",
         session_id: str | None = None,
@@ -152,7 +152,7 @@ def register_session_tools(
     @server.tool(
         annotations={"readOnlyHint": True, "openWorldHint": False, "title": "Get Mode"}
     )
-    def aidocs_mode_get(project_root: str) -> dict[str, Any]:
+    def aidocs_mode_get(root: str) -> dict[str, Any]:
         """Read the current runtime/session-binding AIDOCS-managed mode state."""
         return hub.managed_mode.get_mode(Path(project_root))
 
@@ -164,7 +164,7 @@ def register_session_tools(
         }
     )
     def aidocs_mode_set(
-        project_root: str, session_id: str, source: str = "/aidocs"
+        root: str, session_id: str, source: str = "/aidocs"
     ) -> dict[str, Any]:
         """Set runtime/session-binding AIDOCS-managed mode for a selected session."""
         return hub.managed_mode.set_mode(
@@ -178,7 +178,7 @@ def register_session_tools(
             "title": "Clear Mode",
         }
     )
-    def aidocs_mode_clear(project_root: str) -> dict[str, Any]:
+    def aidocs_mode_clear(root: str) -> dict[str, Any]:
         """Clear the current runtime/session-binding AIDOCS-managed mode state."""
         return hub.managed_mode.clear_mode(Path(project_root))
 
@@ -190,7 +190,7 @@ def register_session_tools(
         }
     )
     def aidocs_route_prompt(
-        project_root: str,
+        root: str,
         user_request: str,
         action_kind: str,
         explicit_targets: list[str] | None = None,
@@ -231,7 +231,7 @@ def register_session_tools(
         meta={"anthropic/alwaysLoad": True},
     )
     def aidocs_handle_prompt(
-        project_root: str,
+        root: str,
         user_request: str,
         action_kind: str = "auto",
         explicit_targets: list[str] | None = None,
@@ -256,7 +256,7 @@ def register_session_tools(
         }
     )
     def session_create(
-        project_root: str,
+        root: str,
         session_id: str,
         title: str,
         owner: str,
@@ -290,7 +290,7 @@ def register_session_tools(
         }
     )
     def session_claim_status(
-        project_root: str, session_id: str, stale_after_minutes: int = 30
+        root: str, session_id: str, stale_after_minutes: int = 30
     ) -> dict[str, Any]:
         """List advisory session claims and whether they are stale."""
         claims = hub.sessions.list_claims(
@@ -306,7 +306,7 @@ def register_session_tools(
         }
     )
     def session_claim(
-        project_root: str,
+        root: str,
         session_id: str,
         agent_id: str,
         run_id: str,
@@ -330,7 +330,7 @@ def register_session_tools(
         }
     )
     def session_release(
-        project_root: str, session_id: str, agent_id: str, run_id: str | None = None
+        root: str, session_id: str, agent_id: str, run_id: str | None = None
     ) -> dict[str, Any]:
         """Release one advisory agent claim from a session."""
         session = hub.sessions.release_claim(
@@ -350,7 +350,7 @@ def register_session_tools(
         }
     )
     def session_prune_stale_claims(
-        project_root: str, session_id: str, stale_after_minutes: int = 30
+        root: str, session_id: str, stale_after_minutes: int = 30
     ) -> dict[str, Any]:
         """Remove stale advisory claims from a session."""
         session = hub.sessions.prune_stale_claims(
@@ -369,7 +369,7 @@ def register_session_tools(
             "title": "Get Session Handoff",
         }
     )
-    def session_handoff_get(project_root: str, session_id: str) -> dict[str, Any]:
+    def session_handoff_get(root: str, session_id: str) -> dict[str, Any]:
         """Read the structured collaboration handoff for a session."""
         handoff = hub.sessions.read_handoff(Path(project_root), session_id)
         return {
@@ -386,7 +386,7 @@ def register_session_tools(
         }
     )
     def session_handoff_update(
-        project_root: str,
+        root: str,
         session_id: str,
         purpose: list[str] | None = None,
         current_state: list[str] | None = None,
@@ -466,7 +466,7 @@ def register_session_tools(
             "title": "Get Handoff Steps",
         }
     )
-    def session_handoff_steps_get(project_root: str, session_id: str) -> dict[str, Any]:
+    def session_handoff_steps_get(root: str, session_id: str) -> dict[str, Any]:
         """Read structured handoff steps for a session."""
         return {
             "session_id": session_id,
@@ -481,7 +481,7 @@ def register_session_tools(
         }
     )
     def session_handoff_steps_normalize(
-        project_root: str, session_id: str
+        root: str, session_id: str
     ) -> dict[str, Any]:
         """Normalize legacy/drifted handoff step markers into canonical step states."""
         return hub.sessions.normalize_handoff_steps(Path(project_root), session_id)
@@ -494,7 +494,7 @@ def register_session_tools(
         }
     )
     def session_handoff_step_update(
-        project_root: str,
+        root: str,
         session_id: str,
         step_id: str | None = None,
         text: str | None = None,
@@ -524,6 +524,6 @@ def register_session_tools(
         },
         meta={"anthropic/searchHint": True},
     )
-    def session_compliance_get(project_root: str, session_id: str) -> dict[str, Any]:
+    def session_compliance_get(root: str, session_id: str) -> dict[str, Any]:
         """Return task/logging debt and actionable continuity state for a session."""
         return runtime.session_compliance_summary(Path(project_root), session_id)

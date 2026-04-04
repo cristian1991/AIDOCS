@@ -130,7 +130,13 @@ def _resolve_action_hooks_dir() -> Path | None:
     return None
 
 
+_action_hook_cache: dict[str, object] | None = None
+
+
 def _load_action_hook_defaults() -> dict[str, object]:
+    global _action_hook_cache
+    if _action_hook_cache is not None:
+        return _action_hook_cache
     root = _resolve_action_hooks_dir()
     if root is None or tomllib is None:
         return {}
@@ -139,6 +145,7 @@ def _load_action_hook_defaults() -> dict[str, object]:
         loaded = _load_config_file(path)
         if loaded:
             _merge_dicts(merged, loaded)
+    _action_hook_cache = merged
     return merged
 
 
@@ -301,6 +308,9 @@ class ConfigResolver:
         project_root: Path | None = None,
         session_id: str | None = None,
     ) -> object | None:
+        # Fast path: no project/session context uses the cached default config
+        if project_root is None and session_id is None:
+            return _get_dotted(_DEFAULT_EFFECTIVE_CONFIG, key)
         return _get_dotted(
             self.effective_config(project_root=project_root, session_id=session_id), key
         )

@@ -201,7 +201,13 @@ def _resolve_action_tokens_dir() -> Path:
     return candidates[0]
 
 
+_action_token_cache: dict[str, list[str]] | None = None
+
+
 def _load_action_token_lists(directory: Path | None = None) -> dict[str, list[str]]:
+    global _action_token_cache
+    if _action_token_cache is not None and directory is None:
+        return _action_token_cache
     root = directory or _resolve_action_tokens_dir()
     if not root.is_dir():
         return {}
@@ -237,6 +243,8 @@ def _load_action_token_lists(directory: Path | None = None) -> dict[str, list[st
                         merged.setdefault(current_key, []).append(token)
         except Exception:
             continue
+    if directory is None:
+        _action_token_cache = merged
     return merged
 
 

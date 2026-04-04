@@ -83,15 +83,10 @@ class MemoryStore:
     def _infer_target_from_content(self, root: Path, kind: str, content: str | None) -> Path | None:
         text = (content or "").strip().lower()
         if kind in {"rule", "feedback"}:
-            # Route by topic: communication, coding, security, design, or workflow (default)
-            if any(tok in text for tok in ("terse", "concise", "verbose", "summary", "explain", "tone", "style", "response", "communication")):
-                return root / "rules" / "communication.md"
-            if any(tok in text for tok in ("code", "naming", "pattern", "refactor", "test", "lint", "format", "typing", "import")):
-                return root / "rules" / "coding-standards.md"
-            if any(tok in text for tok in ("security", "auth", "permission", "credential", "secret", "token", "encrypt")):
-                return root / "rules" / "security.md"
-            if any(tok in text for tok in ("ui", "color", "theme", "design", "layout", "css", "tailwind", "font", "icon", "visual")):
-                return root / "rules" / "design.md"
+            routes = self._get_memory_routes(root)
+            for route in routes:
+                if any(tok in text for tok in route["tokens"]):
+                    return root / route["target"]
             return root / "rules" / "workflow-rules.md"
         if kind == "project":
             return root / "domains" / "project-state.md"
@@ -102,34 +97,25 @@ class MemoryStore:
         if kind != "domain" or not text:
             return None
 
-        workflow_tokens = (
-            "after ",
-            "before ",
-            "when ",
-            "once ",
-            "on completion",
-            "always ",
-            "never ",
-            "do not ",
-            "don't ",
-            "should ",
-            "must ",
-            "commit",
-            "push",
-            "git",
-            "backup",
-            "backups",
-            "workflow",
-            "deploy",
-            "ci",
-            "session",
-            "plan",
-            "task",
+        # Domain kind — check workflow tokens from config
+        routes = self._get_memory_routes(root)
+        workflow_route = next(
+            (r for r in routes if r["target"].endswith("workflow-rules.md")),
+            None,
         )
-        if any(token in text for token in workflow_tokens):
-            return root / "rules" / "workflow-rules.md"
+        if workflow_route and any(tok in text for tok in workflow_route["tokens"]):
+            return root / workflow_route["target"]
 
         return root / "domains" / "general.md"
+
+    _memory_routes_cache: list[dict[str, object]] | None = None
+
+    def _get_memory_routes(self, root: Path) -> list[dict[str, object]]:
+        if self._memory_routes_cache is not None:
+            return self._memory_routes_cache
+        from .intent_guard import load_memory_routing_config
+        self._memory_routes_cache = load_memory_routing_config()
+        return self._memory_routes_cache
 
     def _append_bullet(self, existing: str, content: str) -> str:
         normalized = existing.rstrip()

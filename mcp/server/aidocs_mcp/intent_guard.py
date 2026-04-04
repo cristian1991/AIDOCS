@@ -296,7 +296,20 @@ def _load_action_token_lists(directory: Path | None = None) -> dict[str, list[st
     if not root.is_dir():
         return {}
     merged: dict[str, list[str]] = {}
+
+    # TOML files take precedence — track which stems have been loaded
+    loaded_stems: set[str] = set()
+
+    for toml_file in sorted(root.glob("*.toml")):
+        loaded_stems.add(toml_file.stem)
+        try:
+            _merge_toml_tokens(toml_file, merged)
+        except Exception:
+            continue
+
     for yaml_file in sorted(root.glob("*.yaml")):
+        if yaml_file.stem in loaded_stems:
+            continue
         current_key: str | None = None
         try:
             for raw_line in yaml_file.read_text(encoding="utf-8").splitlines():
@@ -315,6 +328,89 @@ def _load_action_token_lists(directory: Path | None = None) -> dict[str, list[st
         except Exception:
             continue
     return merged
+
+
+def _merge_toml_tokens(path: Path, merged: dict[str, list[str]]) -> None:
+    """Load a TOML action token file and merge into the flat token dict."""
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ImportError:
+            return
+
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+
+    for key, value in data.items():
+        if key == "memory_routing":
+            # Nested: memory_routing.communication = {target, tokens}
+            if isinstance(value, dict):
+                for route_key, route_val in value.items():
+                    if isinstance(route_val, dict):
+                        tokens = route_val.get("tokens")
+                        if isinstance(tokens, list):
+                            merged_key = f"__memory_routing_{route_key}"
+                            merged.setdefault(merged_key, []).extend(
+                                str(t) for t in tokens if str(t).strip()
+                            )
+            continue
+
+        if key.startswith("__skill_trigger_") and isinstance(value, dict):
+            # Nested: __skill_trigger_X = {intent = [...], workflow = [...]}
+            for sub_key, sub_val in value.items():
+                if isinstance(sub_val, list):
+                    merged_key = f"{key}_{sub_key}"
+                    merged.setdefault(merged_key, []).extend(
+                        str(t) for t in sub_val if str(t).strip()
+                    )
+            continue
+
+        if isinstance(value, list):
+            merged.setdefault(key, []).extend(
+                str(t) for t in value if str(t).strip()
+            )
+
+
+def load_memory_routing_config(
+    directory: Path | None = None,
+) -> list[dict[str, object]]:
+    """Load memory routing rules from TOML action token files.
+
+    Returns list of {target: str, tokens: list[str]} dicts for each routing category.
+    """
+    root = directory or _resolve_action_tokens_dir()
+    if not root.is_dir():
+        return []
+
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ImportError:
+            return []
+
+    routes: list[dict[str, object]] = []
+    for toml_file in sorted(root.glob("*.toml")):
+        try:
+            data = tomllib.loads(toml_file.read_text(encoding="utf-8"))
+            routing = data.get("memory_routing")
+            if not isinstance(routing, dict):
+                continue
+            for _key, entry in routing.items():
+                if isinstance(entry, dict):
+                    target = entry.get("target")
+                    tokens = entry.get("tokens")
+                    if isinstance(target, str) and isinstance(tokens, list):
+                        routes.append({
+                            "target": target,
+                            "tokens": [str(t).lower() for t in tokens if str(t).strip()],
+                        })
+        except Exception:
+            continue
+    return routes
+
 
 
 def _intent_keywords() -> dict[str, set[str]]:

@@ -1,0 +1,80 @@
+# AIDOCS Action Tokens — English
+# User-facing token lists for action classification, intent guard, skill triggers, and memory routing.
+
+# ── Action classification ──
+
+project_update = ["update project", "fix drift", "sync project", "refresh aidocs", "run project update"]
+archive = ["archive", "patch notes", "changelog"]
+write_memory = ["remember", "persist this", "save this rule", "capture this", "add to memory", "save to memory"]
+git_commit_and_push = ["commit and push"]
+git_status_check = ["check git status", "verify git status"]
+github_workflow_check = ["check github actions", "check github workflow", "check github workflow status", "check workflow status", "check actions status", "check ci status"]
+deploy_health_check = ["check deploy status", "check deployment status", "check deployment health", "check deploy health", "check vps status", "check vps deploy status"]
+git_push = ["push"]
+git_pull = ["pull", "fetch", "sync", "update from"]
+git_commit = ["commit"]
+code_bundle = ["get context", "retrieve context", "code bundle", "session bundle", "get code for"]
+read_error = ["error", "stack trace", "traceback", "exception", "crash", "failed"]
+edit = ["edit", "fix", "change", "update", "modify", "replace", "rename", "refactor", "clean", "improve", "add", "remove", "delete", "move", "create", "build a", "implement", "write", "set", "configure", "adjust", "patch", "correct", "convert", "migrate", "restructure", "redesign", "rewrite", "rework", "optimize", "simplify"]
+trace = ["trace", "where does", "why does", "find usage", "find references", "how does", "who calls", "what uses"]
+understand = ["understand", "explain", "inspect", "analyze", "analyse", "look into", "investigate", "show me", "what is", "why", "what's"]
+
+# ── Memory routing tokens ──
+# Used by memory_capture to infer target file when target_hint is omitted.
+# Each key maps to a .MEMORY/ file path relative to the rules/ or domains/ folder.
+
+[memory_routing.communication]
+target = "rules/communication.md"
+tokens = ["terse", "concise", "verbose", "summary", "tone", "style", "response", "communication", "language", "format", "brevity", "detailed"]
+
+[memory_routing.coding_standards]
+target = "rules/coding-standards.md"
+tokens = ["code", "naming", "pattern", "refactor", "test", "lint", "format", "typing", "import", "convention", "standard", "style guide", "architecture"]
+
+[memory_routing.security]
+target = "rules/security.md"
+tokens = ["security", "auth", "permission", "credential", "secret", "token", "encrypt", "password", "access control", "role", "policy"]
+
+[memory_routing.design]
+target = "rules/design.md"
+tokens = ["ui", "color", "theme", "design", "layout", "css", "tailwind", "font", "icon", "visual", "responsive", "component"]
+
+[memory_routing.workflow]
+target = "rules/workflow-rules.md"
+tokens = ["after", "before", "when", "once", "on completion", "always", "never", "do not", "don't", "should", "must", "commit", "push", "git", "backup", "workflow", "deploy", "ci", "session", "plan", "task", "pipeline", "release"]
+
+# ── Plan validation ──
+
+__plan_validation_vague_patterns = ["do the thing", "implement stuff", "fix it", "handle it", "work on it", "make it better"]
+
+# ── Skill triggers ──
+
+[__skill_trigger_brainstorming]
+intent = ["brainstorming", "creative", "creative-task", "ideation", "design", "architecture", "approach", "ambiguous"]
+workflow = ["design", "discovery"]
+
+[__skill_trigger_systematic_debugging]
+intent = ["debugging", "debug", "bug", "regression", "read-error"]
+workflow = ["read-error", "debugging", "investigate"]
+
+[__skill_trigger_writing_plans]
+intent = ["planning", "plan", "roadmap", "spec"]
+workflow = ["planning", "design", "discovery"]
+
+[__skill_trigger_verification_before_completion]
+intent = ["verification", "verify", "completion", "verification-before-completion"]
+workflow = ["verification", "completion", "release"]
+
+[__skill_trigger_deep_retrieval]
+intent = ["deep-retrieval", "retrieval", "signature", "signatures", "constructor", "constructors", "enum", "service-api", "api", "trace"]
+workflow = ["inspect", "investigate", "trace"]
+
+[__skill_trigger_test_driven_validation]
+intent = ["test-driven-validation", "test", "tests", "testing", "validation", "regression"]
+workflow = ["verification", "testing"]
+
+# ── Intent guard ──
+
+__intent_guard_write = ["create", "add", "generate", "scaffold", "new", "init", "setup", "build", "implement", "write", "make", "fix", "update"]
+__intent_guard_bash = ["run", "execute", "test", "build", "compile", "install", "start", "stop", "restart", "deploy", "lint", "format", "check", "npm", "dotnet", "pip", "cargo", "make", "docker"]
+__intent_guard_destructive = ["force push", "reset hard", "delete branch", "drop table", "rm -rf", "clean", "purge", "wipe", "destroy", "nuke"]

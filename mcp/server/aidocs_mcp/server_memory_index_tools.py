@@ -82,10 +82,17 @@ def register_memory_index_tools(
         root: str, include_tests: bool = False, timeout: int | None = None
     ) -> dict[str, int]:
         """Rebuild the derived code file manifest and summary index."""
-        return {
-            "code_files": hub.code.sync_code_files(Path(root), include_tests=include_tests),
-            "modules": hub.code.sync_modules(Path(root)),
+        from .language_descriptors import validate_language_descriptors
+        project_root = Path(root)
+        validation = validate_language_descriptors(project_root)
+        descriptor_issues = validation.get("issues", [])
+        result: dict[str, object] = {
+            "code_files": hub.code.sync_code_files(project_root, include_tests=include_tests),
+            "modules": hub.code.sync_modules(project_root),
         }
+        if descriptor_issues:
+            result["descriptor_issues"] = descriptor_issues
+        return result
 
     @server.tool(
         annotations={

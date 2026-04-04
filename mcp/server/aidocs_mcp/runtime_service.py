@@ -14,7 +14,18 @@ from . import __version__
 from .config import ConfigResolver, _parse_bool, render_interaction_text
 from .git_helpers import run_git_sync as _run_git_sync
 from .plan_conductor import PlanConductor
+from .runtime_bootstrap_service import RuntimeBootstrapService
 from .runtime_presentation_service import RuntimePresentationService
+from .runtime_project_support_service import RuntimeProjectSupportService
+from .runtime_session_state_service import RuntimeSessionStateService
+from .runtime_resume_bundle_service import RuntimeResumeBundleService
+from .runtime_report_builder_service import RuntimeReportBuilderService
+from .runtime_bootstrap_orchestration_service import RuntimeBootstrapOrchestrationService
+from .runtime_orchestration_service import RuntimeOrchestrationService
+from .runtime_prompt_handling_service import RuntimePromptHandlingService
+from .runtime_plan_authoring_service import RuntimePlanAuthoringService
+from .runtime_conductor_state_service import RuntimeConductorStateService
+from .runtime_conductor_dispatch_service import RuntimeConductorDispatchService
 from .service_hub import AidocsServiceHub
 from .skill_resolution import match_selected_skill_id_for_trigger
 from .skill_resolution import selected_skill_override_identity
@@ -238,6 +249,17 @@ class RuntimeService:
         ] = {}
         self._config_resolver = ConfigResolver()
         self._skill_overrides = SkillOverrideStore()
+        self._bootstrap = RuntimeBootstrapService(self)
+        self._project_support = RuntimeProjectSupportService(hub, logger, _origin_role)
+        self._session_state = RuntimeSessionStateService(self, logger)
+        self._resume_bundle = RuntimeResumeBundleService(self)
+        self._report_builder = RuntimeReportBuilderService(self)
+        self._bootstrap_orchestration = RuntimeBootstrapOrchestrationService(self, logger)
+        self._orchestration = RuntimeOrchestrationService(self, logger)
+        self._prompt_handling = RuntimePromptHandlingService(self)
+        self._plan_authoring = RuntimePlanAuthoringService(self)
+        self._conductor_state = RuntimeConductorStateService(self)
+        self._conductor_dispatch = RuntimeConductorDispatchService(self)
         self._presentation = RuntimePresentationService(self)
 
     def effective_config(
@@ -1501,249 +1523,21 @@ class RuntimeService:
             skill_trigger_state=payload,
         )
         return payload
-
     def ensure_claude_mcp_config(self, project_root: Path) -> dict[str, object]:
-        """Ensure the target project has a .mcp.json with the aidocs MCP server entry.
-
-        Idempotent: if the entry already exists and points to a valid path, no change is made.
-        Returns a dict describing what happened.
-        """
-        mcp_json_path = project_root / ".mcp.json"
-        aidocs_source_root = Path(__file__).resolve().parents[3]
-        # Prefer AIDOCS_PATH env var if set (installed by installer)
-        env_aidocs_path = os.environ.get("AIDOCS_PATH")
-        if env_aidocs_path and Path(env_aidocs_path).is_dir():
-            aidocs_source_root = Path(env_aidocs_path)
-        mcp_server_dir = aidocs_source_root / "mcp" / "server"
-
-        # Resolve the python executable — prefer the one running this process
-        python_bin = (
-            sys.executable
-            or shutil.which("python")
-            or shutil.which("python3")
-            or "python"
-        )
-
-        new_entry = {
-            "type": "stdio",
-            "command": python_bin,
-            "args": ["-m", "aidocs_mcp.mcp_server"],
-            "env": {
-                "PYTHONPATH": str(mcp_server_dir),
-            },
-        }
-
-        # Read existing .mcp.json if present
-        existing: dict[str, object] = {}
-        if mcp_json_path.is_file():
-            try:
-                existing = json.loads(mcp_json_path.read_text(encoding="utf-8"))
-            except Exception as exc:
-                logger.warning("Failed to parse existing .mcp.json: %s", exc)
-                existing = {}
-
-        servers = existing.get("mcpServers")
-        if not isinstance(servers, dict):
-            servers = {}
-            existing["mcpServers"] = servers
-
-        # Check if aidocs entry already exists and is correct
-        current = servers.get("aidocs")
-        if isinstance(current, dict):
-            current_pythonpath = (current.get("env") or {}).get("PYTHONPATH", "")
-            if current_pythonpath == str(mcp_server_dir):
-                return {
-                    "action": "no_change",
-                    "path": str(mcp_json_path),
-                    "reason": "aidocs MCP entry already present and correct",
-                }
-
-        servers["aidocs"] = new_entry
-        existing["mcpServers"] = servers
-        mcp_json_path.write_text(
-            json.dumps(existing, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        action = "updated" if current else "created"
-        return {
-            "action": action,
-            "path": str(mcp_json_path),
-            "entry": new_entry,
-        }
+        return self._project_support.ensure_claude_mcp_config(project_root)
 
     def project_origins(self, project_root: Path) -> dict[str, object]:
-        result: dict[str, object] = {
-            "git_repo": (project_root / ".git").exists(),
-            "remotes": [],
-            "roles": {},
-            "notes": [],
-        }
-        try:
-            remote_output = _run_git_sync(str(project_root), "remote", "-v")
-        except FileNotFoundError:
-            result["notes"] = ["git not installed"]
-            return result
-        except Exception as exc:
-            result["notes"] = [str(exc)]
-            return result
-
-        remotes: dict[tuple[str, str], dict[str, object]] = {}
-        for line in remote_output.splitlines():
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            name, url, kind = parts[0], parts[1], parts[2].strip("()")
-            key = (name, url)
-            entry = remotes.setdefault(
-                key,
-                {
-                    "name": name,
-                    "url": url,
-                    "fetch": False,
-                    "push": False,
-                    "role": _origin_role(name, url),
-                },
-            )
-            if kind == "fetch":
-                entry["fetch"] = True
-            if kind == "push":
-                entry["push"] = True
-
-        entries = list(remotes.values())
-        result["remotes"] = entries
-        roles: dict[str, list[str]] = {}
-        for entry in entries:
-            role = str(entry.get("role") or "other")
-            roles.setdefault(role, []).append(str(entry.get("name")))
-        result["roles"] = roles
-
-        notes: list[str] = []
-        if roles.get("private") and roles.get("public"):
-            notes.append("private/public split detected")
-        elif roles.get("private"):
-            notes.append("private remote detected")
-        elif roles.get("public"):
-            notes.append("public remote detected")
-        result["notes"] = notes
-        return result
+        return self._project_support.project_origins(project_root)
 
     def _load_project_rules(self, project_root: Path) -> dict[str, str]:
-        """Load rule files from /.MEMORY/rules/ and return as {filename: content} dict."""
-        rules_dir = project_root / ".MEMORY" / "rules"
-        if not rules_dir.is_dir():
-            return {}
-        result: dict[str, str] = {}
-        for rule_file in sorted(rules_dir.glob("*.md")):
-            try:
-                content = rule_file.read_text(encoding="utf-8", errors="ignore").strip()
-                if content and len(content) > 10:
-                    result[rule_file.stem] = content
-            except Exception:
-                continue
-        return result
+        return self._project_support._load_project_rules(project_root)
+
 
     def repo_summary(self, project_root: Path) -> dict[str, object]:
-        code_files = 0
-        modules = 0
-        parsed = 0
-        schema_entities = 0
-        schema_fields = 0
-        session_count = 0
-        language_tiers: dict[str, int] = {}
-        language_sources: dict[str, int] = {}
-
-        try:
-            with self.hub.code.connect(project_root) as conn:
-                row = conn.execute(
-                    "SELECT COUNT(*), COALESCE(SUM(parsed), 0) FROM code_files"
-                ).fetchone()
-                if row:
-                    code_files = int(row[0] or 0)
-                    parsed = int(row[1] or 0)
-                row = conn.execute("SELECT COUNT(*) FROM code_modules").fetchone()
-                if row:
-                    modules = int(row[0] or 0)
-                for row in conn.execute(
-                    "SELECT COALESCE(language_tier, 'unknown') AS tier, COUNT(*) AS count FROM code_files GROUP BY COALESCE(language_tier, 'unknown')"
-                ):
-                    language_tiers[str(row["tier"])] = int(row["count"] or 0)
-                for row in conn.execute(
-                    "SELECT COALESCE(language_source, 'unknown') AS source, COUNT(*) AS count FROM code_files GROUP BY COALESCE(language_source, 'unknown')"
-                ):
-                    language_sources[str(row["source"])] = int(row["count"] or 0)
-        except Exception:
-            pass
-
-        try:
-            with self.hub.schema.connect(project_root) as conn:
-                row = conn.execute("SELECT COUNT(*) FROM schema_entities").fetchone()
-                if row:
-                    schema_entities = int(row[0] or 0)
-                row = conn.execute("SELECT COUNT(*) FROM schema_fields").fetchone()
-                if row:
-                    schema_fields = int(row[0] or 0)
-        except Exception:
-            pass
-
-        try:
-            session_count = len(self.hub.sessions.list_sessions(project_root))
-        except Exception:
-            session_count = 0
-
-        origins = self.project_origins(project_root)
-        bullets = [
-            f"{code_files} indexed code files ({parsed} parsed)",
-            f"{modules} detected modules",
-            f"{schema_entities} schema entities / {schema_fields} fields",
-            f"{session_count} sessions",
-        ]
-        if language_tiers:
-            bullets.append(
-                "language tiers: "
-                + ", ".join(f"{k}={v}" for k, v in sorted(language_tiers.items()))
-            )
-        if language_sources:
-            bullets.append(
-                "language sources: "
-                + ", ".join(f"{k}={v}" for k, v in sorted(language_sources.items()))
-            )
-        notes = origins.get("notes") if isinstance(origins.get("notes"), list) else []
-        bullets.extend(str(note) for note in notes[:2])
-        return {
-            "project_root": str(project_root),
-            "project_name": project_root.name,
-            "code_files": code_files,
-            "parsed_code_files": parsed,
-            "modules": modules,
-            "schema_entities": schema_entities,
-            "schema_fields": schema_fields,
-            "sessions": session_count,
-            "language_tiers": language_tiers,
-            "language_sources": language_sources,
-            "origins": origins,
-            "headline": f"{project_root.name}: indexed project summary",
-            "bullets": bullets,
-        }
+        return self._project_support.repo_summary(project_root)
 
     def project_structure_gaps(self, project_root: Path) -> list[str]:
-        memory_root = project_root / ".MEMORY"
-        required = [
-            memory_root / "INDEX.md",
-            memory_root / ".aidocs" / "index.aidocs",
-            memory_root / "rules" / "workflow-rules.md",
-            memory_root / "rules" / "workflow-actions.md",
-        ]
-        missing = [
-            str(path.relative_to(project_root)).replace("\\", "/")
-            for path in required
-            if not path.exists()
-        ]
-        if not (
-            (project_root / "AGENTS.md").is_file()
-            or (project_root / "CLAUDE.md").is_file()
-        ):
-            missing.append("AGENTS.md or CLAUDE.md")
-        return missing
+        return self._project_support.project_structure_gaps(project_root)
 
     def _copy_missing_tree(
         self,
@@ -1753,19 +1547,13 @@ class RuntimeService:
         created: list[str],
         skipped: list[str],
     ) -> None:
-        if not source_root.is_dir():
-            return
-        source_files = [path for path in source_root.rglob("*") if path.is_file()]
-        for src_file in source_files:
-            rel = src_file.relative_to(source_root)
-            dest = dest_root / rel
-            label = f"{label_prefix}/{rel.as_posix()}"
-            if dest.exists():
-                skipped.append(label)
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(src_file), str(dest))
-            created.append(label)
+        self._project_support._copy_missing_tree(
+            source_root,
+            dest_root,
+            label_prefix,
+            created,
+            skipped,
+        )
 
     def _copy_missing_file(
         self,
@@ -1775,217 +1563,26 @@ class RuntimeService:
         created: list[str],
         skipped: list[str],
     ) -> None:
-        if not source_file.is_file():
-            return
-        if dest_file.exists():
-            skipped.append(label)
-            return
-        dest_file.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(source_file), str(dest_file))
-        created.append(label)
+        self._project_support._copy_missing_file(
+            source_file,
+            dest_file,
+            label,
+            created,
+            skipped,
+        )
 
     def _latest_mtime_ns(self, paths: list[Path]) -> int | None:
-        mtimes: list[int] = []
-        for path in paths:
-            try:
-                if path.is_file():
-                    mtimes.append(path.stat().st_mtime_ns)
-                elif path.is_dir():
-                    for child in path.rglob("*"):
-                        if child.is_file():
-                            mtimes.append(child.stat().st_mtime_ns)
-            except FileNotFoundError:
-                continue
-        return max(mtimes) if mtimes else None
+        return self._project_support._latest_mtime_ns(paths)
 
     def _index_freshness_status(
         self, project_root: Path
     ) -> tuple[str, dict[str, object]]:
-        memory_db = self.hub.index.db_path(project_root)
-        code_db = self.hub.code.db_path(project_root)
-        memory_status = self.hub.index.status(project_root)
-        code_status = self.hub.code.code_status(project_root)
-        memory_freshness = (
-            memory_status.get("freshness")
-            if isinstance(memory_status.get("freshness"), dict)
-            else {}
-        )
-        code_freshness = (
-            code_status.get("freshness")
-            if isinstance(code_status.get("freshness"), dict)
-            else {}
-        )
-
-        missing = [
-            label
-            for label, path, freshness in (
-                ("memory", memory_db, memory_freshness),
-                ("code", code_db, code_freshness),
-            )
-            if not path.is_file() or freshness.get("state") == "missing"
-        ]
-        if missing:
-            return "missing", {
-                "missing_indexes": missing,
-                "memory_freshness": memory_freshness,
-                "code_freshness": code_freshness,
-            }
-
-        stale_reasons: list[str] = []
-        if memory_freshness.get("state") == "stale":
-            stale_reasons.extend(
-                f"memory:{reason}"
-                for reason in memory_freshness.get("reasons", [])
-                if isinstance(reason, str) and reason.strip()
-            )
-        if code_freshness.get("state") == "stale":
-            stale_reasons.extend(
-                f"code:{reason}"
-                for reason in code_freshness.get("reasons", [])
-                if isinstance(reason, str) and reason.strip()
-            )
-        if stale_reasons:
-            return "stale", {
-                "reasons": stale_reasons,
-                "memory_freshness": memory_freshness,
-                "code_freshness": code_freshness,
-            }
-        return "ready", {
-            "reasons": [],
-            "memory_freshness": memory_freshness,
-            "code_freshness": code_freshness,
-        }
+        return self._project_support._index_freshness_status(project_root)
 
     def session_start_state(
         self, project_root: Path, session_id: str | None = None
     ) -> dict[str, object]:
-        agents = project_root / "AGENTS.md"
-        claude = project_root / "CLAUDE.md"
-        memory_root = project_root / ".MEMORY"
-        initialized = memory_root.is_dir() and (agents.is_file() or claude.is_file())
-        if not initialized:
-            return {
-                "state": "not_initialized",
-                "next_step": "project_init",
-                "session_id": None,
-                "index_status": "missing",
-            }
-
-        structure_gaps = self.project_structure_gaps(project_root)
-        if structure_gaps:
-            return {
-                "state": "not_bootstrapped",
-                "next_step": "project_bootstrap_or_resume",
-                "session_id": None,
-                "index_status": "missing",
-                "structure_gaps": structure_gaps,
-            }
-
-        sessions = self.hub.sessions.list_sessions(project_root)
-        session_summaries = [
-            {
-                "session_id": item.session_id,
-                "title": item.title,
-                "status": item.status,
-                "owner": item.owner,
-                "goal": item.goal,
-                "last_updated": item.last_updated,
-            }
-            for item in sessions
-        ]
-        if not sessions:
-            return {
-                "state": "no_session",
-                "next_step": "create_session",
-                "session_id": None,
-                "index_status": "missing",
-            }
-
-        resolved_session_id = (
-            session_id.strip()
-            if isinstance(session_id, str) and session_id.strip()
-            else None
-        )
-        if resolved_session_id is None:
-            active = [item for item in sessions if item.status == "active"]
-            if len(active) == 1:
-                resolved_session_id = active[0].session_id
-            elif len(sessions) == 1:
-                resolved_session_id = sessions[0].session_id
-            else:
-                return {
-                    "state": "multiple_sessions",
-                    "next_step": "select_session",
-                    "session_id": None,
-                    "index_status": "unknown",
-                    "sessions": session_summaries,
-                }
-        elif not any(item.session_id == resolved_session_id for item in sessions):
-            return {
-                "state": "session_not_found",
-                "next_step": "select_session",
-                "session_id": None,
-                "requested_session_id": resolved_session_id,
-                "index_status": "unknown",
-                "sessions": session_summaries,
-            }
-
-        imported_skill_state = self._persist_host_skill_state(
-            project_root,
-            resolved_session_id,
-            intent="startup",
-            workflow_state="session_start",
-        )
-
-        index_status, index_details = self._index_freshness_status(project_root)
-        if index_status != "ready":
-            result = {
-                "state": "stale_indexes",
-                "next_step": "project_bootstrap_or_resume",
-                "session_id": resolved_session_id,
-                "index_status": index_status,
-                **index_details,
-            }
-            if imported_skill_state.get("selected_skills") or imported_skill_state.get(
-                "provider_states"
-            ):
-                result["imported_skill_state"] = imported_skill_state
-                result["active_skills"] = list(
-                    imported_skill_state.get("active_skills", [])
-                )
-                result["runtime_owned_capabilities"] = [
-                    item
-                    for item in (
-                        imported_skill_state.get("runtime_owned_capabilities") or []
-                    )
-                    if isinstance(item, dict)
-                ]
-                result["provider_state"] = imported_skill_state.get("provider_state")
-            return result
-
-        result = {
-            "state": "ready",
-            "next_step": "session_resume_bundle",
-            "session_id": resolved_session_id,
-            "index_status": index_status,
-            **index_details,
-        }
-        if imported_skill_state.get("selected_skills") or imported_skill_state.get(
-            "provider_states"
-        ):
-            result["imported_skill_state"] = imported_skill_state
-            result["active_skills"] = list(
-                imported_skill_state.get("active_skills", [])
-            )
-            result["runtime_owned_capabilities"] = [
-                item
-                for item in (
-                    imported_skill_state.get("runtime_owned_capabilities") or []
-                )
-                if isinstance(item, dict)
-            ]
-            result["provider_state"] = imported_skill_state.get("provider_state")
-        return result
+        return self._session_state.session_start_state(project_root, session_id)
 
     def host_state(
         self,
@@ -1993,539 +1590,15 @@ class RuntimeService:
         session_id: str | None = None,
         prompt_text: str | None = None,
     ) -> dict[str, object]:
-        managed_mode = self.hub.managed_mode.get_mode(project_root)
-        resolved_session_id = (
-            session_id.strip()
-            if isinstance(session_id, str) and session_id.strip()
-            else None
-        )
-        if resolved_session_id is None and managed_mode.get("active"):
-            managed_session_id = str(managed_mode.get("session_id") or "").strip()
-            if managed_session_id:
-                resolved_session_id = managed_session_id
-
-        session_snapshot = self.session_start_state(
-            project_root, session_id=resolved_session_id
-        )
-        if resolved_session_id is None:
-            resolved_session_id = (
-                str((session_snapshot or {}).get("session_id") or "").strip() or None
-            )
-
-        cached_skill_state: dict[str, object] = {
-            "source": "skill_trigger_state",
-            "session_id": resolved_session_id,
-            "intent": None,
-            "workflow_state": None,
-            "selected_skills": [],
-            "active_skills": [],
-            "runtime_owned_capabilities": [],
-            "provider_states": {},
-            "provider_state": None,
-            "triggered": [],
-            "path": None,
-        }
-        if resolved_session_id:
-            cached_skill_state = self._read_host_skill_state(
-                project_root, resolved_session_id
-            )
-            if not cached_skill_state.get(
-                "selected_skills"
-            ) and not cached_skill_state.get("provider_states"):
-                cached_skill_state = self._persist_host_skill_state(
-                    project_root,
-                    resolved_session_id,
-                    intent="startup",
-                    workflow_state="session_start",
-                )
-
-        cached_selected_skills = list(cached_skill_state.get("selected_skills", []))
-        cached_active_skills = list(cached_skill_state.get("active_skills", []))
-        cached_runtime_owned_capabilities = [
-            item
-            for item in (cached_skill_state.get("runtime_owned_capabilities") or [])
-            if isinstance(item, dict)
-        ]
-        cached_helper_skill_guidance = [
-            item
-            for item in (cached_skill_state.get("helper_skill_guidance") or [])
-            if isinstance(item, dict)
-        ]
-        cached_triggered = [
-            item
-            for item in (cached_skill_state.get("triggered") or [])
-            if isinstance(item, dict)
-        ]
-        cached_mode_metadata = self._build_imported_skill_mode_metadata(
-            selected_skills=cached_selected_skills,
-            active_skills=cached_active_skills,
-            triggered=cached_triggered,
-            provider_states=cached_skill_state.get("provider_states")
-            if isinstance(cached_skill_state.get("provider_states"), dict)
-            else None,
-        )
-
-        prompt_text_value = prompt_text.strip() if isinstance(prompt_text, str) else ""
-        prompt_action_kind = None
-        prompt_intent = None
-        live_prompt_skill_state: dict[str, object] | None = None
-        if prompt_text_value:
-            prompt_action_kind = str(
-                self.classify_prompt_action(
-                    prompt_text_value,
-                    project_root=project_root,
-                    session_id=resolved_session_id,
-                ).get("action_kind")
-                or "understand"
-            )
-            prompt_intent = self._infer_skill_trigger_intent(
-                prompt_text_value,
-                action_kind=prompt_action_kind,
-                project_root=project_root,
-                session_id=resolved_session_id,
-            )
-            if resolved_session_id:
-                live_prompt_skill_state = self._resolve_skill_trigger_state(
-                    project_root,
-                    resolved_session_id,
-                    intent=prompt_intent,
-                    workflow_state=prompt_action_kind,
-                )
-
-        prompt_active_skills = list(
-            (live_prompt_skill_state or {}).get("active_skills", [])
-        )
-        prompt_runtime_owned_capabilities = [
-            item
-            for item in (
-                (live_prompt_skill_state or {}).get("runtime_owned_capabilities") or []
-            )
-            if isinstance(item, dict)
-        ]
-        prompt_helper_skill_guidance = [
-            item
-            for item in (
-                ((live_prompt_skill_state or {}).get("imported_skill_state") or {}).get(
-                    "helper_skill_guidance"
-                )
-                or []
-            )
-            if isinstance(item, dict)
-        ]
-        prompt_triggered = [
-            item
-            for item in ((live_prompt_skill_state or {}).get("triggered") or [])
-            if isinstance(item, dict)
-        ]
-        prompt_mode_metadata = self._build_imported_skill_mode_metadata(
-            selected_skills=cached_selected_skills,
-            active_skills=prompt_active_skills,
-            triggered=prompt_triggered,
-            provider_states=(live_prompt_skill_state or {}).get("provider_states")
-            if isinstance((live_prompt_skill_state or {}).get("provider_states"), dict)
-            else None,
-        )
-        prompt_override_modes = dict(
-            (prompt_mode_metadata or {}).get("active_skill_modes") or {}
-        )
-        activation_succeeded = bool(prompt_triggered)
-
-        active_managed_session = bool(
-            managed_mode.get("active") and resolved_session_id
-        )
-        recommended_flow = ["runtime_preflight"]
-        if active_managed_session:
-            recommended_flow.append("plan_conductor_status")
-        elif (session_snapshot or {}).get("next_step") == "session_resume_bundle":
-            recommended_flow.append("session_start")
-        if prompt_action_kind in {
-            "edit",
-            "write_memory",
-            "task_begin",
-            "task_update",
-            "task_complete",
-        }:
-            recommended_flow.append("task_begin")
-        if prompt_action_kind in {"understand", "trace", "edit", "code_bundle"}:
-            recommended_flow.append("orchestrate")
-
-        host_actions = {
-            "inject_context": [
-                self._interaction_text(
-                    "managed.use_mcp_first_short",
-                    project_root=project_root,
-                    session_id=resolved_session_id,
-                )
-            ],
-            "recommended_mcp_flow": recommended_flow,
-            "show_imported_skills": bool(prompt_active_skills),
-            "show_runtime_owned_capabilities": bool(prompt_runtime_owned_capabilities),
-        }
-        lifecycle_state: dict[str, object] | None = None
-        if resolved_session_id:
-            try:
-                lifecycle_state = self.hub.execution.session_lifecycle_activity_summary(
-                    project_root, resolved_session_id
-                )
-            except Exception as exc:
-                logger.debug("Failed to compute lifecycle state: %s", exc)
-                lifecycle_state = None
-        workflow_summary = self._summarize_workflow_actions(
-            project_root, resolved_session_id
-        )
-        use_cached_skill_snapshot = not prompt_text_value
-        effective_active_skills = (
-            cached_active_skills if use_cached_skill_snapshot else prompt_active_skills
-        )
-        effective_runtime_owned_capabilities = (
-            cached_runtime_owned_capabilities
-            if use_cached_skill_snapshot
-            else prompt_runtime_owned_capabilities
-        )
-        effective_helper_skill_guidance = (
-            cached_helper_skill_guidance
-            if use_cached_skill_snapshot
-            else prompt_helper_skill_guidance
-        )
-        effective_override_modes = (
-            dict((cached_mode_metadata or {}).get("active_skill_modes") or {})
-            if use_cached_skill_snapshot
-            else prompt_override_modes
-        )
-        interaction_text = self._build_host_interaction_text(
-            project_root=project_root,
-            session_id=resolved_session_id,
-            startup_state=str((session_snapshot or {}).get("state") or ""),
-            managed=bool(managed_mode.get("active")),
-            prompt_action_kind=prompt_action_kind,
-            active_skills=effective_active_skills,
-            override_modes=effective_override_modes,
-            runtime_owned_capabilities=effective_runtime_owned_capabilities,
-            helper_skill_guidance=effective_helper_skill_guidance,
-            workflow_summary=workflow_summary,
-            lifecycle_state=lifecycle_state,
-        )
-        if active_managed_session:
-            host_actions["inject_context"].append(
-                self._interaction_text(
-                    "managed.stay_in_session",
-                    project_root=project_root,
-                    session_id=resolved_session_id,
-                )
-            )
-        if prompt_active_skills:
-            host_actions["inject_context"].append(
-                self._interaction_text(
-                    "managed.skills_active_for_prompt",
-                    project_root=project_root,
-                    session_id=resolved_session_id,
-                    skills=", ".join(
-                        str(item) for item in prompt_active_skills if str(item).strip()
-                    ),
-                )
-            )
-        if prompt_runtime_owned_capabilities:
-            host_actions["inject_context"].append(
-                self._interaction_text(
-                    "managed.workflow_authority_for_prompt",
-                    project_root=project_root,
-                    session_id=resolved_session_id,
-                    capabilities=", ".join(
-                        str(item.get("capability_id") or "").strip()
-                        for item in prompt_runtime_owned_capabilities
-                        if isinstance(item, dict)
-                        and str(item.get("capability_id") or "").strip()
-                    ),
-                )
-            )
-
-        return {
-            "session_state": {
-                "managed": bool(managed_mode.get("active")),
-                "session_id": resolved_session_id,
-                "state": (session_snapshot or {}).get("state"),
-                "next_step": (session_snapshot or {}).get("next_step"),
-                "index_status": (session_snapshot or {}).get("index_status"),
-                "plan_ready": (session_snapshot or {}).get("state") == "ready",
-            },
-            "skill_state": {
-                "session_snapshot": {
-                    "source": "cached_session",
-                    "session_id": resolved_session_id,
-                    "selected_skills": cached_selected_skills,
-                    "active_skills": cached_active_skills,
-                    "provider_states": dict(
-                        cached_skill_state.get("provider_states", {})
-                    ),
-                    "provider_state": cached_skill_state.get("provider_state"),
-                    "triggered": cached_triggered,
-                    "snapshot_path": cached_skill_state.get("path"),
-                    "mode_metadata": cached_mode_metadata,
-                    "runtime_owned_capabilities": cached_runtime_owned_capabilities,
-                    "helper_skill_guidance": cached_helper_skill_guidance,
-                },
-                "prompt_activation": {
-                    "source": "live_prompt" if prompt_text_value else "no_prompt",
-                    "session_id": resolved_session_id,
-                    "active_skills": prompt_active_skills,
-                    "runtime_owned_capabilities": prompt_runtime_owned_capabilities,
-                    "triggered": prompt_triggered,
-                    "mode_metadata": prompt_mode_metadata,
-                    "activation_succeeded": activation_succeeded,
-                    "helper_skill_guidance": prompt_helper_skill_guidance,
-                },
-            },
-            "prompt_state": {
-                "source": "live_prompt" if prompt_text_value else "no_prompt",
-                "prompt_text": prompt_text_value or None,
-                "action_kind": prompt_action_kind,
-                "intent": prompt_intent,
-                "triggered_skills": [
-                    item.get("skill_id")
-                    for item in prompt_triggered
-                    if item.get("skill_id")
-                ],
-                "active_skills": prompt_active_skills,
-                "runtime_owned_capabilities": prompt_runtime_owned_capabilities,
-                "override_modes": prompt_override_modes,
-                "mode_metadata": prompt_mode_metadata,
-                "activation_succeeded": activation_succeeded,
-                "helper_skill_guidance": prompt_helper_skill_guidance,
-            },
-            "inspection_state": {
-                "provider_states": dict(cached_skill_state.get("provider_states", {})),
-                "provider_state": cached_skill_state.get("provider_state"),
-                "session_state_source": "session_start_state",
-                "skill_state_sources": {
-                    "session_snapshot": "cached_session",
-                    "prompt_activation": "live_prompt"
-                    if prompt_text_value
-                    else "no_prompt",
-                },
-                "prompt_state_source": "live_prompt"
-                if prompt_text_value
-                else "no_prompt",
-                "skill_snapshot_path": cached_skill_state.get("path"),
-            },
-            "lifecycle_state": lifecycle_state,
-            "host_actions": host_actions,
-            "interaction_text": interaction_text,
-        }
-
-        return result
+        return self._session_state.host_state(project_root, session_id, prompt_text)
 
     def project_init(
         self, project_root: Path, init_git: bool = True, create_remote: bool = False
     ) -> dict[str, object]:
-        root = project_root
-        if not root.is_dir():
-            root.mkdir(parents=True, exist_ok=True)
+        return self._bootstrap.project_init(project_root, init_git, create_remote)
 
-        created: list[str] = []
-        skipped: list[str] = []
 
-        templates_root = self.hub.sessions.templates_root
-        aidocs_bundle_root = templates_root.parent
-        memory_template = aidocs_bundle_root / "templates" / "memory"
-        memory_dest = root / ".MEMORY"
-        aidocs_dest = memory_dest / ".aidocs"
 
-        if memory_template.is_dir():
-            self._copy_missing_tree(
-                memory_template, memory_dest, ".MEMORY", created, skipped
-            )
-        else:
-            for d in [
-                ".MEMORY/.aidocs",
-                ".MEMORY/sessions",
-                ".MEMORY/rules",
-                ".MEMORY/domains",
-                ".MEMORY/system",
-                ".MEMORY/config",
-                ".MEMORY/archive/sessions",
-            ]:
-                (root / d).mkdir(parents=True, exist_ok=True)
-            idx = memory_dest / "INDEX.md"
-            if not idx.exists():
-                idx.write_text(
-                    "# Memory Index\n\n"
-                    "## Sessions\n- `sessions/`\n\n"
-                    "## Rules\n"
-                    "- `rules/workflow-rules.md`\n"
-                    "- `rules/workflow-actions.md`\n",
-                    encoding="utf-8",
-                )
-                created.append(".MEMORY/INDEX.md")
-
-        for src_file in aidocs_bundle_root.glob("*.aidocs"):
-            self._copy_missing_file(
-                src_file,
-                aidocs_dest / src_file.name,
-                f".MEMORY/.aidocs/{src_file.name}",
-                created,
-                skipped,
-            )
-        self._copy_missing_tree(
-            aidocs_bundle_root / "personalities",
-            aidocs_dest / "personalities",
-            ".MEMORY/.aidocs/personalities",
-            created,
-            skipped,
-        )
-
-        workflow_rules = memory_dest / "rules" / "workflow-rules.md"
-        if not workflow_rules.exists():
-            workflow_rules.parent.mkdir(parents=True, exist_ok=True)
-            workflow_rules.write_text(
-                "# Workflow Rules\n\n## Workflow Rules\n", encoding="utf-8"
-            )
-            created.append(".MEMORY/rules/workflow-rules.md")
-        else:
-            skipped.append(".MEMORY/rules/workflow-rules.md")
-
-        workflow_actions = memory_dest / "rules" / "workflow-actions.md"
-        if not workflow_actions.exists():
-            workflow_actions.parent.mkdir(parents=True, exist_ok=True)
-            workflow_actions.write_text(
-                "# Workflow Actions\n\n## Workflow Actions\n", encoding="utf-8"
-            )
-            created.append(".MEMORY/rules/workflow-actions.md")
-        else:
-            skipped.append(".MEMORY/rules/workflow-actions.md")
-
-        router = aidocs_dest / "index.aidocs"
-        if not router.exists():
-            router.parent.mkdir(parents=True, exist_ok=True)
-            src_router = aidocs_bundle_root / "index.aidocs"
-            if src_router.is_file():
-                shutil.copy2(str(src_router), str(router))
-            else:
-                router.write_text(
-                    "# AIDOCS Session Entry\n\nRead /.MEMORY/INDEX.md next.\n",
-                    encoding="utf-8",
-                )
-            created.append(".MEMORY/.aidocs/index.aidocs")
-
-        for tmpl_name in ["AGENTS.md", "CLAUDE.md"]:
-            dest = root / tmpl_name
-            if not dest.exists():
-                src = templates_root.parents[1] / tmpl_name
-                if src.is_file():
-                    shutil.copy2(str(src), str(dest))
-                else:
-                    dest.write_text(
-                        f"# {tmpl_name.replace('.md', '')}\n\nAIDOCS-managed project.\n",
-                        encoding="utf-8",
-                    )
-                created.append(tmpl_name)
-            else:
-                skipped.append(tmpl_name)
-
-        git_result: dict[str, object] = {"action": "none"}
-        if init_git and not (root / ".git").exists():
-            try:
-                toplevel = _run_git_sync(str(root), "rev-parse", "--show-toplevel")
-                git_result = {"action": "already_in_repo", "root": toplevel}
-            except FileNotFoundError:
-                git_result = {"action": "skipped", "reason": "git not installed"}
-            except RuntimeError:
-                try:
-                    _run_git_sync(str(root), "init")
-                    gitignore = root / ".gitignore"
-                    if not gitignore.exists():
-                        gitignore.write_text(
-                            "# AIDOCS defaults\n/.MEMORY/.index/\nnode_modules/\ndist/\n__pycache__/\n.venv/\n*.pyc\n.env\n",
-                            encoding="utf-8",
-                        )
-                        created.append(".gitignore")
-                    _run_git_sync(str(root), "add", "-A")
-                    _run_git_sync(
-                        str(root),
-                        "commit",
-                        "-m",
-                        "chore: initialize project with AIDOCS",
-                    )
-                    git_result = {"action": "initialized", "initial_commit": True}
-                except Exception as exc:
-                    git_result = {"action": "failed", "reason": str(exc)}
-            except Exception as exc:
-                git_result = {"action": "failed", "reason": str(exc)}
-
-        if create_remote and git_result.get("action") == "initialized":
-            try:
-                output = _run_git_sync(str(root), "remote", "get-url", "origin")
-                git_result["remote"] = {
-                    "created": False,
-                    "reason": f"Remote already exists: {output}",
-                }
-            except RuntimeError:
-                try:
-                    import tempfile as _tf
-
-                    _gh_out = None
-                    try:
-                        with _tf.NamedTemporaryFile(
-                            mode="w", suffix=".gh.out", delete=False
-                        ) as _f:
-                            _gh_out = _f.name
-                        with open(_gh_out, "w") as _fh:
-                            result = subprocess.run(
-                                [
-                                    "gh",
-                                    "repo",
-                                    "create",
-                                    root.name,
-                                    "--private",
-                                    "--source",
-                                    str(root),
-                                    "--push",
-                                ],
-                                cwd=str(root),
-                                stdin=subprocess.DEVNULL,
-                                stdout=_fh,
-                                stderr=subprocess.DEVNULL,
-                                text=True,
-                                timeout=30,
-                                check=False,
-                            )
-                        result.stdout = (
-                            Path(_gh_out)
-                            .read_text(encoding="utf-8", errors="ignore")
-                            .strip()
-                        )
-                    finally:
-                        if _gh_out:
-                            try:
-                                os.unlink(_gh_out)
-                            except OSError:
-                                pass
-                    git_result["remote"] = {
-                        "created": result.returncode == 0,
-                        "name": root.name,
-                        "url": (result.stdout or "").strip(),
-                        "reason": (result.stderr or "").strip()
-                        if result.returncode != 0
-                        else "",
-                    }
-                except FileNotFoundError:
-                    git_result["remote"] = {
-                        "created": False,
-                        "reason": "gh CLI not installed",
-                    }
-                except Exception as exc:
-                    git_result["remote"] = {"created": False, "reason": str(exc)}
-
-        mcp_config_result = self.ensure_claude_mcp_config(root)
-        return {
-            "initialized": True,
-            "created": created,
-            "skipped": skipped,
-            "git": git_result,
-            "origins": self.project_origins(root),
-            "repo_summary": self.repo_summary(root),
-            "mcp_config": mcp_config_result,
-            "next_step": "Call project_bootstrap_or_resume to activate managed mode and select a session.",
-        }
 
     def session_start(
         self,
@@ -2664,7 +1737,6 @@ class RuntimeService:
         response["report"] = self._build_session_start_report(response)
 
         return response
-
     def session_resume_bundle(
         self,
         project_root: Path,
@@ -2673,131 +1745,16 @@ class RuntimeService:
         include_tests: bool = False,
         journal_last_n: int = 10,
     ) -> dict[str, object]:
-        if journal_last_n == 10:
-            journal_last_n = int(
-                self._config_resolver.get(
-                    "presentation.resume_journal_last_n",
-                    project_root=project_root,
-                    session_id=session_id,
-                )
-                or 10
-            )
-        session = self.hub.sessions.read_session(project_root, session_id)
-        context = self.hub.sessions.read_context(project_root, session_id)
-        plan = self.hub.sessions.read_plan(project_root, session_id)
-        handoff = self.hub.sessions.read_handoff(project_root, session_id)
-        journal = self.hub.sessions.read_journal(
-            project_root, session_id, last_n=journal_last_n
-        )
-        freshness = self._handoff_freshness(
-            handoff.sections, project_root=project_root, session_id=session_id
-        )
-        handoff_steps = self.hub.sessions.read_handoff_steps(project_root, session_id)
-        actionable_steps = [
-            step
-            for step in handoff_steps
-            if step.get("status") in {"open", "reset", "failed", "stale"}
-        ]
-        recently_changed_steps = [
-            step
-            for step in handoff_steps
-            if self._step_changed_recently(
-                step, project_root=project_root, session_id=session_id
-            )
-        ]
-        selected_skills = self.hub.skills.get_selected_skills(project_root, session_id)
-        imported_skill_state = self._imported_skill_state(
-            project_root, session_id, selected_state=selected_skills
-        )
-        skill_trigger_state = self._resolve_skill_trigger_state(
+        return self._resume_bundle.session_resume_bundle(
             project_root,
             session_id,
-            intent="startup",
-            workflow_state="session_resume_bundle",
+            include_code_bundle=include_code_bundle,
+            include_tests=include_tests,
+            journal_last_n=journal_last_n,
         )
-        compliance = self.session_compliance_summary(project_root, session_id)
-        repo_summary = self.repo_summary(project_root)
 
-        result: dict[str, object] = {
-            "session": {
-                "session_id": session.session_id,
-                "path": str(session.path),
-                "sections": session.sections,
-            },
-            "context": {"path": str(context.path), "sections": context.sections},
-            "plan": {"path": str(plan.path), "sections": plan.sections},
-            "handoff": {"path": str(handoff.path), "sections": handoff.sections},
-            "handoff_steps": handoff_steps,
-            "actionable_handoff_steps": actionable_steps,
-            "recently_changed_handoff_steps": recently_changed_steps,
-            "handoff_freshness": freshness,
-            "selected_skills": selected_skills,
-            "imported_skill_state": imported_skill_state,
-            "runtime_owned_capabilities": [
-                item
-                for item in (
-                    skill_trigger_state.get("runtime_owned_capabilities") or []
-                )
-                if isinstance(item, dict)
-            ],
-            "skill_trigger_state": skill_trigger_state,
-            "compliance": compliance,
-            "journal": journal,
-            "repo_summary": repo_summary,
-            "project_overview": self._build_project_overview(
-                project_root,
-                repo_summary=repo_summary,
-                selected_session_id=session.session_id,
-            ),
-            "session_overview": self._build_session_overview(
-                session_id=session.session_id,
-                session_sections=session.sections,
-                context_sections=context.sections,
-                handoff_steps=handoff_steps,
-                compliance=compliance,
-            ),
-            "skills_overview": self._build_skills_overview(
-                session_id=session.session_id,
-                selected_skills=selected_skills,
-                active_skills=list(skill_trigger_state.get("active_skills", [])),
-                imported_skill_state=imported_skill_state,
-                skill_trigger_state=skill_trigger_state,
-            ),
-            "plan_overview": self._build_plan_overview(
-                session_id=session.session_id,
-                plan_path=str(plan.path),
-                plan_sections=plan.sections,
-                has_lanes=bool(getattr(plan, "lanes", None)),
-            ),
-        }
-        if include_code_bundle:
-            result["code_bundle"] = self._refresh_session_code_bundle(
-                project_root,
-                session_id=session_id,
-                include_tests=include_tests,
-                sync_indexes=True,
-            )
-        compact = self.build_artifact_backed_result(
-            project_root,
-            inline_summary=(
-                f"Resume bundle ready for session `{session_id}`. "
-                f"Actionable handoff steps: {len(actionable_steps)}. "
-                f"Journal entries returned: {len(journal)}."
-            ),
-            payload=result,
-            artifact_name=f"session-resume-bundle-{session_id}",
-            session_id=session_id,
-            structured_summary={
-                "session_id": session_id,
-                "actionable_handoff_step_count": len(actionable_steps),
-                "recently_changed_handoff_step_count": len(recently_changed_steps),
-                "journal_entry_count": len(journal),
-                "logging_debt": bool(compliance.get("logging_debt")),
-                "has_code_bundle": bool(include_code_bundle),
-            },
-        )
-        result.update(compact)
-        return result
+
+
 
     def _dashboard_config_entries(
         self, project_root: Path, session_id: str | None
@@ -2998,199 +1955,11 @@ class RuntimeService:
             "execution": self.hub.execution.execution_status(project_root),
         }
 
-    def _build_session_start_report(
-        self, response: dict[str, object]
-    ) -> dict[str, object]:
-        if response.get("requires_session_selection"):
-            sessions = (
-                response.get("sessions")
-                if isinstance(response.get("sessions"), list)
-                else []
-            )
-            repo_summary = (
-                response.get("repo_summary")
-                if isinstance(response.get("repo_summary"), dict)
-                else {}
-            )
-            extra = (
-                repo_summary.get("bullets")
-                if isinstance(repo_summary.get("bullets"), list)
-                else []
-            )
-            return {
-                "headline": "Session selection is required before continuing.",
-                "bullets": [f"Active/available sessions: {len(sessions)}."]
-                + [str(item) for item in extra[:3]],
-                "next_step": "select_session",
-            }
-
-        selected = (
-            response.get("selected_session")
-            if isinstance(response.get("selected_session"), dict)
-            else {}
-        )
-        session_id = selected.get("session_id")
-        bullets = [f"Selected session: {session_id}."] if session_id else []
-        if response.get("code_bundle"):
-            bullets.append("Context code bundle is included.")
-        else:
-            bullets.append("Context code bundle is deferred by default.")
-        repo_summary = (
-            response.get("repo_summary")
-            if isinstance(response.get("repo_summary"), dict)
-            else {}
-        )
-        extra = (
-            repo_summary.get("bullets")
-            if isinstance(repo_summary.get("bullets"), list)
-            else []
-        )
-        bullets.extend(str(item) for item in extra[:3])
-        handoff = (
-            response.get("handoff") if isinstance(response.get("handoff"), dict) else {}
-        )
-        handoff_sections = (
-            handoff.get("sections") if isinstance(handoff.get("sections"), dict) else {}
-        )
-        handoff_now = (
-            handoff_sections.get("What Matters Now")
-            if isinstance(handoff_sections.get("What Matters Now"), list)
-            else []
-        )
-        bullets.extend(
-            str(item) for item in handoff_now[:2] if str(item).strip() != "-"
-        )
-        handoff_steps = (
-            response.get("handoff_steps")
-            if isinstance(response.get("handoff_steps"), list)
-            else []
-        )
-        actionable_count = sum(
-            1
-            for step in handoff_steps
-            if str(step.get("status")) in {"open", "reset", "failed", "stale"}
-        )
-        if actionable_count:
-            bullets.append(f"Actionable handoff steps: {actionable_count}.")
-        freshness = self._handoff_freshness(handoff_sections)
-        if freshness.get("status") == "stale":
-            bullets.append(
-                f"Handoff freshness is stale ({freshness.get('age_hours')}h old)."
-            )
-        elif freshness.get("status") == "unknown":
-            bullets.append("Handoff freshness is unknown.")
-        compliance = (
-            response.get("compliance")
-            if isinstance(response.get("compliance"), dict)
-            else {}
-        )
-        journal_coverage = (
-            compliance.get("journal_coverage")
-            if isinstance(compliance.get("journal_coverage"), dict)
-            else {}
-        )
-        meaningful_event_count = int(
-            journal_coverage.get("meaningful_event_count_since_journal") or 0
-        )
-        latest_meaningful_event_at = str(
-            journal_coverage.get("latest_meaningful_event_at") or ""
-        ).strip()
-        if meaningful_event_count:
-            if latest_meaningful_event_at:
-                bullets.append(
-                    f"Recent meaningful work since latest journal: {meaningful_event_count} event(s), latest at {latest_meaningful_event_at}."
-                )
-            else:
-                bullets.append(
-                    f"Recent meaningful work since latest journal: {meaningful_event_count} event(s)."
-                )
-        for warning in (
-            compliance.get("warnings", [])[:3]
-            if isinstance(compliance.get("warnings"), list)
-            else []
-        ):
-            bullets.append(f"Compliance: {warning}.")
-        return {
-            "headline": "Session context is ready.",
-            "bullets": bullets,
-            "next_step": None,
-        }
+    def _build_session_start_report(self, response: dict[str, object]) -> dict[str, object]:
+        return self._report_builder._build_session_start_report(response)
 
     def _build_bootstrap_report(self, result: dict[str, object]) -> dict[str, object]:
-        stage = str(result.get("stage") or "unknown")
-        repo_summary = (
-            result.get("repo_summary")
-            if isinstance(result.get("repo_summary"), dict)
-            else {}
-        )
-        repo_bullets = (
-            repo_summary.get("bullets")
-            if isinstance(repo_summary.get("bullets"), list)
-            else []
-        )
-        if stage == "setup_required":
-            return {
-                "headline": "AIDOCS project setup is required.",
-                "bullets": [
-                    str(result.get("reason") or "Missing AIDOCS project structure.")
-                ],
-                "next_step": result.get("next_step"),
-            }
-        if stage == "migration_required":
-            return {
-                "headline": "Legacy migration choice is required before continuing.",
-                "bullets": [
-                    "Legacy runtime files are present and no session has been migrated yet."
-                ],
-                "next_step": result.get("next_step"),
-            }
-
-        session = (
-            result.get("session") if isinstance(result.get("session"), dict) else {}
-        )
-        selected = (
-            session.get("selected_session")
-            if isinstance(session.get("selected_session"), dict)
-            else {}
-        )
-        sync = result.get("sync") if isinstance(result.get("sync"), dict) else {}
-        capabilities = (
-            sync.get("capabilities")
-            if isinstance(sync.get("capabilities"), dict)
-            else {}
-        )
-        procedures = (
-            sync.get("procedures") if isinstance(sync.get("procedures"), dict) else {}
-        )
-        links = (
-            sync.get("procedure_capability_links")
-            if isinstance(sync.get("procedure_capability_links"), dict)
-            else {}
-        )
-        bullets = []
-        repaired = (
-            result.get("repaired") if isinstance(result.get("repaired"), dict) else None
-        )
-        if repaired:
-            created = (
-                repaired.get("created")
-                if isinstance(repaired.get("created"), list)
-                else []
-            )
-            bullets.append(
-                f"Repaired canonical AIDOCS structure ({len(created)} files created)."
-            )
-        if selected.get("session_id"):
-            bullets.append(f"Selected session: {selected.get('session_id')}.")
-        bullets.append(
-            f"Action surfaces synced: capabilities={capabilities.get('capability_definitions')}, procedures={procedures.get('procedure_definitions')}, links={links.get('links')}."
-        )
-        bullets.extend(str(item) for item in repo_bullets[:4])
-        return {
-            "headline": "Project bootstrap is ready.",
-            "bullets": bullets,
-            "next_step": None,
-        }
+        return self._report_builder._build_bootstrap_report(result)
 
     def _build_readiness_summary(
         self,
@@ -3200,54 +1969,12 @@ class RuntimeService:
         managed_mode: dict[str, object] | None,
         operator_summary: dict[str, object] | None,
     ) -> dict[str, object]:
-        sync = bootstrap.get("sync") if isinstance(bootstrap.get("sync"), dict) else {}
-        workflow = (
-            sync.get("workflow") if isinstance(sync.get("workflow"), dict) else {}
+        return self._report_builder._build_readiness_summary(
+            bootstrap=bootstrap,
+            selected_session_id=selected_session_id,
+            managed_mode=managed_mode,
+            operator_summary=operator_summary,
         )
-        capabilities = (
-            sync.get("capabilities")
-            if isinstance(sync.get("capabilities"), dict)
-            else {}
-        )
-        procedures = (
-            sync.get("procedures") if isinstance(sync.get("procedures"), dict) else {}
-        )
-        links = (
-            sync.get("procedure_capability_links")
-            if isinstance(sync.get("procedure_capability_links"), dict)
-            else {}
-        )
-        execution = (
-            sync.get("execution") if isinstance(sync.get("execution"), dict) else {}
-        )
-        memory = sync.get("memory") if isinstance(sync.get("memory"), dict) else {}
-        code_manifest = (
-            sync.get("code_manifest")
-            if isinstance(sync.get("code_manifest"), dict)
-            else {}
-        )
-        schema = sync.get("schema") if isinstance(sync.get("schema"), dict) else {}
-
-        return {
-            "ready": bool(bootstrap.get("ready")),
-            "stage": bootstrap.get("stage"),
-            "selected_session_id": selected_session_id,
-            "managed_mode_active": bool((managed_mode or {}).get("active")),
-            "managed_mode_session_id": (managed_mode or {}).get("session_id"),
-            "operator_state": (operator_summary or {}).get("overall_state")
-            or (operator_summary or {}).get("state"),
-            "indexes": {
-                "memory_files": memory.get("memory_files"),
-                "code_files": code_manifest.get("code_files"),
-                "schema_entities": schema.get("entities"),
-                "workflow_actions": workflow.get("action_count"),
-                "capability_definitions": capabilities.get("capability_definitions"),
-                "procedure_definitions": procedures.get("procedure_definitions"),
-                "procedure_capability_links": links.get("links"),
-                "execution_runs": execution.get("execution_runs"),
-                "execution_events": execution.get("execution_events"),
-            },
-        }
 
     def _build_operator_report(
         self,
@@ -3258,70 +1985,13 @@ class RuntimeService:
         action_kind: str | None = None,
         project_root: Path | None = None,
     ) -> dict[str, object]:
-        ready = bool(readiness_summary.get("ready"))
-        stage = str(readiness_summary.get("stage") or "unknown")
-        operator_state = str(readiness_summary.get("operator_state") or "unknown")
-        selected_session_id = (
-            str(readiness_summary.get("selected_session_id") or "").strip() or None
+        return self._report_builder._build_operator_report(
+            readiness_summary=readiness_summary,
+            operator_summary=operator_summary,
+            bootstrap=bootstrap,
+            action_kind=action_kind,
+            project_root=project_root,
         )
-        indexes = (
-            readiness_summary.get("indexes")
-            if isinstance(readiness_summary.get("indexes"), dict)
-            else {}
-        )
-
-        if not ready:
-            next_step = bootstrap.get("next_step") or bootstrap.get("stage")
-            return {
-                "headline": f"AIDOCS is not ready: {stage}.",
-                "bullets": [
-                    f"Next step: {next_step}.",
-                ],
-                "next_step": next_step,
-            }
-
-        bullets = []
-        if selected_session_id:
-            bullets.append(f"Active session: {selected_session_id}.")
-        bullets.append(f"Operator state: {operator_state}.")
-        bullets.append(
-            "Index coverage: "
-            f"memory={indexes.get('memory_files')}, "
-            f"code={indexes.get('code_files')}, "
-            f"schema={indexes.get('schema_entities')}, "
-            f"capabilities={indexes.get('capability_definitions')}, "
-            f"procedures={indexes.get('procedure_definitions')}, "
-            f"links={indexes.get('procedure_capability_links')}."
-        )
-        next_step = None
-        if isinstance(operator_summary, dict):
-            attention_items = operator_summary.get("attention_items")
-            if isinstance(attention_items, list) and attention_items:
-                first_attention = attention_items[0]
-                if isinstance(first_attention, dict):
-                    steps = list(first_attention.get("recommended_next_steps") or [])
-                    next_step = steps[0] if steps else None
-            if next_step is None:
-                steps = list(operator_summary.get("recommended_next_steps") or [])
-                next_step = steps[0] if steps else None
-            if (
-                next_step is None
-                and str(operator_summary.get("overall_state") or "") == "healthy"
-            ):
-                next_step = "No immediate gap detected; continue monitoring execution history and drift."
-
-        # Surface pending workflow actions for the current action_kind
-        pending_workflow = self._collect_pending_workflow(action_kind, project_root)
-        if pending_workflow:
-            bullets.append(
-                f"Pending workflow actions after `{action_kind}`: {pending_workflow}."
-            )
-
-        return {
-            "headline": f"AIDOCS is ready in stage `{stage}`.",
-            "bullets": bullets,
-            "next_step": next_step,
-        }
 
     def _build_handle_prompt_report(
         self,
@@ -3332,38 +2002,15 @@ class RuntimeService:
         next_step: object = None,
         operator_report: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        action_kind = str(classification.get("action_kind") or "unknown")
-        if mode == "requires_aidocs_entry":
-            return {
-                "headline": "Enter `/aidocs` first to work in managed mode.",
-                "bullets": [f"Requested action kind: {action_kind}."],
-                "next_step": next_step,
-            }
-        if mode == "blocked":
-            return {
-                "headline": "The requested action is blocked by current policy or routing state.",
-                "bullets": [
-                    f"Requested action kind: {action_kind}.",
-                    f"Blocked reason: {route.get('blocked_reason')}.",
-                ],
-                "next_step": next_step,
-            }
-        if mode == "direct_inspection_allowed":
-            return {
-                "headline": "Direct inspection is allowed for the requested target.",
-                "bullets": [
-                    f"Requested action kind: {action_kind}.",
-                    "Inspect the target first, then return to MCP orchestration for broader work.",
-                ],
-                "next_step": next_step,
-            }
-        if mode == "mcp_orchestrated" and isinstance(operator_report, dict):
-            return operator_report
-        return {
-            "headline": "Prompt was classified and routed successfully.",
-            "bullets": [f"Requested action kind: {action_kind}."],
-            "next_step": next_step,
-        }
+        return self._report_builder._build_handle_prompt_report(
+            mode=mode,
+            classification=classification,
+            route=route,
+            next_step=next_step,
+            operator_report=operator_report,
+        )
+
+
 
     def project_bootstrap_or_resume(
         self,
@@ -3372,147 +2019,14 @@ class RuntimeService:
         include_code_bundle: bool = False,
         include_tests: bool = False,
     ) -> dict[str, object]:
-        agents = project_root / "AGENTS.md"
-        claude = project_root / "CLAUDE.md"
-        memory_root = project_root / ".MEMORY"
-
-        initialized = memory_root.is_dir() and (agents.is_file() or claude.is_file())
-        if not initialized:
-            result = {
-                "stage": "setup_required",
-                "ready": False,
-                "next_step": "project_init",
-                "reason": "missing AIDOCS project structure",
-            }
-            result["report"] = self._build_bootstrap_report(result)
-            return result
-
-        repaired = None
-        structure_gaps = self.project_structure_gaps(project_root)
-        if structure_gaps:
-            repaired = self.project_init(
-                project_root, init_git=False, create_remote=False
-            )
-
-        # Ensure .mcp.json is present for Claude Code (idempotent)
-        try:
-            self.ensure_claude_mcp_config(project_root)
-        except Exception as exc:
-            logger.debug("Failed to ensure .mcp.json: %s", exc)
-
-        sync_result = self._sync_bootstrap_indexes(
-            project_root, include_tests=include_tests
-        )
-
-        legacy_state = self.hub.legacy.inspect_legacy(project_root)
-        sessions = self.hub.sessions.list_sessions(project_root)
-        if legacy_state.get("legacy_present") and len(sessions) == 0:
-            proposal = self.hub.legacy.build_session_proposal(
-                project_root, session_id=session_id
-            )
-            result = {
-                "stage": "migration_required",
-                "ready": False,
-                "initialized": True,
-                "indexes_synced": True,
-                "repaired": repaired,
-                "sync": sync_result,
-                "legacy": legacy_state,
-                "proposal": proposal,
-                "next_step": "issue_stop_for_migration_choice",
-            }
-            result["report"] = self._build_bootstrap_report(result)
-            return result
-
-        session_result = self.session_start(
+        return self._bootstrap_orchestration.project_bootstrap_or_resume(
             project_root,
             session_id=session_id,
             include_code_bundle=include_code_bundle,
-            sync_indexes=False,
             include_tests=include_tests,
         )
 
-        if include_code_bundle and not session_result.get("requires_session_selection"):
-            selected = session_result.get("selected_session") or {}
-            selected_session_id = selected.get("session_id")
-            if isinstance(selected_session_id, str) and selected_session_id.strip():
-                session_result["code_bundle"] = self._refresh_session_code_bundle(
-                    project_root,
-                    session_id=selected_session_id,
-                    include_tests=include_tests,
-                    sync_indexes=False,
-                )
 
-        result = {
-            "stage": "session_active"
-            if not session_result.get("requires_session_selection")
-            else "session_selection_required",
-            "ready": not session_result.get("requires_session_selection"),
-            "initialized": True,
-            "indexes_synced": True,
-            "repaired": repaired,
-            "repo_summary": self.repo_summary(project_root),
-            "sync": sync_result,
-            "session": session_result,
-        }
-        selected = (
-            session_result.get("selected_session")
-            if isinstance(session_result.get("selected_session"), dict)
-            else {}
-        )
-        selected_session_id = str(selected.get("session_id") or "").strip() or None
-        result["project_overview"] = self._build_project_overview(
-            project_root,
-            repo_summary=result.get("repo_summary")
-            if isinstance(result.get("repo_summary"), dict)
-            else None,
-            selected_session_id=selected_session_id,
-            stage=str(result.get("stage") or "unknown"),
-            ready=bool(result.get("ready")),
-        )
-        if selected_session_id:
-            result["session_overview"] = session_result.get("session_overview")
-            result["skills_overview"] = session_result.get("skills_overview")
-            selected_sections = (
-                selected.get("sections")
-                if isinstance(selected.get("sections"), dict)
-                else {}
-            )
-            goal_values = self._clean_bullets(selected_sections.get("Goal", []))
-            result["plan_overview"] = self._build_default_plan_overview(
-                session_id=selected_session_id,
-                end_goal=goal_values[0] if goal_values else None,
-            )
-
-        # Without rules injection, AIDOCS operates in MCP-tool-only mode —
-        # the agent can use indexed retrieval but does not follow any /.MEMORY/rules/ directives.
-        effective_config = self.effective_config(
-            project_root, session_id=selected_session_id
-        )
-        agent_config = (
-            effective_config.get("agent")
-            if isinstance(effective_config.get("agent"), dict)
-            else {}
-        )
-        inject_rules = _parse_bool(
-            agent_config.get("inject_rules_on_bootstrap"), default=True
-        )
-        if inject_rules:
-            rules = self._load_project_rules(project_root)
-            if rules:
-                result["rules"] = rules
-
-        # Emit resolved-config.json so host plugins (OC, Cursor) can read
-        # the fully-merged config without re-implementing TOML resolution.
-        try:
-            self._config_resolver.write_resolved_config(
-                project_root=project_root, session_id=selected_session_id
-            )
-        except Exception as exc:
-            logger.debug("Failed to write resolved-config.json: %s", exc)
-
-        result["report"] = self._build_bootstrap_report(result)
-        return result
 
     def aidocs_orchestrate(
         self,
@@ -3524,184 +2038,17 @@ class RuntimeService:
         include_code_bundle: bool = False,
         include_tests: bool = False,
     ) -> dict[str, object]:
-        explicit_targets = [
-            item for item in (explicit_targets or []) if str(item).strip()
-        ]
-
-        preflight = self.hub.policy.preflight_action(
+        return self._orchestration.aidocs_orchestrate(
             project_root,
+            user_request,
             action_kind=action_kind,
             session_id=session_id,
-            user_explicit_targets=explicit_targets,
-        )
-
-        bootstrap = self.project_bootstrap_or_resume(
-            project_root,
-            session_id=session_id,
+            explicit_targets=explicit_targets,
             include_code_bundle=include_code_bundle,
             include_tests=include_tests,
         )
 
-        result: dict[str, object] = {
-            "request": user_request,
-            "action_kind": action_kind,
-            "preflight": preflight,
-            "bootstrap": bootstrap,
-        }
 
-        if not bootstrap.get("ready"):
-            result["readiness_summary"] = self._build_readiness_summary(
-                bootstrap=bootstrap,
-                selected_session_id=None,
-                managed_mode=None,
-                operator_summary=None,
-            )
-            result["operator_report"] = self._build_operator_report(
-                readiness_summary=result["readiness_summary"],
-                operator_summary=None,
-                bootstrap=bootstrap,
-                action_kind=action_kind,
-                project_root=project_root,
-            )
-            result["report"] = result["operator_report"]
-            result["next_step"] = bootstrap.get("next_step") or bootstrap.get("stage")
-            compact = self.build_artifact_backed_result(
-                project_root,
-                inline_summary=(
-                    f"AIDOCS orchestration not ready yet for `{action_kind}`. "
-                    f"Next step: {result['next_step']}."
-                ),
-                payload=result,
-                artifact_name=f"aidocs-orchestrate-{action_kind}",
-                session_id=None,
-                structured_summary={
-                    "action_kind": action_kind,
-                    "ready": False,
-                    "next_step": result["next_step"],
-                    "stage": result.get("stage"),
-                },
-            )
-            result.update(compact)
-            return result
-
-        selected = bootstrap["session"]["selected_session"]["session_id"]
-        result["selected_session_id"] = selected
-        intent = self._infer_skill_trigger_intent(
-            user_request,
-            action_kind,
-            project_root=project_root,
-            session_id=session_id,
-        )
-        skill_trigger_state = self.skill_trigger_state(
-            project_root,
-            selected,
-            intent=intent,
-            workflow_state=action_kind,
-        )
-        result["managed_mode"] = self.hub.managed_mode.set_mode(
-            project_root, session_id=selected, source="/aidocs"
-        )
-        result["skill_trigger_state"] = skill_trigger_state
-        result["active_skills"] = list(skill_trigger_state.get("active_skills", []))
-        result["runtime_owned_capabilities"] = [
-            item
-            for item in (skill_trigger_state.get("runtime_owned_capabilities") or [])
-            if isinstance(item, dict)
-        ]
-        result["operator_summary"] = self.hub.action_surface.current_session_bundle(
-            project_root, limit=10, max_queries=12
-        )
-        result["readiness_summary"] = self._build_readiness_summary(
-            bootstrap=bootstrap,
-            selected_session_id=selected,
-            managed_mode=result.get("managed_mode")
-            if isinstance(result.get("managed_mode"), dict)
-            else None,
-            operator_summary=result.get("operator_summary")
-            if isinstance(result.get("operator_summary"), dict)
-            else None,
-        )
-        result["operator_report"] = self._build_operator_report(
-            readiness_summary=result["readiness_summary"],
-            operator_summary=result.get("operator_summary")
-            if isinstance(result.get("operator_summary"), dict)
-            else None,
-            bootstrap=bootstrap,
-            action_kind=action_kind,
-            project_root=project_root,
-        )
-        result["report"] = result["operator_report"]
-
-        if explicit_targets:
-            if include_code_bundle:
-                file_bundles = []
-                for target in explicit_targets:
-                    normalized = target.replace("\\", "/")
-                    if not self.hub.code._is_indexed_file(project_root, normalized):
-                        file_bundles.append({"path": normalized, "missing": True})
-                        continue
-                    file_bundles.append(
-                        self.hub.code.get_file_bundle(project_root, normalized)
-                    )
-                result["retrieval"] = {
-                    "mode": "explicit_targets",
-                    "targets": explicit_targets,
-                    "bundles": file_bundles,
-                }
-            else:
-                result["retrieval"] = {
-                    "mode": "explicit_targets_deferred",
-                    "targets": explicit_targets,
-                    "reason": "bundle_omitted_by_default",
-                }
-        else:
-            if include_code_bundle:
-                result["retrieval"] = {
-                    "mode": "session_bundle",
-                    "bundle": self.hub.code.get_context_bundle(
-                        project_root, session_id=selected
-                    ),
-                }
-            else:
-                preview = self.hub.sessions.session_code_targets(project_root, selected)
-                result["retrieval"] = {
-                    "mode": "session_bundle_deferred",
-                    "session_id": selected,
-                    "session_target_count": len(
-                        [item for item in preview if item and item.strip()]
-                    ),
-                    "memory_structure": self._memory_structure_summary(project_root),
-                    "reason": "bundle_omitted_by_default",
-                }
-
-        # Include compiled workflow actions so the host doesn't need to re-read
-        try:
-            result["workflow"] = self.hub.workflow.read_compiled(project_root)
-        except Exception as exc:
-            logger.warning("Failed to read workflow for orchestration result: %s", exc)
-            result["workflow"] = None
-
-        compact = self.build_artifact_backed_result(
-            project_root,
-            inline_summary=(
-                f"AIDOCS orchestration prepared for `{action_kind}` in session `{selected}`. "
-                f"Retrieval mode: {str((result.get('retrieval') or {}).get('mode') or 'none')}."
-            ),
-            payload=result,
-            artifact_name=f"aidocs-orchestrate-{selected}-{action_kind}",
-            session_id=str(selected),
-            structured_summary={
-                "action_kind": action_kind,
-                "ready": True,
-                "selected_session_id": selected,
-                "retrieval_mode": str(
-                    (result.get("retrieval") or {}).get("mode") or "none"
-                ),
-                "active_skill_count": len(result.get("active_skills", [])),
-            },
-        )
-        result.update(compact)
-        return result
 
     def aidocs_route_prompt(
         self,
@@ -3823,7 +2170,6 @@ class RuntimeService:
                 return {"action_kind": action_kind, "why": [f"matched:{action_kind}"]}
 
         return {"action_kind": "understand", "why": ["default:understand"]}
-
     def aidocs_handle_prompt(
         self,
         project_root: Path,
@@ -3833,220 +2179,20 @@ class RuntimeService:
         include_code_bundle: bool = False,
         include_tests: bool = False,
     ) -> dict[str, object]:
-        if not action_kind or action_kind == "auto":
-            classified = self.classify_prompt_action(
-                user_request,
-                explicit_targets=explicit_targets,
-                project_root=project_root,
-            )
-            action_kind = str(classified["action_kind"])
-        else:
-            classified = {"action_kind": action_kind, "why": ["provided"]}
-
-        route = self.aidocs_route_prompt(
+        return self._prompt_handling.aidocs_handle_prompt(
             project_root,
-            user_request=user_request,
-            action_kind=action_kind,
+            user_request,
+            action_kind,
             explicit_targets=explicit_targets,
+            include_code_bundle=include_code_bundle,
+            include_tests=include_tests,
         )
 
-        if not route.get("managed_mode"):
-            result = {
-                "handled": False,
-                "mode": "requires_aidocs_entry",
-                "classification": classified,
-                "route": route,
-                "report": self._build_handle_prompt_report(
-                    mode="requires_aidocs_entry",
-                    classification=classified,
-                    route=route,
-                    next_step="/aidocs",
-                ),
-                "next_step": "/aidocs",
-            }
-            compact = self.build_artifact_backed_result(
-                project_root,
-                inline_summary="Prompt routing requires `/aidocs` entry before managed handling can continue.",
-                payload=result,
-                artifact_name="aidocs-handle-prompt-requires-entry",
-                session_id=None,
-                structured_summary={
-                    "mode": result["mode"],
-                    "handled": result["handled"],
-                    "next_step": result["next_step"],
-                },
-            )
-            result.update(compact)
-            return result
 
-        if route.get("blocked_reason"):
-            result = {
-                "handled": False,
-                "mode": "blocked",
-                "classification": classified,
-                "route": route,
-                "report": self._build_handle_prompt_report(
-                    mode="blocked",
-                    classification=classified,
-                    route=route,
-                    next_step=route.get("recommended_mcp_flow"),
-                ),
-                "next_step": route.get("recommended_mcp_flow"),
-            }
-            compact = self.build_artifact_backed_result(
-                project_root,
-                inline_summary=(
-                    f"Prompt routing blocked for `{action_kind}`. "
-                    f"Reason: {route.get('blocked_reason')}."
-                ),
-                payload=result,
-                artifact_name=f"aidocs-handle-prompt-blocked-{action_kind}",
-                session_id=str(route.get("session_id") or "") or None,
-                structured_summary={
-                    "mode": result["mode"],
-                    "handled": result["handled"],
-                    "blocked_reason": route.get("blocked_reason"),
-                },
-            )
-            result.update(compact)
-            return result
 
-        session_id = route.get("session_id")
-        if action_kind in {"inspect", "read_file", "read_error"} and route.get(
-            "allowed_direct_inspection"
-        ):
-            result = {
-                "handled": True,
-                "mode": "direct_inspection_allowed",
-                "classification": classified,
-                "route": route,
-                "selected_session_id": session_id,
-                "report": self._build_handle_prompt_report(
-                    mode="direct_inspection_allowed",
-                    classification=classified,
-                    route=route,
-                    next_step="inspect_target_then_return_to_mcp_for_broader_work",
-                ),
-                "next_step": "inspect_target_then_return_to_mcp_for_broader_work",
-            }
-            compact = self.build_artifact_backed_result(
-                project_root,
-                inline_summary="Direct inspection is allowed for the requested prompt; broader work should return to MCP orchestration afterward.",
-                payload=result,
-                artifact_name=f"aidocs-handle-prompt-direct-inspection-{action_kind}",
-                session_id=str(session_id) if session_id else None,
-                structured_summary={
-                    "mode": result["mode"],
-                    "handled": result["handled"],
-                    "next_step": result["next_step"],
-                },
-            )
-            result.update(compact)
-            return result
-
-        if action_kind in {
-            "understand",
-            "trace",
-            "code_bundle",
-            "edit",
-            "write_memory",
-        }:
-            orchestration = self.aidocs_orchestrate(
-                project_root,
-                user_request=user_request,
-                action_kind=action_kind,
-                session_id=str(session_id) if session_id else None,
-                explicit_targets=explicit_targets,
-                include_code_bundle=include_code_bundle,
-                include_tests=include_tests,
-            )
-            result = {
-                "handled": True,
-                "mode": "mcp_orchestrated",
-                "classification": classified,
-                "route": route,
-                "active_skills": list(orchestration.get("active_skills", [])),
-                "operator_report": orchestration.get("operator_report"),
-                "readiness_summary": orchestration.get("readiness_summary"),
-                "report": self._build_handle_prompt_report(
-                    mode="mcp_orchestrated",
-                    classification=classified,
-                    route=route,
-                    operator_report=orchestration.get("operator_report")
-                    if isinstance(orchestration.get("operator_report"), dict)
-                    else None,
-                ),
-                "orchestration": orchestration,
-            }
-            compact = self.build_artifact_backed_result(
-                project_root,
-                inline_summary=(
-                    f"Prompt handled through MCP orchestration for `{action_kind}`. "
-                    f"Selected session: {session_id}."
-                ),
-                payload=result,
-                artifact_name=f"aidocs-handle-prompt-orchestrated-{action_kind}",
-                session_id=str(session_id) if session_id else None,
-                structured_summary={
-                    "mode": result["mode"],
-                    "handled": result["handled"],
-                    "selected_session_id": session_id,
-                    "active_skill_count": len(result.get("active_skills", [])),
-                },
-            )
-            result.update(compact)
-            return result
-
-        result = {
-            "handled": True,
-            "mode": "preflight_only",
-            "classification": classified,
-            "route": route,
-            "report": self._build_handle_prompt_report(
-                mode="preflight_only",
-                classification=classified,
-                route=route,
-                next_step=route.get("recommended_mcp_flow"),
-            ),
-        }
-        compact = self.build_artifact_backed_result(
-            project_root,
-            inline_summary=f"Prompt handled in preflight-only mode for `{action_kind}`.",
-            payload=result,
-            artifact_name=f"aidocs-handle-prompt-preflight-{action_kind}",
-            session_id=str(session_id) if session_id else None,
-            structured_summary={
-                "mode": result["mode"],
-                "handled": result["handled"],
-            },
-        )
-        result.update(compact)
-        return result
 
     def _parse_spec_task_line(self, text: str) -> dict[str, object] | None:
-        stripped = text.strip()
-        if not stripped.casefold().startswith("task:"):
-            return None
-        parts = [part.strip() for part in stripped.split("|") if part.strip()]
-        task_text = parts[0][5:].strip()
-        if not task_text:
-            return None
-        task: dict[str, object] = {"text": task_text, "files": [], "depends_on": []}
-        for part in parts[1:]:
-            lowered = part.casefold()
-            if lowered.startswith("files:"):
-                task["files"] = [
-                    item.strip()
-                    for item in part.split(":", 1)[1].split(",")
-                    if item.strip()
-                ]
-            elif lowered.startswith("depends_on:"):
-                task["depends_on"] = [
-                    item.strip()
-                    for item in part.split(":", 1)[1].split(",")
-                    if item.strip()
-                ]
-        return task
+        return self._plan_authoring._parse_spec_task_line(text)
 
     def _spec_to_plan_sections(
         self,
@@ -4056,125 +2202,13 @@ class RuntimeService:
         scope: str | None,
         constraints: list[str] | None,
     ) -> dict[str, list[str]]:
-        session = self.hub.sessions.read_session(project_root, session_id)
-        lines = [line.rstrip() for line in str(spec_text or "").splitlines()]
-        purpose: str | None = None
-        end_goal: str | None = None
-        explicit_scope = (
-            scope.strip() if isinstance(scope, str) and scope.strip() else None
+        return self._plan_authoring._spec_to_plan_sections(
+            project_root,
+            session_id,
+            spec_text,
+            scope,
+            constraints,
         )
-        validation: list[str] = []
-        parsed_constraints: list[str] = list(constraints or [])
-        task_defs: list[dict[str, object]] = []
-        free_steps: list[str] = []
-        current_section: str | None = None
-
-        for raw_line in lines:
-            stripped = raw_line.strip()
-            if not stripped:
-                continue
-            lowered = stripped.casefold()
-            if lowered.startswith("purpose:"):
-                purpose = stripped.split(":", 1)[1].strip()
-                current_section = None
-                continue
-            if lowered.startswith("goal:") or lowered.startswith("end goal:"):
-                end_goal = stripped.split(":", 1)[1].strip()
-                current_section = None
-                continue
-            if lowered.startswith("scope:"):
-                explicit_scope = stripped.split(":", 1)[1].strip() or explicit_scope
-                current_section = None
-                continue
-            if lowered == "validation:" or lowered.startswith("validation:"):
-                tail = stripped.split(":", 1)[1].strip() if ":" in stripped else ""
-                current_section = "validation"
-                if tail:
-                    validation.append(tail)
-                continue
-            if lowered == "constraints:" or lowered.startswith("constraints:"):
-                tail = stripped.split(":", 1)[1].strip() if ":" in stripped else ""
-                current_section = "constraints"
-                if tail:
-                    parsed_constraints.append(tail)
-                continue
-            task = self._parse_spec_task_line(stripped)
-            if task is not None:
-                task_defs.append(task)
-                current_section = None
-                continue
-            bullet = stripped[1:].strip() if stripped.startswith("-") else stripped
-            if current_section == "validation":
-                validation.append(bullet)
-            elif current_section == "constraints":
-                parsed_constraints.append(bullet)
-            else:
-                free_steps.append(bullet)
-
-        session_goal = self._clean_bullets(session.sections.get("Goal", []))
-        resolved_purpose = purpose or (
-            session_goal[0] if session_goal else "Implement the requested work"
-        )
-        resolved_end_goal = end_goal or (
-            session_goal[0] if session_goal else resolved_purpose
-        )
-        resolved_scope = (
-            explicit_scope
-            or self._clean_bullet_value(session.sections.get("Scope", []))
-            or "-"
-        )
-
-        steps_lines: list[str] = []
-        lane_ready_tasks = [task for task in task_defs if task.get("files")]
-        if lane_ready_tasks:
-            steps_lines.append("- Phase: Planned Work")
-            for task in lane_ready_tasks:
-                task_name = str(task.get("text") or "Task").strip()
-                files = [
-                    str(item) for item in (task.get("files") or []) if str(item).strip()
-                ]
-                depends_on = [
-                    str(item)
-                    for item in (task.get("depends_on") or [])
-                    if str(item).strip()
-                ]
-                steps_lines.append(f"- Lane: {task_name}")
-                steps_lines.append(f"- Files: {', '.join(files)}")
-                if depends_on:
-                    steps_lines.append(f"- depends_on: {', '.join(depends_on)}")
-                steps_lines.append(f"- [ ] {task_name}")
-        else:
-            normalized_steps = free_steps or [
-                str(task.get("text") or "").strip() for task in task_defs
-            ]
-            for step in normalized_steps:
-                cleaned = str(step).strip()
-                if cleaned:
-                    steps_lines.append(f"- [ ] {cleaned}")
-
-        if not validation:
-            validation = [
-                "Run the proving command(s) for this spec and record the results here."
-            ]
-
-        return {
-            "Purpose": [f"- {resolved_purpose}"],
-            "Scope": [f"- {resolved_scope}"],
-            "Current State": [
-                "- Plan created from spec; implementation has not started yet."
-            ],
-            "Partial Goals": [f"- {item}" for item in free_steps[:3]]
-            or ["- Convert the spec into executable work."],
-            "Steps": steps_lines or ["- [ ] Define executable implementation steps"],
-            "End Goal": [f"- {resolved_end_goal}"],
-            "Constraints": self._as_bullets(parsed_constraints)
-            if parsed_constraints
-            else ["- Keep work aligned with the provided spec and session scope."],
-            "Validation": self._as_bullets(validation),
-            "Next Steps": [
-                "- Run plan_validate and plan_preflight before starting implementation."
-            ],
-        }
 
     def plan_create_from_spec(
         self,
@@ -4184,487 +2218,93 @@ class RuntimeService:
         scope: str | None = None,
         constraints: list[str] | None = None,
     ) -> dict[str, object]:
-        patch = self._spec_to_plan_sections(
+        return self._plan_authoring.plan_create_from_spec(
             project_root,
             session_id,
-            spec_text=spec_text,
+            spec_text,
             scope=scope,
             constraints=constraints,
         )
-        plan = self.hub.sessions.update_plan(project_root, session_id, patch)
-        return {
-            "session_id": session_id,
-            "path": str(plan.path),
-            "sections": plan.sections,
-            "lane_count": len(plan.lanes),
-            "has_lanes": bool(plan.lanes),
-        }
 
     def plan_validate(
         self,
         project_root: Path,
         session_id: str,
     ) -> dict[str, object]:
-        plan = self.hub.sessions.read_plan(project_root, session_id)
-        errors: list[str] = []
-        warnings: list[str] = []
-        steps: list[str] = []
-        vague_patterns = self._plan_validation_vague_patterns(
-            project_root=project_root,
-            session_id=session_id,
-        )
-        for lines in plan.sections.values():
-            for line in lines:
-                parsed = self._parse_plan_checkbox_line(line)
-                if not parsed:
-                    continue
-                text = str(parsed["text"]).strip()
-                if text:
-                    steps.append(text)
-                    if any(pattern in text.casefold() for pattern in vague_patterns):
-                        errors.append(f"Vague step: {text}")
-
-        if not steps:
-            errors.append("Plan has no executable checkbox steps.")
-
-        validation = self._clean_bullets(plan.sections.get("Validation", []))
-        if (
-            not validation
-            or validation
-            == [
-                "Define concrete verification steps before considering the work complete."
-            ]
-            or validation
-            == ["Run the proving command(s) for this spec and record the results here."]
-        ):
-            errors.append(
-                "Plan validation section must contain concrete verification commands."
-            )
-
-        if not plan.lanes:
-            warnings.append(
-                "Plan is not lane-aware; conductor will run inline or serial work only."
-            )
-
-        return {
-            "session_id": session_id,
-            "valid": not errors,
-            "errors": errors,
-            "warnings": warnings,
-            "step_count": len(steps),
-            "has_lanes": bool(plan.lanes),
-            "lane_count": len(plan.lanes),
-        }
+        return self._plan_authoring.plan_validate(project_root, session_id)
 
     def plan_preflight(
         self,
         project_root: Path,
         session_id: str,
     ) -> dict[str, object]:
-        """Analyze a session plan and surface all decision points BEFORE implementation.
-
-        Reads PLAN.md, extracts incomplete steps, runs code_investigate on each,
-        and returns: what exists, what's missing, what decisions the agent must make
-        before starting. The agent resolves decisions once upfront, then implements
-        without mid-plan stops.
-        """
-        plan = self.hub.sessions.read_plan(project_root, session_id)
-        if not plan or not plan.sections:
-            return {
-                "session_id": session_id,
-                "error": "No plan found for this session.",
-            }
-
-        # Extract incomplete steps from all plan sections
-        steps: list[str] = []
-        for section_name, lines in plan.sections.items():
-            for line in lines:
-                parsed = self._parse_plan_checkbox_line(line)
-                if parsed and parsed["status"] != "completed":
-                    steps.append(str(parsed["text"]))
-
-        if not steps:
-            return {
-                "session_id": session_id,
-                "steps": [],
-                "message": "All plan steps are complete.",
-            }
-
-        # Investigate each step — find what exists, what's missing
-        step_analysis: list[dict[str, object]] = []
-        for step_text in steps:
-            # Extract key concepts from the step text (first 3 significant words)
-            words = [w for w in step_text.split() if len(w) > 3 and w[0].isalpha()]
-            concept = " ".join(words[:3]) if words else step_text[:40]
-
-            investigation = self.hub.code.investigate(project_root, concept, limit=3)
-            findings = investigation.get("findings", [])
-            next_tools = investigation.get("next_tools", [])
-
-            # Classify: does infrastructure exist or is this greenfield?
-            has_symbols = any(f.get("area") == "symbols" for f in findings)
-            has_schema = any(
-                f.get("area") in ("schema_entities", "schema_fields") for f in findings
-            )
-            has_files = any(f.get("area") == "files" for f in findings)
-
-            if has_symbols or has_schema:
-                status = "extend"  # modify existing code
-            elif has_files:
-                status = "integrate"  # wire into existing structure
-            else:
-                status = "create"  # greenfield, needs decisions
-
-            decisions: list[str] = []
-            if status == "create":
-                decisions.append(
-                    f"No existing code found for '{concept}' — decide: where to create, which patterns to follow"
-                )
-            if has_schema and not has_symbols:
-                decisions.append(
-                    f"Schema exists for '{concept}' but no service/controller code — decide: service layer architecture"
-                )
-            if not has_schema and has_symbols:
-                decisions.append(
-                    f"Code exists for '{concept}' but no schema — decide: is DB/model layer needed?"
-                )
-
-            step_analysis.append(
-                {
-                    "step": step_text,
-                    "status": status,
-                    "concept": concept,
-                    "existing": investigation.get("summary", ""),
-                    **({"decisions": decisions} if decisions else {}),
-                    **({"next_tools": next_tools[:2]} if next_tools else {}),
-                }
-            )
-
-        # Summarize decision points across all steps
-        all_decisions = []
-        for sa in step_analysis:
-            for d in sa.get("decisions", []):
-                all_decisions.append(d)
-
-        create_steps = [sa for sa in step_analysis if sa["status"] == "create"]
-        extend_steps = [sa for sa in step_analysis if sa["status"] == "extend"]
-        integrate_steps = [sa for sa in step_analysis if sa["status"] == "integrate"]
-
-        return {
-            "session_id": session_id,
-            "total_steps": len(steps),
-            "steps": step_analysis,
-            "summary": {
-                "create": len(create_steps),
-                "extend": len(extend_steps),
-                "integrate": len(integrate_steps),
-                "decisions_needed": len(all_decisions),
-            },
-            **({"decisions": all_decisions} if all_decisions else {}),
-            "recommended_order": (
-                "Resolve all decisions first, then implement 'extend' steps (safest), "
-                "then 'integrate' steps, then 'create' steps (most risk)."
-            ),
-        }
+        return self._plan_authoring.plan_preflight(project_root, session_id)
 
     def _plan_conductor_state_path(self, project_root: Path, session_id: str) -> Path:
-        return (
-            self.hub.sessions.session_path(project_root, session_id)
-            / "artifacts"
-            / "plan_conductor_state.json"
-        )
+        return self._conductor_state._plan_conductor_state_path(project_root, session_id)
 
     def _plan_conductor_lane_ids(self, project_root: Path, session_id: str) -> set[str]:
-        plan = self.hub.sessions.read_plan(project_root, session_id)
-        return {lane.lane_id for lane in plan.lanes}
+        return self._conductor_state._plan_conductor_lane_ids(project_root, session_id)
 
     def _require_plan_conductor_lane_id(
         self, project_root: Path, session_id: str, lane_id: str
     ) -> None:
-        if lane_id not in self._plan_conductor_lane_ids(project_root, session_id):
-            raise ValueError(f"Unknown lane id: {lane_id}")
+        self._conductor_state._require_plan_conductor_lane_id(project_root, session_id, lane_id)
 
     def _read_plan_conductor_state(
         self, project_root: Path, session_id: str
     ) -> dict[str, object]:
-        path = self._plan_conductor_state_path(project_root, session_id)
-        lane_ids = self._plan_conductor_lane_ids(project_root, session_id)
-        empty_state = {
-            "paused_lanes": {},
-            "contract_ready_lane_ids": [],
-            "reopened_lane_ids": [],
-            "lane_ownership_history": {},
-            "lane_signals": {},
-        }
-        if not path.exists():
-            return empty_state
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            return empty_state
-        if not isinstance(payload, dict):
-            return empty_state
-
-        raw_paused_lanes = payload.get("paused_lanes") or {}
-        if not isinstance(raw_paused_lanes, dict):
-            raw_paused_lanes = {}
-        paused_lanes = {
-            str(lane_id): str(reason)
-            for lane_id, reason in raw_paused_lanes.items()
-            if str(lane_id).strip() in lane_ids and str(reason).strip()
-        }
-
-        raw_contract_ready = payload.get("contract_ready_lane_ids") or []
-        if not isinstance(raw_contract_ready, list):
-            raw_contract_ready = []
-        contract_ready_lane_ids = sorted(
-            {
-                str(lane_id)
-                for lane_id in raw_contract_ready
-                if str(lane_id).strip() in lane_ids
-            }
-        )
-
-        raw_reopened = payload.get("reopened_lane_ids") or []
-        if not isinstance(raw_reopened, list):
-            raw_reopened = []
-        reopened_lane_ids = sorted(
-            {
-                str(lane_id)
-                for lane_id in raw_reopened
-                if str(lane_id).strip() in lane_ids
-            }
-        )
-
-        raw_history = payload.get("lane_ownership_history") or {}
-        if not isinstance(raw_history, dict):
-            raw_history = {}
-        lane_ownership_history = {
-            str(lane_id): events
-            for lane_id, events in raw_history.items()
-            if str(lane_id).strip() in lane_ids and isinstance(events, list)
-        }
-
-        raw_lane_signals = payload.get("lane_signals") or {}
-        if not isinstance(raw_lane_signals, dict):
-            raw_lane_signals = {}
-        lane_signals = {
-            str(lane_id): [
-                dict(entry)
-                for entry in entries
-                if isinstance(entries, list) and isinstance(entry, dict)
-            ]
-            for lane_id, entries in raw_lane_signals.items()
-            if str(lane_id).strip() in lane_ids
-        }
-
-        return {
-            "paused_lanes": paused_lanes,
-            "contract_ready_lane_ids": contract_ready_lane_ids,
-            "reopened_lane_ids": reopened_lane_ids,
-            "lane_ownership_history": lane_ownership_history,
-            "lane_signals": lane_signals,
-        }
+        return self._conductor_state._read_plan_conductor_state(project_root, session_id)
 
     def _write_plan_conductor_state(
         self, project_root: Path, session_id: str, state: dict[str, object]
     ) -> None:
-        path = self._plan_conductor_state_path(project_root, session_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        self._conductor_state._write_plan_conductor_state(project_root, session_id, state)
 
     def _plan_conductor_snapshot(
         self,
         project_root: Path,
         session_id: str,
     ) -> dict[str, dict[str, object]]:
-        state = self._read_plan_conductor_state(project_root, session_id)
-        conductor = PlanConductor(
-            self.hub,
-            project_root,
-            session_id,
-            paused_lanes=dict(state["paused_lanes"]),
-            contract_ready_lane_ids=set(state["contract_ready_lane_ids"]),
-            reopened_lane_ids=set(state.get("reopened_lane_ids", [])),
-            lane_signals=dict(state.get("lane_signals", {})),
-        )
-        return {
-            "graph": conductor.graph(),
-            "runnable": conductor.runnable_lanes(),
-        }
+        return self._conductor_state._plan_conductor_snapshot(project_root, session_id)
 
     def plan_conductor_graph(
         self,
         project_root: Path,
         session_id: str,
     ) -> dict[str, object]:
-        """Return the parsed conductor lane graph for a lane-aware session plan."""
-        return self._plan_conductor_snapshot(project_root, session_id)["graph"]
+        return self._conductor_state.plan_conductor_graph(project_root, session_id)
 
     def plan_conductor_status(
         self,
         project_root: Path,
         session_id: str,
     ) -> dict[str, object]:
-        """Return conductor graph plus current runnable lane state for a session plan."""
-        snapshot = self._plan_conductor_snapshot(project_root, session_id)
-        state = self._read_plan_conductor_state(project_root, session_id)
-        return {
-            **snapshot["graph"],
-            **snapshot["runnable"],
-            "reopened_lane_ids": list(state.get("reopened_lane_ids", [])),
-            "lane_ownership_history": dict(state.get("lane_ownership_history", {})),
-            "lane_signals": dict(state.get("lane_signals", {})),
-        }
+        return self._conductor_state.plan_conductor_status(project_root, session_id)
 
     def _execution_overlap_risk(self, status: dict[str, object]) -> str:
-        blocked_reasons = (
-            status.get("blocked_reasons")
-            if isinstance(status.get("blocked_reasons"), dict)
-            else {}
-        )
-        for reasons in blocked_reasons.values():
-            if any(
-                isinstance(reason, str) and reason.startswith("shared-file-overlap:")
-                for reason in (reasons if isinstance(reasons, list) else [])
-            ):
-                return "high"
-        return "none"
+        return self._conductor_state._execution_overlap_risk(status)
 
     def _execution_dependency_pressure(self, status: dict[str, object]) -> str:
-        waiting_on = (
-            status.get("waiting_on")
-            if isinstance(status.get("waiting_on"), dict)
-            else {}
-        )
-        runnable_lane_ids = [
-            str(item)
-            for item in (status.get("runnable_lane_ids") or [])
-            if str(item).strip()
-        ]
-        if not waiting_on:
-            return "none"
-        if not runnable_lane_ids:
-            return "high"
-        if len(waiting_on) > len(runnable_lane_ids):
-            return "medium"
-        return "low"
+        return self._conductor_state._execution_dependency_pressure(status)
 
     def execution_mode_select(
         self,
         project_root: Path,
         session_id: str,
     ) -> dict[str, object]:
-        plan = self.hub.sessions.read_plan(project_root, session_id)
-        lanes = list(getattr(plan, "lanes", []) or [])
-        if not lanes:
-            return ExecutionModeSelection(
-                session_id=session_id,
-                mode="inline",
-                reason="plan has no conductor lanes",
-                lane_count=0,
-                runnable_lane_count=0,
-                blocked_lane_count=0,
-                has_lanes=False,
-                has_contract_lanes=False,
-                overlap_risk="none",
-                dependency_pressure="none",
-            ).to_dict()
-
-        status = self.plan_conductor_status(project_root, session_id)
-        runnable_lane_ids = [
-            str(item)
-            for item in (status.get("runnable_lane_ids") or [])
-            if str(item).strip()
-        ]
-        blocked_reasons = (
-            status.get("blocked_reasons")
-            if isinstance(status.get("blocked_reasons"), dict)
-            else {}
-        )
-        overlap_risk = self._execution_overlap_risk(status)
-        dependency_pressure = self._execution_dependency_pressure(status)
-        has_contract_lanes = any(
-            self._plan_conductor_lane_is_contract_like(lane) for lane in lanes
-        )
-
-        if overlap_risk == "high":
-            mode = "delegated_serial"
-            reason = "shared-file overlap blocks safe parallel execution"
-        elif len(runnable_lane_ids) > 1:
-            mode = "delegated_parallel"
-            reason = "multiple independent runnable lanes are available"
-        elif len(lanes) == 1:
-            mode = "delegated_serial"
-            reason = "single lane plan is structured for delegated execution"
-        elif len(runnable_lane_ids) == 1:
-            mode = "delegated_serial"
-            reason = "only one lane is safely runnable at this time"
-        else:
-            mode = "delegated_serial"
-            reason = "lane-structured plan exists but work is dependency-blocked"
-
-        return ExecutionModeSelection(
-            session_id=session_id,
-            mode=mode,
-            reason=reason,
-            lane_count=len(lanes),
-            runnable_lane_count=len(runnable_lane_ids),
-            blocked_lane_count=len(blocked_reasons),
-            has_lanes=True,
-            has_contract_lanes=has_contract_lanes,
-            overlap_risk=overlap_risk,
-            dependency_pressure=dependency_pressure,
-            runnable_lane_ids=runnable_lane_ids,
-            blocked_reasons={
-                str(key): [str(item) for item in value]
-                for key, value in blocked_reasons.items()
-                if isinstance(value, list)
-            },
-            query_first_conflict_analysis=bool(
-                status.get("query_first_conflict_analysis", True)
-            ),
-        ).to_dict()
+        return self._conductor_state.execution_mode_select(project_root, session_id)
 
     def _plan_conductor_lane_is_contract_like(self, lane: object) -> bool:
-        tokens = [
-            str(getattr(lane, "lane_id", "") or ""),
-            str(getattr(lane, "name", "") or ""),
-            *[
-                str(item)
-                for item in (getattr(lane, "files", []) or [])
-                if str(item).strip()
-            ],
-        ]
-        return any(
-            re.search(r"(?<![a-z0-9])contract(?![a-z0-9])", token, re.IGNORECASE)
-            for token in tokens
-        )
+        return self._conductor_dispatch._plan_conductor_lane_is_contract_like(lane)
 
     def _find_plan_lane(
         self, project_root: Path, session_id: str, lane_id: str
     ) -> object | None:
-        plan = self.hub.sessions.read_plan(project_root, session_id)
-        return next(
-            (
-                lane
-                for lane in getattr(plan, "lanes", [])
-                if str(getattr(lane, "lane_id", "") or "") == lane_id
-            ),
-            None,
-        )
+        return self._conductor_dispatch._find_plan_lane(project_root, session_id, lane_id)
 
     def _lane_open_steps(self, lane: object) -> list[str]:
-        steps = []
-        for step in getattr(lane, "steps", []) or []:
-            if str(getattr(step, "status", "") or "") == "completed":
-                continue
-            text = str(getattr(step, "text", "") or "").strip()
-            if text:
-                steps.append(text)
-        return steps
+        return self._conductor_dispatch._lane_open_steps(lane)
 
     def _build_subagent_task_packet(
         self,
@@ -4672,105 +2312,31 @@ class RuntimeService:
         session_id: str,
         lane_id: str,
     ) -> dict[str, object]:
-        lane = self._find_plan_lane(project_root, session_id, lane_id)
-        if lane is None:
-            raise ValueError(f"Unknown lane id: {lane_id}")
-        context = self.hub.sessions.read_context(project_root, session_id)
-        context_sections = (
-            context.sections if isinstance(context.sections, dict) else {}
-        )
-        allowed_files = [
-            str(item).replace("\\", "/")
-            for item in (getattr(lane, "files", []) or [])
-            if str(item).strip()
-        ]
-        open_steps = self._lane_open_steps(lane)
-        relevant_commands = self._clean_bullets(
-            context_sections.get("Relevant Commands", [])
-        )
-        constraints = self._clean_bullets(context_sections.get("Constraints", []))
-        done_definition = open_steps or [str(getattr(lane, "name", lane_id) or lane_id)]
-        packet = SubagentTaskPacket(
-            session_id=session_id,
-            lane_id=lane_id,
-            task_id=f"{session_id}:{lane_id}",
-            goal=done_definition[0],
-            allowed_files=allowed_files,
-            required_reads=list(allowed_files),
-            required_symbols=[],
-            constraints=[
-                *constraints,
-                "Stay within allowed_files unless the conductor explicitly expands scope.",
-            ],
-            verification_commands=relevant_commands,
-            done_definition=done_definition,
-            must_not=[
-                "Do not change files outside allowed_files.",
-                "Do not broaden scope or re-plan the workflow.",
-                "Do not claim success without running required verification commands.",
-            ],
-            output_schema={
-                "required": [
-                    "files_changed",
-                    "commands_run",
-                    "command_results",
-                    "verification_results",
-                    "blockers",
-                    "hidden_dependencies",
-                    "follow_up",
-                    "claimed_done",
-                ],
-                "notes": "Return structured execution evidence so the conductor can reconcile lane progress deterministically.",
-            },
-        )
-        return packet.to_dict()
+        return self._conductor_dispatch._build_subagent_task_packet(project_root, session_id, lane_id)
 
     def plan_dispatch_next(
         self,
         project_root: Path,
         session_id: str,
     ) -> dict[str, object]:
-        execution_mode = self.execution_mode_select(project_root, session_id)
-        mode = str(execution_mode.get("mode") or "inline")
-        runnable_lane_ids = [
-            str(item)
-            for item in (execution_mode.get("runnable_lane_ids") or [])
-            if str(item).strip()
-        ]
-        if mode == "inline" and not runnable_lane_ids:
-            return {
-                "session_id": session_id,
-                "mode": mode,
-                "dispatch_state": "inline",
-                "reason": str(
-                    execution_mode.get("reason") or "inline execution selected"
-                ),
-                "packet": None,
-            }
-        if not runnable_lane_ids:
-            return {
-                "session_id": session_id,
-                "mode": mode,
-                "dispatch_state": "blocked",
-                "reason": str(
-                    execution_mode.get("reason") or "no runnable lane available"
-                ),
-                "packet": None,
-                "blocked_reasons": execution_mode.get("blocked_reasons") or {},
-            }
-        selected_lane_id = runnable_lane_ids[0]
-        return {
-            "session_id": session_id,
-            "mode": mode,
-            "dispatch_state": "delegated",
-            "reason": str(
-                execution_mode.get("reason") or "lane ready for delegated execution"
-            ),
-            "selected_lane_id": selected_lane_id,
-            "packet": self._build_subagent_task_packet(
-                project_root, session_id, selected_lane_id
-            ),
-        }
+        return self._conductor_dispatch.plan_dispatch_next(project_root, session_id)
+
+    def _build_subagent_task_packet(
+        self,
+        project_root: Path,
+        session_id: str,
+        lane_id: str,
+    ) -> dict[str, object]:
+        return self._conductor_dispatch._build_subagent_task_packet(project_root, session_id, lane_id)
+
+    def plan_dispatch_next(
+        self,
+        project_root: Path,
+        session_id: str,
+    ) -> dict[str, object]:
+        return self._conductor_dispatch.plan_dispatch_next(project_root, session_id)
+
+
 
     def _plan_lanes_complete(self, project_root: Path, session_id: str) -> bool:
         plan = self.hub.sessions.read_plan(project_root, session_id)
@@ -5978,7 +3544,17 @@ class RuntimeService:
                 session_id=session_id,
                 include_tests=include_tests,
                 sync_indexes=True,
+        # Auto-journal the task start
+        try:
+            self.hub.sessions.write_journal_entry(
+                project_root, session_id,
+                action_kind="task_lifecycle",
+                intent=goal or "Task started",
+                outcome="Task work begun" + (f" — goal: {goal}" if goal else ""),
             )
+        except Exception:
+            pass
+
         return result
 
     def task_update(

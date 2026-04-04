@@ -182,7 +182,7 @@ def _grant_known_exact_path_read(
     )
 
 
-def _post_edit_reindex(
+def _post_edit_grant_and_reindex(
     hub: AidocsServiceHub, project_root: Path, tool_name: str, path: str
 ) -> None:
     """After a successful edit: grant read access + reindex so indexed tools see the change."""
@@ -1325,7 +1325,7 @@ def create_server() -> Any:
             root, path, content, config_edit_mode=config_edit_mode
         )
         if result.get("success"):
-            _post_edit_reindex(
+            _post_edit_grant_and_reindex(
                 hub,
                 root,
                 "code_create_file",
@@ -1381,7 +1381,7 @@ def create_server() -> Any:
             config_edit_mode=config_edit_mode,
         )
         if result.get("success") and not result.get("dry_run"):
-            _post_edit_reindex(
+            _post_edit_grant_and_reindex(
                 hub,
                 root,
                 "code_edit_lines",
@@ -1427,7 +1427,7 @@ def create_server() -> Any:
         if result.get("success") and not dry_run:
             for item in result.get("results", []):
                 if isinstance(item, dict) and item.get("success"):
-                    _post_edit_reindex(
+                    _post_edit_grant_and_reindex(
                         hub,
                         root,
                         "code_batch_edit",
@@ -1461,7 +1461,7 @@ def create_server() -> Any:
             config_edit_mode=config_edit_mode,
         )
         if result.get("success"):
-            _post_edit_reindex(
+            _post_edit_grant_and_reindex(
                 hub,
                 root,
                 "code_str_replace",
@@ -1493,7 +1493,7 @@ def create_server() -> Any:
         if result.get("success"):
             for item in result.get("results", []):
                 if isinstance(item, dict) and item.get("success"):
-                    _post_edit_reindex(
+                    _post_edit_grant_and_reindex(
                         hub,
                         root,
                         "code_batch_str_replace",

@@ -254,12 +254,11 @@ class ClaudeHookHandler:
             }
         }
 
-    # Tools that are system/infrastructure operations — skip nudges for these
+    # Non-file tools that never need gate checks or nudges
     _SYSTEM_TOOLS: set[str] = {
         "compact",
         "todowrite",
         "todoread",
-        "agent",
         "skill",
         "toolsearch",
     }
@@ -267,6 +266,8 @@ class ClaudeHookHandler:
     def _handle_pre_tool_use(
         self, project_root: Path, payload: dict[str, object]
     ) -> dict[str, object] | None:
+        from .access_gate import AccessGate, GateContext
+
         managed = self.runtime.hub.managed_mode.get_mode(project_root)
         if not managed.get("active"):
             return None
@@ -278,27 +279,39 @@ class ClaudeHookHandler:
             else {}
         )
 
-        # Skip nudges for system tools (compact, todowrite, etc.)
+        # Non-file tools skip all gate checks
         if tool_name.lower() in self._SYSTEM_TOOLS:
             return None
 
-        # ── AIDOCS infrastructure protection ──
-        # Block raw Edit/Write/Bash from modifying AIDOCS config or MCP source.
-        # This prevents a compromised agent from removing safety guardrails.
+        # ── Level 1: Block raw file tools (Read/Grep/Glob/Edit/Write) ──
+        # Agent tool is checked here too when allow_subagents is disabled
+        from .config import DEV_MODE
+        allow_subagents = DEV_MODE  # TODO: read from agents.allow_subagents config
+        raw_decision = AccessGate.check_raw_tool(
+            GateContext(
+                managed=True,
+                session_id=str(managed.get("session_id") or ""),
+                dev_mode=DEV_MODE,
+                gate_state={},
+            ),
+            tool_name,
+            allow_subagents=allow_subagents,
+        )
+        if not raw_decision.allowed:
+            return {
+                "decision": "block",
+                "reason": raw_decision.reason or "Blocked by AIDOCS managed mode.",
+            }
+
+        # ── Infrastructure protection (applies to Bash which passes Level 1) ──
         protection = self._check_infrastructure_protection(tool_name, tool_input)
         if protection:
             return protection
 
-        read_gate_block = self._check_indexed_read_gate(
-            project_root, tool_name, tool_input
-        )
-        if read_gate_block:
-            return read_gate_block
-
-        # ── MCP alternative nudge (only for raw tools) ──
+        # ── MCP alternative nudge for Bash on code files (advisory only) ──
         mcp_nudge = self._suggest_mcp_alternative(tool_name, tool_input)
 
-        # ── Comment quality reminder on edit/write tools ──
+        # ── Comment quality reminder on MCP edit tools ──
         comment_nudge = ""
         if tool_name.lower() in ("edit", "write"):
             from .config import CODE_QUALITY_COMMENT_ENFORCEMENT

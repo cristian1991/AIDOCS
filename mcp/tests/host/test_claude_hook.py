@@ -507,29 +507,13 @@ def test_session_start_surfaces_imported_skill_state_for_selected_session(
     assert "superpowers_external/brainstorming" in payload["additionalContext"]
 
 
-def test_pre_tool_use_adds_context_when_project_is_managed(tmp_path: Path) -> None:
+def test_pre_tool_use_blocks_read_in_managed_mode(tmp_path: Path) -> None:
+    """Raw Read is hard-blocked at Level 1 when managed mode is active."""
     handler, project_root = _make_handler(tmp_path)
-    (project_root / ".MEMORY" / "rules").mkdir(parents=True, exist_ok=True)
-    (project_root / ".MEMORY" / "rules" / "workflow-actions.md").write_text(
-        "# Workflow Actions\n\n## Workflow Actions\n- blink: run `python tools/blink.py`\n",
-        encoding="utf-8",
-    )
-    (project_root / ".MEMORY" / "rules" / "workflow-rules.md").write_text(
-        "# Workflow Rules\n\n## Workflow Rules\n- After each completed task, blink.\n",
-        encoding="utf-8",
-    )
     handler.runtime.hub.sessions.create_session(
         project_root, "2026-03-24-a", "A", "Agent", "Goal A"
     )
-    handler.runtime.hub.workflow.compile_project_rules(project_root)
     handler.runtime.hub.managed_mode.set_mode(project_root, session_id="2026-03-24-a")
-    handler.runtime.hub.query_gate.set(
-        project_root,
-        "2026-03-24-a",
-        allow_read=False,
-        last_tool="known_exact_path:Read:src/app.py",
-        known_exact_paths=["src/app.py"],
-    )
 
     result = handler.handle(
         {
@@ -540,39 +524,55 @@ def test_pre_tool_use_adds_context_when_project_is_managed(tmp_path: Path) -> No
         }
     )
 
-    # PreToolUse now only injects context when there's an MCP alternative for raw tools
     assert result is not None
-    payload = result["hookSpecificOutput"]
-    assert payload["hookEventName"] == "PreToolUse"
-    # Read tool should get a nudge toward the new generic AIDOCS retrieval surface.
-    assert "aidocs_code_bundle" in payload["additionalContext"]
-    assert 'mode="file"' in payload["additionalContext"]
-    assert "code_get_outline" not in payload["additionalContext"]
-    assert "code_get_file_bundle" not in payload["additionalContext"]
+    assert result["decision"] == "block"
+    assert "code_get_lines" in result["reason"]
 
 
-def test_pre_tool_use_blocks_read_when_indexed_gate_has_not_granted_path(
+def test_pre_tool_use_blocks_all_raw_file_tools_in_managed_mode(
     tmp_path: Path,
 ) -> None:
+    """Read, Grep, Glob, Edit, Write are all hard-blocked at Level 1."""
     handler, project_root = _make_handler(tmp_path)
     handler.runtime.hub.sessions.create_session(
         project_root, "2026-03-24-b", "B", "Agent", "Goal B"
     )
     handler.runtime.hub.managed_mode.set_mode(project_root, session_id="2026-03-24-b")
 
+    for tool in ["Read", "Grep", "Glob", "Edit", "Write"]:
+        result = handler.handle(
+            {
+                "hook_event_name": "PreToolUse",
+                "cwd": str(project_root),
+                "tool_name": tool,
+                "tool_input": {},
+            }
+        )
+        assert result is not None, f"Expected block for {tool}"
+        assert result["decision"] == "block", f"Expected block for {tool}"
+
+
+def test_pre_tool_use_allows_bash_in_managed_mode(
+    tmp_path: Path,
+) -> None:
+    """Bash is NOT blocked at Level 1 — gating deferred."""
+    handler, project_root = _make_handler(tmp_path)
+    handler.runtime.hub.sessions.create_session(
+        project_root, "2026-03-24-c", "C", "Agent", "Goal C"
+    )
+    handler.runtime.hub.managed_mode.set_mode(project_root, session_id="2026-03-24-c")
+
     result = handler.handle(
         {
             "hook_event_name": "PreToolUse",
             "cwd": str(project_root),
-            "tool_name": "Read",
-            "tool_input": {"file_path": "src/secret.py"},
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
         }
     )
 
-    assert result == {
-        "decision": "block",
-        "reason": 'AIDOCS indexed-read gate: "src/secret.py" has not been discovered via code_investigate, code_find, code_trace, or code_bundle. Use AIDOCS indexed tools first before raw Read.',
-    }
+    # Bash should not be blocked (may be None or advisory nudge)
+    assert result is None or "decision" not in result
 
 
 def test_non_aidocs_project_returns_no_hook_output(tmp_path: Path) -> None:
@@ -681,8 +681,8 @@ def test_user_prompt_submit_includes_task_complete_followthrough_nudge(
 # ── Comment enforcement tests ────────────────────────────────────────
 
 
-def test_edit_tool_gets_comment_reminder(tmp_path: Path) -> None:
-    """PreToolUse on Edit tool includes comment quality reminder when enforcement is on."""
+def test_edit_tool_blocked_in_managed_mode(tmp_path: Path) -> None:
+    """Raw Edit is hard-blocked at Level 1 — use code_edit_lines instead."""
     handler, project_root = _make_handler(tmp_path)
     handler.runtime.hub.sessions.create_session(
         project_root, "2026-03-28-c", "C", "Agent", "Goal"
@@ -703,8 +703,8 @@ def test_edit_tool_gets_comment_reminder(tmp_path: Path) -> None:
     )
 
     assert result is not None
-    context = result["hookSpecificOutput"]["additionalContext"]
-    assert "WHY" in context
+    assert result["decision"] == "block"
+    assert "code_edit_lines" in result["reason"]
 
 
 def test_non_edit_tool_no_comment_reminder(tmp_path: Path) -> None:

@@ -78,16 +78,18 @@ def register_code_tools(
         text: str,
         glob: str | None = None,
         case_sensitive: bool = False,
+        regex: bool = False,
         limit: int = 50,
         include_tests: bool = False,
     ) -> dict[str, Any]:
-        """Fast literal text search across indexed files. Use instead of grep for 'does this string exist?'. Glob filters by file pattern (e.g. '*.py')."""
+        """Literal text search across indexed files. Use | or OR between terms for multi-match. Set regex=true for pattern matching."""
         root = Path(root)
         matches = hub.code.search_text(
             root,
             text,
             glob=glob,
             case_sensitive=case_sensitive,
+            regex=regex,
             limit=limit,
             include_tests=include_tests,
         )

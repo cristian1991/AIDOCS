@@ -947,21 +947,33 @@ class CodeIndexStore:
         *,
         glob: str | None = None,
         case_sensitive: bool = False,
+        regex: bool = False,
         limit: int = 50,
         include_tests: bool = False,
     ) -> list[dict[str, object]]:
-        """Search indexed file contents for literal text. Supports | as OR delimiter."""
+        """Search indexed file contents. Literal by default, | or ' OR ' splits into multiple terms. Set regex=True for pattern matching."""
         self.init_db(project_root)
         raw = text.strip()
         if not raw:
             return []
 
-        # Split on | for OR queries; each term is a separate needle
-        needles = [t.strip() for t in raw.split("|") if t.strip()]
-        if not needles:
-            return []
-        if not case_sensitive:
-            needles = [n.lower() for n in needles]
+        import re as _re
+
+        if regex:
+            try:
+                pattern = _re.compile(raw, 0 if case_sensitive else _re.IGNORECASE)
+            except _re.error:
+                return []
+            needles = None
+        else:
+            # Split on | or ' OR ' for multi-term literal search
+            split_text = raw.replace(" OR ", "|").replace(" or ", "|")
+            needles = [t.strip() for t in split_text.split("|") if t.strip()]
+            if not needles:
+                return []
+            if not case_sensitive:
+                needles = [n.lower() for n in needles]
+            pattern = None
 
         with self.connect(project_root) as conn:
             query_sql = "SELECT path FROM code_files"
@@ -984,16 +996,27 @@ class CodeIndexStore:
             except Exception:
                 continue
             search_content = content if case_sensitive else content.lower()
-            if not any(n in search_content for n in needles):
-                continue
+            if regex:
+                if not pattern.search(content if case_sensitive else search_content):
+                    continue
+            else:
+                if not any(n in search_content for n in needles):
+                    continue
             lines_matched: list[dict[str, object]] = []
             for i, line in enumerate(content.splitlines(), 1):
                 check_line = line if case_sensitive else line.lower()
-                if any(n in check_line for n in needles):
+                if regex:
+                    hit = bool(pattern.search(line if case_sensitive else check_line))
+                else:
+                    hit = any(n in check_line for n in needles)
+                if hit:
                     lines_matched.append({"line_number": i, "line": line.rstrip()})
                     if len(lines_matched) >= 5:
                         break
-            total_count = sum(search_content.count(n) for n in needles)
+            if regex:
+                total_count = len(pattern.findall(content if case_sensitive else search_content))
+            else:
+                total_count = sum(search_content.count(n) for n in needles)
             matches.append({
                 "path": rel_path,
                 "match_count": total_count,

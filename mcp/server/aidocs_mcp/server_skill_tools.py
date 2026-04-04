@@ -63,7 +63,7 @@ def register_skill_tools(
     )
     def skill_override_registry_get(root: str) -> dict[str, Any]:
         """Return the configured skill override rules for inspection/debugging."""
-        _ = project_root
+        _ = root
         return {
             "rules": [item.to_dict() for item in runtime._skill_overrides.list_rules()]
         }

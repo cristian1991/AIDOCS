@@ -72,6 +72,8 @@ task_update = "Record progress on current task."
 task_complete = "Close current task with result summary and verification evidence."
 
 # ── Plan/conductor ──
+planning_docs_list = "List all planning documents (roadmaps, plans, specs) with checkbox status summary."
+planning_step_mark = "Toggle a checkbox in any planning doc. Status: done, open, skip, in_progress, blocked."
 plan_connect = "Connect to existing plan — read state, find where work left off."
 plan_create_from_spec = "Create session plan from a deterministic spec."
 plan_conductor_status = "Get conductor lane graph and runnable lane status."

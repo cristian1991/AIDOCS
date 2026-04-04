@@ -440,6 +440,36 @@ def register_plan_task_tools(
 
     @server.tool(
         annotations={
+            "readOnlyHint": True,
+            "openWorldHint": False,
+            "title": "List Planning Docs",
+        },
+    )
+    def planning_docs_list(root: str) -> dict[str, Any]:
+        """List all planning documents (roadmaps, plans, specs) with checkbox status summary."""
+        docs = hub.sessions.list_planning_docs(Path(root))
+        return {"docs": docs, "total": len(docs)}
+
+    @server.tool(
+        annotations={
+            "destructiveHint": True,
+            "openWorldHint": False,
+            "title": "Mark Planning Step",
+        },
+    )
+    def planning_step_mark(
+        root: str,
+        path: str,
+        line_number: int,
+        status: str = "done",
+    ) -> dict[str, Any]:
+        """Toggle a checkbox in a planning doc. Status: done, open, skip, in_progress, blocked."""
+        return hub.sessions.mark_planning_step(Path(root), path, line_number, status)
+
+
+
+    @server.tool(
+        annotations={
             "destructiveHint": True,
             "openWorldHint": False,
             "title": "Normalize Plan Prose",

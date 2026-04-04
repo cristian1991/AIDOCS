@@ -3544,6 +3544,8 @@ class RuntimeService:
                 session_id=session_id,
                 include_tests=include_tests,
                 sync_indexes=True,
+            )
+
         # Auto-journal the task start
         try:
             self.hub.sessions.write_journal_entry(

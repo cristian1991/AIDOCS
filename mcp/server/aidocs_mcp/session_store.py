@@ -285,7 +285,88 @@ class SessionStore:
         return self.read_plan(project_root, session_id)
 
     def roadmap_candidates(self, project_root: Path) -> list[Path]:
-        return [project_root / "ROADMAP_2_0_0.md"]
+        """Find all planning documents: ROADMAP*.md, docs/plans/*.md, docs/specs/*.md."""
+        candidates: list[Path] = []
+        # Root roadmaps
+        for f in sorted(project_root.glob("ROADMAP*.md")):
+            if f.is_file():
+                candidates.append(f)
+        # Plans and specs dirs
+        for subdir in ["docs/plans", "docs/specs", ".MEMORY/plans"]:
+            d = project_root / subdir
+            if d.is_dir():
+                for f in sorted(d.glob("*.md")):
+                    if f.is_file():
+                        candidates.append(f)
+        return candidates
+
+    def list_planning_docs(self, project_root: Path) -> list[dict[str, object]]:
+        """List all planning documents with checkbox status summary."""
+        docs: list[dict[str, object]] = []
+        for path in self.roadmap_candidates(project_root):
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            total = 0
+            done = 0
+            open_count = 0
+            for line in text.splitlines():
+                match = re.match(r"^\s*-\s+\[([^\]]*)\]\s+", line)
+                if match:
+                    total += 1
+                    marker = match.group(1).strip()
+                    if marker in ("x", "X"):
+                        done += 1
+                    elif marker == " ":
+                        open_count += 1
+            try:
+                rel = str(path.relative_to(project_root)).replace("\\", "/")
+            except ValueError:
+                rel = str(path)
+            docs.append({
+                "path": rel,
+                "total_steps": total,
+                "done": done,
+                "open": open_count,
+                "other": total - done - open_count,
+            })
+        return docs
+
+    def mark_planning_step(
+        self, project_root: Path, path: str, line_number: int, status: str = "done"
+    ) -> dict[str, object]:
+        """Toggle a checkbox in a planning document. Status: 'done', 'open', 'skip', 'in_progress'."""
+        marker_map = {"done": "[x]", "open": "[ ]", "skip": "[~]", "in_progress": "[>]", "blocked": "[!]"}
+        new_marker = marker_map.get(status)
+        if not new_marker:
+            return {"success": False, "error": f"Unknown status: {status}. Use: {', '.join(marker_map.keys())}"}
+
+        abs_path = (project_root / path.replace("\\", "/")).resolve()
+        if not abs_path.is_file():
+            return {"success": False, "error": f"File not found: {path}"}
+
+        lines = abs_path.read_text(encoding="utf-8").splitlines()
+        if line_number < 1 or line_number > len(lines):
+            return {"success": False, "error": f"Line {line_number} out of range"}
+
+        line = lines[line_number - 1]
+        match = re.match(r"^(\s*-\s+)\[([^\]]*)\](\s+.*)$", line)
+        if not match:
+            return {"success": False, "error": f"Line {line_number} is not a checkbox step"}
+
+        prefix, old_marker, rest = match.groups()
+        lines[line_number - 1] = f"{prefix}{new_marker}{rest}"
+        abs_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        return {
+            "success": True,
+            "path": path,
+            "line": line_number,
+            "old_status": old_marker.strip(),
+            "new_status": status,
+        }
+
+
 
     def read_roadmap_steps(self, project_root: Path) -> list[dict[str, object]]:
         for path in self.roadmap_candidates(project_root):

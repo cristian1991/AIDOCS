@@ -173,6 +173,13 @@ SETTINGS_CATALOG: dict[str, SettingMetadata] = {
         security_sensitive=True,
         scope=["project"],
     ),
+    "agents.allow_subagents": _setting(
+        type="boolean",
+        default=False,
+        description="Allow agent subprocess delegation. When false, the Agent tool is blocked and agents must use AIDOCS indexed tools directly.",
+        security_sensitive=True,
+        scope=["project"],
+    ),
     "code_quality.comment_enforcement": _setting(
         type="string",
         default="advisory",

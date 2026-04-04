@@ -46,6 +46,9 @@ _DEFAULT_CONFIG: dict[str, dict[str, object]] = {
     "dev": {
         "dev_mode": False,
     },
+    "agents": {
+        "allow_subagents": False,
+    },
     "code_quality": {
         "comment_enforcement": "advisory",
     },
@@ -383,6 +386,10 @@ AGENT_INJECT_RULES_ON_BOOTSTRAP: bool = _parse_bool(
 DEV_MODE: bool = _parse_bool(
     _get_dotted(_DEFAULT_EFFECTIVE_CONFIG, "dev.dev_mode"), default=False
 )
+ALLOW_SUBAGENTS: bool = _parse_bool(
+    _get_dotted(_DEFAULT_EFFECTIVE_CONFIG, "agents.allow_subagents"), default=False
+)
+
 
 CODE_QUALITY_COMMENT_ENFORCEMENT: str = str(
     _get_dotted(_DEFAULT_EFFECTIVE_CONFIG, "code_quality.comment_enforcement")

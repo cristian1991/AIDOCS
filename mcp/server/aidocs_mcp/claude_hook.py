@@ -285,8 +285,7 @@ class ClaudeHookHandler:
 
         # ── Level 1: Block raw file tools (Read/Grep/Glob/Edit/Write) ──
         # Agent tool is checked here too when allow_subagents is disabled
-        from .config import DEV_MODE
-        allow_subagents = DEV_MODE  # TODO: read from agents.allow_subagents config
+        from .config import ALLOW_SUBAGENTS, DEV_MODE
         raw_decision = AccessGate.check_raw_tool(
             GateContext(
                 managed=True,
@@ -295,7 +294,7 @@ class ClaudeHookHandler:
                 gate_state={},
             ),
             tool_name,
-            allow_subagents=allow_subagents,
+            allow_subagents=ALLOW_SUBAGENTS,
         )
         if not raw_decision.allowed:
             return {

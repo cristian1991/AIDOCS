@@ -591,18 +591,8 @@ def _annotate_skill_result(
 
 
 def _build_server_instructions() -> str:
-    """Build dynamic instructions for the MCP server InitializeResult."""
-    return (
-        "AIDOCS is your primary workflow for all code tasks. "
-        "ALWAYS use AIDOCS MCP tools (code_investigate, code_find, code_trace, code_bundle) "
-        "before reading files with code_get_lines. "
-        "Never use raw grep or glob when AIDOCS indexed tools can answer your question. "
-        "Follow TDD: write failing tests before production code. "
-        "Do not create git commits unless explicitly asked. "
-        "Keep all task output in /.MEMORY/sessions/<session-id>/ under the active session. "
-        "Use the session journal for significant decisions and outcomes. "
-        "When in doubt, call aidocs_orchestrate or aidocs_handle_prompt to route through AIDOCS."
-    )
+    """Load MCP server instructions from action_hooks TOML config."""
+    return render_interaction_text("interaction.mcp_server.instructions")
 
 
 def create_server() -> Any:

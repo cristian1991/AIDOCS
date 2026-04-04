@@ -50,3 +50,21 @@ understand = "`aidocs_session_resume_bundle` (project/session/skills/plan overvi
 read_error = "`aidocs_code_find(symbol, mode=\"symbols\")` → `aidocs_code_find(symbol, mode=\"references\")` → `aidocs_code_get_symbol_snippet`. DB: `aidocs_schema_query(entity, mode=\"entity\")`."
 investigate = "`session_resume_bundle` (overview) → `action_surface_current_session_bundle` (common path) → `code_investigate(concept)` for guided navigation. Or: `code_bundle(concept, mode=\"subsystem\")` → `code_find(concept, mode=\"mutations\"|\"validation\"|\"policy\")`."
 inspect = "`session_resume_bundle` (overview) → `action_surface_current_session_bundle` (common path) → `code_get_dependencies` / `code_find_dependents` → `code_get_modules`. Read only after narrowing."
+
+[interaction.mcp_server]
+instructions = "AIDOCS is your primary workflow for all code tasks. ALWAYS use AIDOCS MCP tools (code_investigate, code_find, code_trace, code_bundle) before reading files with code_get_lines. Never use raw grep or glob when AIDOCS indexed tools can answer your question. Follow TDD: write failing tests before production code. Do not create git commits unless explicitly asked. Keep all task output in /.MEMORY/sessions/<session-id>/ under the active session. Use the session journal for significant decisions and outcomes. When in doubt, call aidocs_orchestrate or aidocs_handle_prompt to route through AIDOCS."
+
+[interaction.raw_tool_replacements]
+read = "Use `code_get_lines`, `code_get_symbol_snippet`, or `code_bundle` instead."
+grep = "Use `code_find`, `code_search`, `code_trace`, or `schema_query` instead."
+glob = "Use `code_search` or `code_find(mode=\"partial_group\")` instead."
+edit = "Use `code_str_replace` for small edits or `code_edit_lines` for large block replacements."
+write = "Use `code_create_file` instead."
+
+[interaction.mcp_alternative_nudges]
+grep_symbols = "`aidocs_code_find(query, mode=\"symbols\")` — search indexed outlines by name/kind/role."
+grep_references = "`aidocs_code_find(query, mode=\"references\")` — find all usages of a symbol."
+grep_css = "`aidocs_code_trace(query, mode=\"css_class\")` — find CSS rules matching class names."
+read_bundle = "`aidocs_code_bundle(path, mode=\"file\")` to understand structure, then `aidocs_code_get_symbol_snippet` for exact code."
+read_symbol = "Use `aidocs_code_find(query, mode=\"symbols\")` first if the exact symbol is not known, then `aidocs_code_get_symbol_snippet` for the exact symbol."
+glob_search = "`aidocs_code_search` for indexed file search by keywords."

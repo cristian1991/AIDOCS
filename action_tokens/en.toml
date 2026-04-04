@@ -19,6 +19,14 @@ edit = ["edit", "fix", "change", "update", "modify", "replace", "rename", "refac
 trace = ["trace", "where does", "why does", "find usage", "find references", "how does", "who calls", "what uses"]
 understand = ["understand", "explain", "inspect", "analyze", "analyse", "look into", "investigate", "show me", "what is", "why", "what's"]
 
+# ── Intent guard tokens ──
+# Used by intent_guard to verify agent actions match user intent.
+
+__intent_guard_write = ["create", "add", "generate", "scaffold", "new", "init", "setup", "build", "implement", "write", "make", "fix", "update"]
+__intent_guard_bash = ["run", "execute", "test", "build", "compile", "install", "start", "stop", "restart", "deploy", "lint", "format", "check", "npm", "dotnet", "pip", "cargo", "make", "docker"]
+__intent_guard_destructive = ["force push", "reset hard", "delete branch", "drop table", "rm -rf", "clean", "purge", "wipe", "destroy", "nuke"]
+__plan_validation_vague_patterns = ["do the thing", "implement stuff", "fix it", "handle it", "work on it", "make it better"]
+
 # ── Memory routing tokens ──
 # Used by memory_capture to infer target file when target_hint is omitted.
 # Each key maps to a .MEMORY/ file path relative to the rules/ or domains/ folder.
@@ -42,10 +50,6 @@ tokens = ["ui", "color", "theme", "design", "layout", "css", "tailwind", "font",
 [memory_routing.workflow]
 target = "rules/workflow-rules.md"
 tokens = ["after", "before", "when", "once", "on completion", "always", "never", "do not", "don't", "should", "must", "commit", "push", "git", "backup", "workflow", "deploy", "ci", "session", "plan", "task", "pipeline", "release"]
-
-# ── Plan validation ──
-
-__plan_validation_vague_patterns = ["do the thing", "implement stuff", "fix it", "handle it", "work on it", "make it better"]
 
 # ── Skill triggers ──
 
@@ -73,8 +77,3 @@ workflow = ["inspect", "investigate", "trace"]
 intent = ["test-driven-validation", "test", "tests", "testing", "validation", "regression"]
 workflow = ["verification", "testing"]
 
-# ── Intent guard ──
-
-__intent_guard_write = ["create", "add", "generate", "scaffold", "new", "init", "setup", "build", "implement", "write", "make", "fix", "update"]
-__intent_guard_bash = ["run", "execute", "test", "build", "compile", "install", "start", "stop", "restart", "deploy", "lint", "format", "check", "npm", "dotnet", "pip", "cargo", "make", "docker"]
-__intent_guard_destructive = ["force push", "reset hard", "delete branch", "drop table", "rm -rf", "clean", "purge", "wipe", "destroy", "nuke"]

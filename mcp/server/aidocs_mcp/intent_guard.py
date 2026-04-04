@@ -111,114 +111,24 @@ CONFIRMATION_TOOLS: set[str] = {
 }
 
 # Keywords in user prompt that justify specific tool categories
-INTENT_KEYWORDS: dict[str, set[str]] = {
-    # File editing
-    "edit": {
-        "edit",
-        "fix",
-        "change",
-        "update",
-        "modify",
-        "replace",
-        "rename",
-        "refactor",
-        "clean",
-        "improve",
-        "add",
-        "remove",
-        "delete",
-        "move",
-        "create",
-        "build",
-        "implement",
-        "write",
-        "set",
-        "configure",
-        "adjust",
-        "patch",
-        "correct",
-        "convert",
-        "migrate",
-        "restructure",
-        "redesign",
-        "rewrite",
-        "rework",
-        "optimize",
-        "simplify",
-    },
-    # File creation
-    "write": {
-        "create",
-        "add",
-        "generate",
-        "scaffold",
-        "new",
-        "init",
-        "setup",
-        "build",
-        "implement",
-        "write",
-        "make",
-        "fix",
-        "update",
-    },
-    # Git operations
-    "git_commit": {"commit", "save changes", "check in"},
-    "git_push": {"push", "deploy", "ship", "publish", "release"},
-    "git_pull": {"pull", "fetch", "sync", "update from"},
-    # Shell execution
-    "bash": {
-        "run",
-        "execute",
-        "test",
-        "build",
-        "compile",
-        "install",
-        "start",
-        "stop",
-        "restart",
-        "deploy",
-        "lint",
-        "format",
-        "check",
-        "npm",
-        "dotnet",
-        "pip",
-        "cargo",
-        "make",
-        "docker",
-    },
-    # Memory writes
-    "memory_capture": {
-        "remember",
-        "save",
-        "note",
-        "record",
-        "log",
-        "capture",
-        "store",
-        "persist",
-        "memorize",
-        "keep",
-    },
-    # Destructive operations (always need explicit keywords)
-    "destructive": {
-        "force push",
-        "reset hard",
-        "delete branch",
-        "drop table",
-        "rm -rf",
-        "clean",
-        "purge",
-        "wipe",
-        "destroy",
-        "nuke",
-    },
-}
+# No hardcoded tokens — all loaded from action_tokens/*.toml at runtime.
+# Categories that must exist in TOML for intent guard to work:
+#   edit, __intent_guard_write, __intent_guard_bash, __intent_guard_destructive,
+#   write_memory, git_commit, git_push, git_pull
+INTENT_KEYWORDS: dict[str, set[str]] = {}
 
 _INTENT_GUARD_TOKEN_KEYS: dict[str, str] = {
     "write": "__intent_guard_write",
+    "bash": "__intent_guard_bash",
     "destructive": "__intent_guard_destructive",
+}
+
+_CANONICAL_INTENT_TOKEN_KEYS: dict[str, str] = {
+    "edit": "edit",
+    "memory_capture": "write_memory",
+    "git_commit": "git_commit",
+    "git_push": "git_push",
+    "git_pull": "git_pull",
 }
 
 _CANONICAL_INTENT_TOKEN_KEYS: dict[str, str] = {

@@ -41,13 +41,13 @@ class GateDecision:
 
 _BLOCKED_RAW_FILE_TOOLS: set[str] = {"read", "grep", "glob", "edit", "write"}
 
-_RAW_TOOL_REPLACEMENTS: dict[str, str] = {
-    "read": "Use `code_get_lines`, `code_get_symbol_snippet`, or `code_bundle` instead.",
-    "grep": "Use `code_find`, `code_search`, `code_trace`, or `schema_query` instead.",
-    "glob": "Use `code_search` or `code_find(mode=\"partial_group\")` instead.",
-    "edit": "Use `code_str_replace` for small edits or `code_edit_lines` for large block replacements.",
-    "write": "Use `code_create_file` instead.",
-}
+def _get_raw_tool_replacement(tool: str) -> str:
+    """Load replacement guidance from action_hooks TOML."""
+    from .config import render_interaction_text
+    text = render_interaction_text(f"interaction.raw_tool_replacements.{tool}")
+    if text and not text.startswith("{"):
+        return text
+    return f"Use the equivalent AIDOCS MCP tool instead of `{tool}`."
 
 # Infrastructure protection — always blocked for writes
 _PROTECTED_CONFIG_FILES: set[str] = {"aidocs.toml", "aidocs-plugin.json"}
@@ -163,7 +163,7 @@ class AccessGate:
             return GateDecision(allowed=True, level="managed_mode_gate")
 
         if normalized_tool in _BLOCKED_RAW_FILE_TOOLS:
-            replacement = _RAW_TOOL_REPLACEMENTS.get(normalized_tool, "")
+            replacement = _get_raw_tool_replacement(normalized_tool)
             return GateDecision(
                 allowed=False,
                 level="managed_mode_gate",

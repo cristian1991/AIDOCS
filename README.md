@@ -83,7 +83,7 @@ In practice, that means agents can resume work, follow session context, and use 
 
 ```bash
 # Install global routing + commands
-core\scripts\setup.cmd                    # Windows
+setup.cmd                                 # Windows (double-click)
 bash core/scripts/setup.sh                  # Linux/macOS
 
 # In any project:

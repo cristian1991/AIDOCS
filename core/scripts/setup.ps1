@@ -4,6 +4,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+$aidocsHome = Join-Path $env:USERPROFILE ".aidocs"
+$venvDir = Join-Path $aidocsHome "venv"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $RootPath -or $RootPath.Trim() -eq "") {
@@ -70,6 +72,8 @@ $opencodeSettingsPath = if (Test-Path (Join-Path $opencodeDir "opencode.jsonc"))
 $claudeDir = Join-Path $env:USERPROFILE ".claude"
 $claudeCommandsDir = Join-Path $claudeDir "commands"
 $claudeSettingsPath = Join-Path $claudeDir "settings.json"
+$actionHooksRoot = Join-Path $projectRoot "action_hooks"
+$opencodePluginTarget = Join-Path $opencodePluginsDir "aidocs.js"
 
 New-Item -ItemType Directory -Force -Path $opencodeDir | Out-Null
 New-Item -ItemType Directory -Force -Path $opencodeCommandsDir | Out-Null
@@ -380,7 +384,9 @@ if (Test-Path (Join-Path $mcpPackageDir "pyproject.toml")) {
 
   if (Test-Path $venvPython) {
     Write-Host "Installing AIDOCS MCP runtime..."
-    & $venvPip install -e $mcpPackageDir --quiet 2>$null
+    $ErrorActionPreference = "Continue"
+    & $venvPip install -e $mcpPackageDir --quiet 2>&1 | Out-Null
+    $ErrorActionPreference = "Stop"
     if ($LASTEXITCODE -eq 0) {
       Write-Host "MCP runtime installed successfully."
     } else {

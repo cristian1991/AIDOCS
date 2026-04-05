@@ -162,7 +162,7 @@ SETTINGS_CATALOG: dict[str, SettingMetadata] = {
     ),
     "global.aidocs_core_version": _setting(
         type="string",
-        default="2.0.1",
+        default="2.0.2",
         description="AIDOCS core version. Global setting that agents must never modify.",
         scope="global",
     ),

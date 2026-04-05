@@ -1,6 +1,6 @@
 # AIDOCS MCP
 
-**v2.0.1** — Portable AI coding-agent toolkit with indexed code retrieval, session management, and persistent memory.
+**v2.0.2** — Portable AI coding-agent toolkit with indexed code retrieval, session management, and persistent memory.
 
 ## What's New in 2.0.0
 

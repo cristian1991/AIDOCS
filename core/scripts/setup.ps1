@@ -3,6 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $RootPath -or $RootPath.Trim() -eq "") {

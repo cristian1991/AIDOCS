@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { PieChart as RechartsPie, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from "recharts";
 import type {
   DashboardConfigEntry,
@@ -21,6 +21,57 @@ type SelectedSession = DashboardSnapshot["selected_session"];
 type ConductorLane = { lane_id: string; name: string; depends_on?: string[] };
 
 const CHART_COLORS = ["#338441", "#8ce0af", "#4a90d9", "#e8a838", "#d94a6b", "#7c5cbf", "#5cb8a8", "#d97a4a"];
+
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function highlightToml(text: string): string {
+  return text.split("\n").map((line) => {
+    const t = line.trim();
+    if (!t) return "\n";
+    if (t.startsWith("#")) return `<span class="hl-comment">${esc(line)}</span>\n`;
+    if (t.startsWith("[")) return `<span class="hl-section">${esc(line)}</span>\n`;
+    const eq = line.indexOf("=");
+    if (eq > 0) {
+      const key = line.slice(0, eq);
+      const val = line.slice(eq + 1).trim();
+      let valClass = "hl-value";
+      if (val.startsWith('"')) valClass = "hl-string";
+      else if (val === "true" || val === "false") valClass = "hl-bool";
+      else if (/^\d/.test(val)) valClass = "hl-number";
+      else if (val.startsWith("[")) valClass = "hl-array";
+      return `<span class="hl-key">${esc(key)}</span><span class="hl-eq">=</span><span class="${valClass}">${esc(line.slice(eq + 1))}</span>\n`;
+    }
+    return esc(line) + "\n";
+  }).join("");
+}
+
+function TomlEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const preRef = useRef<HTMLPreElement>(null);
+
+  const handleScroll = useCallback(() => {
+    if (textareaRef.current && preRef.current) {
+      preRef.current.scrollTop = textareaRef.current.scrollTop;
+      preRef.current.scrollLeft = textareaRef.current.scrollLeft;
+    }
+  }, []);
+
+  return (
+    <div className="toml-editor-wrap">
+      <pre ref={preRef} className="toml-highlight" dangerouslySetInnerHTML={{ __html: highlightToml(value) + "\n" }} />
+      <textarea
+        ref={textareaRef}
+        className="toml-editor toml-editor-input"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onScroll={handleScroll}
+        spellCheck={false}
+      />
+    </div>
+  );
+}
 
 type OverviewPageProps = {
   snapshot: DashboardSnapshot;
@@ -165,8 +216,8 @@ export function ConductorPage({
   return (
     <section className="page page-coming-soon">
       <div className="coming-soon">
-        <h2>Coming Soon</h2>
-        <p>Lane-aware plan conductor with dependency tracking and parallel execution.</p>
+        <h2>SOON<sup>TM</sup></h2>
+        <p>Lane-aware plan conductor with dependency tracking and parallel execution is on its way.</p>
       </div>
     </section>
   );
@@ -707,10 +758,9 @@ export function TomlConfigsPage({
             <div className="editor-panel">
               {selectedTomlDocument ? (
                 <>
-                  <textarea
-                    className="toml-editor"
+                  <TomlEditor
                     value={tomlDrafts[selectedTomlDocument.path] ?? selectedTomlDocument.content}
-                    onChange={(event) => setTomlDraft(selectedTomlDocument.path, event.target.value)}
+                    onChange={(v) => setTomlDraft(selectedTomlDocument.path, v)}
                   />
                   <button
                     className="action-button"

@@ -1506,7 +1506,10 @@ select {
   letter-spacing: 0;
   opacity: 0.7;
   vertical-align: super;
-  margin-left: 2px;
+  margin-left: -0.5em;
+  display: inline-block;
+  width: 0;
+  overflow: visible;
 }
 
 .coming-soon p {

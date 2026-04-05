@@ -1499,11 +1499,15 @@ select {
   color: var(--accent-bright);
   opacity: 0.5;
   line-height: 1;
+  position: relative;
+  display: inline-block;
 }
 
 .coming-soon h2 sup {
-  font-size: 0.35em;
-  vertical-align: super;
+  position: absolute;
+  top: 0;
+  right: -1.2em;
+  font-size: 0.3em;
   letter-spacing: 0;
   opacity: 0.7;
 }
@@ -1640,6 +1644,7 @@ select {
   flex-direction: column;
   gap: 8px;
   min-height: 0;
+  overflow: hidden;
   border-left: 1px solid var(--line);
   padding-left: 12px;
 }

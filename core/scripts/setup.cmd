@@ -6,10 +6,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%setup.ps1" %*
 
 if errorlevel 1 (
   echo.
-  echo Install failed.
+  echo Setup failed.
+  pause
   exit /b 1
 )
 
 echo.
-echo Install completed.
+echo Setup completed.
+pause
 exit /b 0

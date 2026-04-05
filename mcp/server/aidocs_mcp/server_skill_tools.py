@@ -19,7 +19,7 @@ def register_skill_tools(
             "title": "Skill Registry",
         }
     )
-    def skill_registry_get(root: str) -> dict[str, Any]:
+    def skill_registry_get(root: str = "") -> dict[str, Any]:
         """Return the available built-in + project-local skills."""
         return {"skills": hub.skills.list_skills(resolve_project_root(root))}
 
@@ -30,7 +30,7 @@ def register_skill_tools(
             "title": "Session Skills",
         }
     )
-    def session_skills_get(root: str, session_id: str) -> dict[str, Any]:
+    def session_skills_get(session_id: str, root: str = "") -> dict[str, Any]:
         """Return the selected skills for a session."""
         return hub.skills.get_selected_skills(resolve_project_root(root), session_id)
 
@@ -62,7 +62,7 @@ def register_skill_tools(
             "title": "Skill Override Registry",
         }
     )
-    def skill_override_registry_get(root: str) -> dict[str, Any]:
+    def skill_override_registry_get(root: str = "") -> dict[str, Any]:
         """Return the configured skill override rules for inspection/debugging."""
         _ = root
         return {
@@ -77,7 +77,7 @@ def register_skill_tools(
         }
     )
     def skill_provider_status_get(
-        root: str, provider_id: str
+        provider_id: str, root: str = ""
     ) -> dict[str, Any]:
         """Return compatibility status and user choices for one external skill provider."""
         return runtime.skill_provider_status(resolve_project_root(root), provider_id)
@@ -90,7 +90,7 @@ def register_skill_tools(
         }
     )
     def skill_provider_override_set(
-        root: str, provider_id: str, choice: str | None
+        provider_id: str, choice: str | None, root: str = ""
     ) -> dict[str, Any]:
         """Persist a user override choice for one external skill provider."""
         return runtime.set_skill_provider_override(
@@ -105,7 +105,7 @@ def register_skill_tools(
         }
     )
     def session_skills_set(
-        root: str, session_id: str, selected_skills: list[str]
+        session_id: str, selected_skills: list[str], root: str = ""
     ) -> dict[str, Any]:
         """Set the selected skills for a session."""
         return runtime.set_session_skills(

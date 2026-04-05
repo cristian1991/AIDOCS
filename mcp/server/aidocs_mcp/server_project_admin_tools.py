@@ -20,7 +20,7 @@ def register_project_admin_tools(
             "title": "Procedure Index Status",
         }
     )
-    def procedure_index_status(root: str) -> dict[str, Any]:
+    def procedure_index_status(root: str = "") -> dict[str, Any]:
         """Return current procedure-definition index status for a project."""
         return hub.procedures.procedure_status(resolve_project_root(root))
 
@@ -33,7 +33,7 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def procedure_definitions_get(
-        root: str, query: str | None = None, limit: int = 50
+        query: str | None = None, limit: int = 50, root: str = ""
     ) -> dict[str, Any]:
         """Return indexed procedure definitions, optionally filtered by query."""
         root = resolve_project_root(root)
@@ -57,7 +57,7 @@ def register_project_admin_tools(
             "title": "Procedure Capability Link Status",
         }
     )
-    def procedure_capability_link_status(root: str) -> dict[str, Any]:
+    def procedure_capability_link_status(root: str = "") -> dict[str, Any]:
         """Return current procedure-to-capability link status for a project."""
         return hub.procedure_links.link_status(resolve_project_root(root))
 
@@ -102,7 +102,7 @@ def register_project_admin_tools(
             "title": "Execution Index Status",
         }
     )
-    def execution_index_status(root: str) -> dict[str, Any]:
+    def execution_index_status(root: str = "") -> dict[str, Any]:
         """Return current execution-evidence index status for a project."""
         return hub.execution.execution_status(resolve_project_root(root))
 
@@ -115,7 +115,7 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def execution_runs_get(
-        root: str, session_id: str | None = None, limit: int = 50
+        session_id: str | None = None, limit: int = 50, root: str = ""
     ) -> dict[str, Any]:
         """Return indexed execution runs, optionally filtered by session."""
         root = resolve_project_root(root)
@@ -292,7 +292,7 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def execution_query_summary(
-        root: str, session_id: str | None = None
+        session_id: str | None = None, root: str = ""
     ) -> dict[str, Any]:
         """Query: 'What happened in this session?' — returns aggregate execution summary with ad-hoc vs procedure-linked breakdown."""
         return hub.execution.query_execution_summary(resolve_project_root(root), session_id=session_id)
@@ -361,7 +361,7 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def execution_query_compliance(
-        root: str, session_id: str | None = None, limit: int = 20
+        session_id: str | None = None, limit: int = 20, root: str = ""
     ) -> dict[str, Any]:
         """Query: 'Did execution follow the intended procedure?' — compares procedure-linked runs vs ad-hoc runs."""
         return hub.execution.query_procedure_compliance(
@@ -376,7 +376,7 @@ def register_project_admin_tools(
         }
     )
     def execution_prune(
-        root: str, max_age_days: int = 30, max_events: int = 10000
+        max_age_days: int = 30, max_events: int = 10000, root: str = ""
     ) -> dict[str, Any]:
         """Prune old execution events by age and count. Runs automatically on project_sync_indexes."""
         return hub.execution.prune_old_events(
@@ -487,7 +487,7 @@ def register_project_admin_tools(
             "title": "Compile Workflow Actions",
         }
     )
-    def workflow_actions_compile(root: str) -> dict[str, Any]:
+    def workflow_actions_compile(root: str = "") -> dict[str, Any]:
         """Compile human-readable workflow rules into the runtime workflow artifact."""
         return hub.workflow.compile_project_rules(resolve_project_root(root))
 
@@ -499,7 +499,7 @@ def register_project_admin_tools(
         },
         meta={"anthropic/searchHint": True},
     )
-    def workflow_actions_get(root: str) -> dict[str, Any] | None:
+    def workflow_actions_get(root: str = "") -> dict[str, Any] | None:
         """Read the compiled runtime workflow artifact for a project if present."""
         return hub.workflow.read_compiled(resolve_project_root(root))
 
@@ -511,7 +511,7 @@ def register_project_admin_tools(
         },
         meta={"anthropic/searchHint": True},
     )
-    def workflow_triggers_for_action(root: str, action_kind: str) -> dict[str, Any]:
+    def workflow_triggers_for_action(action_kind: str, root: str = "") -> dict[str, Any]:
         """Find workflow triggers that would fire after an action_kind completes."""
         triggers = hub.workflow.triggers_for_action_kind(action_kind)
         pending: list[dict[str, Any]] = []
@@ -533,7 +533,7 @@ def register_project_admin_tools(
         },
         meta={"anthropic/searchHint": True},
     )
-    def project_status_model_get(root: str) -> dict[str, Any] | None:
+    def project_status_model_get(root: str = "") -> dict[str, Any] | None:
         """Read the deterministic project status model if present."""
         return hub.project_status.read_model(resolve_project_root(root))
 
@@ -545,7 +545,7 @@ def register_project_admin_tools(
         },
         meta={"anthropic/searchHint": True},
     )
-    def project_status_evaluate(root: str) -> dict[str, Any]:
+    def project_status_evaluate(root: str = "") -> dict[str, Any]:
         """Evaluate the deterministic project status model."""
         return hub.project_status.evaluate(resolve_project_root(root))
 
@@ -558,7 +558,7 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def project_status_area_bundle(
-        root: str, area_id: str, limit: int = 20
+        area_id: str, limit: int = 20, root: str = ""
     ) -> dict[str, Any]:
         """Return status details plus a subsystem bundle for one declared project-status area."""
         return hub.project_status.get_area_bundle(
@@ -574,7 +574,7 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def related_project_code_search(
-        root: str, name: str, query: str, limit: int = 10
+        name: str, query: str, limit: int = 10, root: str = ""
     ) -> list[dict[str, Any]]:
         """Search code in a configured related project using the same generic code index."""
         related_root = resolve_related_root(root, name)
@@ -613,7 +613,7 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def related_project_subsystem_bundle(
-        root: str, name: str, concept: str, limit: int = 20
+        name: str, concept: str, limit: int = 20, root: str = ""
     ) -> dict[str, Any]:
         """Build a broad subsystem bundle from a configured related project."""
         related_root = resolve_related_root(root, name)
@@ -630,7 +630,7 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def related_project_compare_concept(
-        root: str, name: str, concept: str, limit: int = 20
+        name: str, concept: str, limit: int = 20, root: str = ""
     ) -> dict[str, Any]:
         """Compare a concept between the current project and a configured related project."""
         root = resolve_project_root(root)

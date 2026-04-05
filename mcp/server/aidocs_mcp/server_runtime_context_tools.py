@@ -91,7 +91,7 @@ def register_runtime_context_tools(
         }
     )
     def session_update(
-        root: str, session_id: str, patch: dict[str, list[str]]
+        session_id: str, patch: dict[str, list[str]], root: str = ""
     ) -> dict[str, Any]:
         """Update structured sections in an existing SESSION.md file."""
         session = hub.sessions.update_session(resolve_project_root(root), session_id, patch)

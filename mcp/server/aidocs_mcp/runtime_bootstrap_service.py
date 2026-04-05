@@ -136,6 +136,29 @@ class RuntimeBootstrapService:
                 dest.write_text(managed_content, encoding="utf-8")
                 created.append(tmpl_name)
 
+        # ── Disable CC auto-memory — AIDOCS memory_capture is the only path ──
+        import json as _json
+        claude_local_settings = root / ".claude" / "settings.local.json"
+        claude_local_settings.parent.mkdir(parents=True, exist_ok=True)
+        if claude_local_settings.exists():
+            try:
+                existing_settings = _json.loads(
+                    claude_local_settings.read_text(encoding="utf-8") or "{}"
+                )
+            except Exception:
+                existing_settings = {}
+        else:
+            existing_settings = {}
+        if existing_settings.get("autoMemoryEnabled") is not False:
+            existing_settings["autoMemoryEnabled"] = False
+            claude_local_settings.write_text(
+                _json.dumps(existing_settings, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            created.append(".claude/settings.local.json")
+        else:
+            skipped.append(".claude/settings.local.json")
+
         git_result: dict[str, object] = {"action": "none"}
         if init_git and not (root / ".git").exists():
             try:

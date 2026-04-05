@@ -1,83 +1,75 @@
 # AIDOCS MCP
 
-**v1.2.0** — Optional MCP runtime layer for AIDOCS Core.
+**v2.0.0** — Portable AI coding-agent toolkit with indexed code retrieval, session management, and persistent memory.
 
-`core/` remains the canonical Markdown-first system.
-`mcp/` adds runtime enforcement, indexing, and retrieval over that file-backed system.
+## What's New in 2.0.0
+
+- **Unified AccessGate** — 6-level security cascade replacing 4 scattered implementations
+- **Hard gate enforcement** — raw file tools (Read/Grep/Glob/Edit/Write) blocked in managed mode; agents must use AIDOCS indexed tools
+- **Per-file discovery** — replaces blanket `allow_read=True` with granular path grants
+- **Optional `root` param** — all 85+ tools default to managed session project
+- **CC auto-memory disabled** — `memory_capture` is the only memory path in managed projects
+- **`code_text_search`** — literal text search with `|`/`OR` multi-match and regex mode
+- **`code_str_replace` / `code_batch_str_replace`** — string-match edits for quick changes
+- **Slimmed tool responses** — edit success returns ~30 tokens instead of echoing full content
+- **All agent text externalized** — gate messages, tool descriptions loaded from TOML at startup
+- **Smart installer** — manifest-based three-way merge, tag-based CLAUDE.md/AGENTS.md updates
 
 ## Principles
 
-- Files remain the only source of truth.
-- MCP never stores a second canonical memory.
-- MCP reads, validates, and writes the existing AIDOCS files.
-- MCP is optional; the Markdown system must still work without it.
-- Indexes are project-wide; sessions guide retrieval and ranking, not index scope.
-- SQLite indexes are derived only — rebuildable from files at any time.
+- Files remain the only source of truth
+- MCP reads, validates, and writes existing AIDOCS files — never a second canonical memory
+- MCP is optional; the Markdown system works without it
+- Indexes are project-wide; sessions guide retrieval, not index scope
+- SQLite indexes are derived only — rebuildable from files
 
 ## Install
 
 ```bash
-cd mcp
-pip install -e .          # standard install
-pip install -e ".[dev]"   # with pytest
-pip install -e ".[ast]"   # with tree-sitter for JS/TS AST parsing
+pip install aidocs-mcp              # from PyPI
+pip install aidocs-mcp[dev]         # with pytest
+pip install aidocs-mcp[ast]         # with tree-sitter for JS/TS AST parsing
 ```
+
+Or from source:
+```bash
+cd mcp
+pip install -e ".[dev,ast]"
+```
+
+## Gate Architecture
+
+6-level cascade, first match wins:
+
+| Level | Gate | Action |
+|-------|------|--------|
+| 1 | Managed Mode | Block raw file tools when managed |
+| 2 | Infrastructure | Block writes to aidocs.toml, aidocs_mcp/* |
+| 3 | Sensitive Files | Block .env, credentials, keys |
+| 4 | Memory Path | .MEMORY/ reads free, workflow writes intent-gated |
+| 5 | Read Gate | Per-file discovery, `known_exact_path` bypass |
+| 6 | Edit Gate | Requires prior read/discovery |
 
 ## Architecture
 
 ```
 mcp/
-  server/aidocs_mcp/      # 21 Python service modules
-    mcp_server.py          # FastMCP tool registration (88 tools)
-    service_hub.py         # Composition root
-    runtime_service.py     # High-level orchestration
-    session_store.py       # Session CRUD + lifecycle
-    memory_store.py        # Memory read/write/capture
-    index_store.py         # Memory/session SQLite index
-    code_index_store.py    # Code symbol/dependency index
-    schema_index_store.py  # Schema entity/field index
-    policy_service.py      # Preflight + routing policy
-    managed_mode_service.py # Project managed-mode state
-    workflow_action_service.py # Workflow rule compilation
-    legacy_migration_service.py # NOW.md/plans migration
-    updater_service.py     # Cross-platform script bridge
-    frontend_ast.py        # JS/TS tree-sitter AST parsing
+  server/aidocs_mcp/        # Python service modules
+    mcp_server.py            # FastMCP tool registration
+    access_gate.py           # Unified 6-level security cascade
+    service_hub.py           # Composition root
+    runtime_service.py       # High-level orchestration
+    session_store.py         # Session CRUD + lifecycle
+    memory_store.py          # Memory read/write/capture
+    code_index_store.py      # Code symbol/dependency/text search index
+    file_ops.py              # File edit operations with gate integration
+    server_code_tools.py     # Code search/find/trace/bundle tools
+    server_code_edit_tools.py # Code edit/create/replace tools
+    server_session_tools.py  # Session management tools
     ...
-  pyproject.toml           # Python package config
-  README.md                # This file
-  HOST_INTEGRATION.md      # Host integration contract
+  pyproject.toml
+  README.md
 ```
-
-## Runtime Model
-
-- Canonical files: `core/` templates + project-local `/.MEMORY/**`
-- MCP server: optional execution layer over those files
-- Local index: SQLite, derived only, rebuildable
-- Code retrieval: symbol outlines, dependency edges, context bundles
-- Built-in language indexing now comes from shipped TOML descriptor files under `mcp/server/aidocs_mcp/index_languages/`, and project-local `index_languages/*.toml` files can extend or override that built-in descriptor set.
-
-## Release Status
-
-- Current release: `1.2.0`
-
-## OpenCode Caveats
-
-- OpenCode can now mirror multilingual `action_tokens`, but that classification is still advisory.
-- Claude currently uses runtime classification directly; OpenCode still relies on plugin-side context shaping plus command rewriting.
-- The installer creates `action_tokens/opencode/` links or fallback copies so OpenCode-visible language packs are accessible to users.
-
-## Benchmarking
-
-- Run `aidocs benchmark . --json --iterations 10 --scenario-set public` for the public benchmark set.
-- Run `aidocs benchmark . --json --iterations 10` to see benchmark output format.
-
-## Extensible Indexing
-
-- Built-in language descriptors live in `mcp/server/aidocs_mcp/index_languages/`.
-- Project-local descriptor files can be added in `index_languages/*.toml`.
-- See `mcp/INDEX_LANGUAGE_DESCRIPTORS.md` for the TOML schema, semantic keys, outline families, and validation model.
-- Inspect descriptor state with:
-  - `aidocs descriptors`
   - `aidocs descriptors --validate`
   - `aidocs descriptors --match <path>`
 

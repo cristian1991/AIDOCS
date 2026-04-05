@@ -58,7 +58,7 @@ def register_code_tools(
         },
         meta={"anthropic/searchHint": True},
     )
-    def code_search(root: str, query: str, limit: int = 10) -> list[dict[str, Any]]:
+    def code_search(query: str, limit: int = 10, root: str = "") -> list[dict[str, Any]]:
         """Search the derived code index by file path and lightweight summary."""
         root = resolve_project_root(root)
         result = hub.code.search_code(root, query=query, limit=limit)
@@ -75,7 +75,7 @@ def register_code_tools(
         meta={"anthropic/searchHint": True},
     )
     def code_text_search(
-        text: str,
+        query: str,
         glob: str | None = None,
         case_sensitive: bool = False,
         regex: bool = False,
@@ -87,7 +87,7 @@ def register_code_tools(
         root = resolve_project_root(root)
         matches = hub.code.search_text(
             root,
-            text,
+            query,
             glob=glob,
             case_sensitive=case_sensitive,
             regex=regex,

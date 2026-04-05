@@ -284,12 +284,20 @@ class SessionStore:
             return None
         return self.read_plan(project_root, session_id)
 
-    def roadmap_candidates(self, project_root: Path) -> list[Path]:
-        """Find all planning documents across project and memory."""
+    def roadmap_candidates(self, project_root: Path, *, mutable_only: bool = False) -> list[Path]:
+        """Find all planning documents across project and memory.
+
+        Args:
+            mutable_only: If True, exclude plain ROADMAP.md — only return
+                versioned roadmaps (ROADMAP_*.md) and .MEMORY/ planning files
+                that AIDOCS owns and can safely mutate.
+        """
         candidates: list[Path] = []
         # Root roadmaps
         for f in sorted(project_root.glob("ROADMAP*.md")):
             if f.is_file():
+                if mutable_only and f.name == "ROADMAP.md":
+                    continue
                 candidates.append(f)
         # Project-level and memory-level planning dirs
         for subdir in [
@@ -403,7 +411,7 @@ class SessionStore:
     def find_roadmap_step_matches(self, project_root: Path, step_text: str) -> list[dict[str, object]]:
         normalized_target = self._normalize_step_text(step_text)
         matches: list[dict[str, object]] = []
-        for path in self.roadmap_candidates(project_root):
+        for path in self.roadmap_candidates(project_root, mutable_only=True):
             if not path.exists():
                 continue
             for line_number, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), start=1):
@@ -440,7 +448,7 @@ class SessionStore:
         if not matches:
             raise ValueError(f"No actionable roadmap step matched: {step_text}")
         normalized_target = self._normalize_step_text(step_text)
-        for path in self.roadmap_candidates(project_root):
+        for path in self.roadmap_candidates(project_root, mutable_only=True):
             if not path.exists():
                 continue
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()

@@ -23,7 +23,7 @@ def register_session_tools(
         },
         meta={"anthropic/alwaysLoad": True},
     )
-    def session_list(root: str) -> list[dict[str, Any]]:
+    def session_list(root: str = "") -> list[dict[str, Any]]:
         """List sessions from project-local /.MEMORY/sessions/."""
         summaries = hub.sessions.list_sessions(resolve_project_root(root))
         return [session_summary_to_dict(item) for item in summaries]
@@ -36,7 +36,7 @@ def register_session_tools(
         },
         meta={"anthropic/alwaysLoad": True},
     )
-    def session_read(root: str, session_id: str) -> dict[str, Any]:
+    def session_read(session_id: str, root: str = "") -> dict[str, Any]:
         """Read a single session router file and return its parsed sections."""
         session = hub.sessions.read_session(resolve_project_root(root), session_id)
         return {
@@ -53,7 +53,7 @@ def register_session_tools(
         },
         meta={"anthropic/alwaysLoad": True},
     )
-    def session_select(root: str, session_id: str) -> dict[str, Any]:
+    def session_select(session_id: str, root: str = "") -> dict[str, Any]:
         """Select an existing session and return its summary."""
         session = hub.sessions.select_session(resolve_project_root(root), session_id)
         return session_summary_to_dict(session)
@@ -90,7 +90,7 @@ def register_session_tools(
         }
     )
     def session_start_state_get(
-        root: str, session_id: str | None = None
+        session_id: str | None = None, root: str = ""
     ) -> dict[str, Any]:
         """Return lightweight startup readiness and imported skill state for a session."""
         return annotate_skill_result(
@@ -153,7 +153,7 @@ def register_session_tools(
     @server.tool(
         annotations={"readOnlyHint": True, "openWorldHint": False, "title": "Get Mode"}
     )
-    def aidocs_mode_get(root: str) -> dict[str, Any]:
+    def aidocs_mode_get(root: str = "") -> dict[str, Any]:
         """Read the current runtime/session-binding AIDOCS-managed mode state."""
         return hub.managed_mode.get_mode(resolve_project_root(root))
 
@@ -165,7 +165,7 @@ def register_session_tools(
         }
     )
     def aidocs_mode_set(
-        root: str, session_id: str, source: str = "/aidocs"
+        session_id: str, source: str = "/aidocs", root: str = ""
     ) -> dict[str, Any]:
         """Set runtime/session-binding AIDOCS-managed mode for a selected session."""
         return hub.managed_mode.set_mode(
@@ -179,7 +179,7 @@ def register_session_tools(
             "title": "Clear Mode",
         }
     )
-    def aidocs_mode_clear(root: str) -> dict[str, Any]:
+    def aidocs_mode_clear(root: str = "") -> dict[str, Any]:
         """Clear the current runtime/session-binding AIDOCS-managed mode state."""
         return hub.managed_mode.clear_mode(resolve_project_root(root))
 
@@ -291,7 +291,7 @@ def register_session_tools(
         }
     )
     def session_claim_status(
-        root: str, session_id: str, stale_after_minutes: int = 30
+        session_id: str, stale_after_minutes: int = 30, root: str = ""
     ) -> dict[str, Any]:
         """List advisory session claims and whether they are stale."""
         claims = hub.sessions.list_claims(
@@ -331,7 +331,7 @@ def register_session_tools(
         }
     )
     def session_release(
-        root: str, session_id: str, agent_id: str, run_id: str | None = None
+        session_id: str, agent_id: str, run_id: str | None = None, root: str = ""
     ) -> dict[str, Any]:
         """Release one advisory agent claim from a session."""
         session = hub.sessions.release_claim(
@@ -351,7 +351,7 @@ def register_session_tools(
         }
     )
     def session_prune_stale_claims(
-        root: str, session_id: str, stale_after_minutes: int = 30
+        session_id: str, stale_after_minutes: int = 30, root: str = ""
     ) -> dict[str, Any]:
         """Remove stale advisory claims from a session."""
         session = hub.sessions.prune_stale_claims(
@@ -370,7 +370,7 @@ def register_session_tools(
             "title": "Get Session Handoff",
         }
     )
-    def session_handoff_get(root: str, session_id: str) -> dict[str, Any]:
+    def session_handoff_get(session_id: str, root: str = "") -> dict[str, Any]:
         """Read the structured collaboration handoff for a session."""
         handoff = hub.sessions.read_handoff(resolve_project_root(root), session_id)
         return {
@@ -467,7 +467,7 @@ def register_session_tools(
             "title": "Get Handoff Steps",
         }
     )
-    def session_handoff_steps_get(root: str, session_id: str) -> dict[str, Any]:
+    def session_handoff_steps_get(session_id: str, root: str = "") -> dict[str, Any]:
         """Read structured handoff steps for a session."""
         return {
             "session_id": session_id,
@@ -482,7 +482,7 @@ def register_session_tools(
         }
     )
     def session_handoff_steps_normalize(
-        root: str, session_id: str
+        session_id: str, root: str = ""
     ) -> dict[str, Any]:
         """Normalize legacy/drifted handoff step markers into canonical step states."""
         return hub.sessions.normalize_handoff_steps(resolve_project_root(root), session_id)

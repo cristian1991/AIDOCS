@@ -38,7 +38,7 @@ def resolve_project_root(root: str | None) -> Path:
 
 
 def capture_enabled(name: str, arguments: dict[str, Any] | None) -> bool:
-    if name in {"aidocs_execution_run_record", "aidocs_execution_event_record"}:
+    if name in {"execution_run_record", "execution_event_record"}:
         return False
     return project_root_from_args(arguments) is not None
 

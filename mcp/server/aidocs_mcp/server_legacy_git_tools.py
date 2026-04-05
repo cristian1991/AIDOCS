@@ -15,7 +15,7 @@ def register_legacy_git_tools(
     run_git_async: Any,
     git_timeout: int,
 ) -> None:
-    def legacy_read_runtime(root: str) -> dict[str, Any]:
+    def legacy_read_runtime(root: str = "") -> dict[str, Any]:
         """Inspect legacy NOW/plans state without mutating the project."""
         return hub.legacy.inspect_legacy(resolve_project_root(root))
 
@@ -27,7 +27,7 @@ def register_legacy_git_tools(
         }
     )
     def legacy_build_session_proposal(
-        root: str, session_id: str | None = None
+        session_id: str | None = None, root: str = ""
     ) -> dict[str, Any]:
         """Build a non-destructive session proposal from legacy NOW/plans state."""
         return hub.legacy.build_session_proposal(resolve_project_root(root), session_id=session_id)

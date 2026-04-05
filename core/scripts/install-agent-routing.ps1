@@ -289,6 +289,22 @@ $claudeSettings.hooks | Add-Member -Force -NotePropertyName PreToolUse -NoteProp
 $claudeSettingsJson = $claudeSettings | ConvertTo-Json -Depth 20
 [System.IO.File]::WriteAllText($claudeSettingsPath, $claudeSettingsJson, $utf8NoBom)
 
+# ── Disable CC auto-memory for AIDOCS project — memory_capture is the only path ──
+$projectClaudeDir = Join-Path $projectRoot ".claude"
+New-Item -ItemType Directory -Force -Path $projectClaudeDir | Out-Null
+$localSettingsPath = Join-Path $projectClaudeDir "settings.local.json"
+if (Test-Path $localSettingsPath) {
+  $localSettings = [System.IO.File]::ReadAllText($localSettingsPath) | ConvertFrom-Json
+} else {
+  $localSettings = [pscustomobject]@{}
+}
+if ($localSettings.autoMemoryEnabled -ne $false) {
+  $localSettings | Add-Member -Force -NotePropertyName autoMemoryEnabled -NotePropertyValue $false
+  $localSettingsJson = $localSettings | ConvertTo-Json -Depth 10
+  [System.IO.File]::WriteAllText($localSettingsPath, $localSettingsJson, $utf8NoBom)
+  Write-Host "Disabled CC auto-memory in $localSettingsPath"
+}
+
 $skipGlobalCommands = @("doctor.md")
 
 $sharedCommandsDir = Join-Path $coreRoot ".commands"

@@ -257,6 +257,21 @@ hooks["SessionStart"] = remove_aidocs_groups(hooks.get("SessionStart")) + [sessi
 hooks["UserPromptSubmit"] = remove_aidocs_groups(hooks.get("UserPromptSubmit")) + [user_prompt_group]
 hooks["PreToolUse"] = remove_aidocs_groups(hooks.get("PreToolUse")) + [pre_tool_group]
 
+
+# Disable CC auto-memory for AIDOCS project — memory_capture is the only path
+local_settings = Path(os.environ["PROJECT_ROOT"]) / ".claude" / "settings.local.json"
+local_settings.parent.mkdir(parents=True, exist_ok=True)
+if local_settings.exists():
+    try:
+        ls_data = json.loads(local_settings.read_text(encoding="utf-8").strip() or "{}")
+    except Exception:
+        ls_data = {}
+else:
+    ls_data = {}
+if ls_data.get("autoMemoryEnabled") is not False:
+    ls_data["autoMemoryEnabled"] = False
+    local_settings.write_text(json.dumps(ls_data, indent=2) + "\n", encoding="utf-8")
+    print(f"Disabled CC auto-memory in {local_settings}")
 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
 

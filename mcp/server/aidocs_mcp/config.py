@@ -315,6 +315,26 @@ class ConfigResolver:
             self.effective_config(project_root=project_root, session_id=session_id), key
         )
 
+    def get_layer_value(
+        self,
+        key: str,
+        scope: str,
+        *,
+        project_root: Path | None = None,
+        session_id: str | None = None,
+    ) -> object | None:
+        """Read a single config layer's raw value for a key (no merge)."""
+        path_map = {
+            "global": self.user_config_path(),
+            "user": self.user_config_path(),
+            "project": self.project_config_path(project_root),
+            "session": self.session_config_path(project_root, session_id),
+        }
+        layer_path = path_map.get(scope)
+        layer_data = _load_config_file(layer_path)
+        return _get_dotted(layer_data, key)
+
+
     def render_text(
         self,
         key: str,

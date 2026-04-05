@@ -83,7 +83,7 @@ export function useDashboardData() {
     };
   }, [refreshToken, selectedProjectRoot, selectedSessionId]);
 
-  async function saveConfigEntry(entry: DashboardConfigEntry) {
+  async function saveConfigEntry(entry: DashboardConfigEntry, scope?: string) {
     const rawValue = draftValues[entry.path] ?? asText(entry.current_value);
     setSavingSetting(entry.path);
     setNotice(null);
@@ -93,6 +93,8 @@ export function useDashboardData() {
         entry.path,
         parseEntryValue(entry, rawValue),
         selectedProjectRoot,
+        scope,
+        selectedSessionId,
       );
       setSnapshot(response.snapshot);
       setDraftValues(

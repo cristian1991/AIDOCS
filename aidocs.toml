@@ -20,6 +20,7 @@ extra_skip_dirs = ""
 extra_module_hints = ""
 # Maximum JSON file size in bytes before skipping (0 = no limit)
 max_json_size = 100000
+enabled_languages = "all"
 
 [languages]
 # Which language files to load for prompt classification (comma-separated, no .yaml extension)
@@ -73,3 +74,7 @@ resume_journal_last_n = 10
 handoff_stale_after_hours = 24
 # How many hours a handoff step is considered recently changed.
 handoff_recent_hours = 24
+
+[conductor]
+default_mode = "inline"
+enabled = false

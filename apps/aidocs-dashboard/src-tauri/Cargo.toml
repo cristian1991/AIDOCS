@@ -1,6 +1,6 @@
 [package]
 name = "aidocs-dashboard"
-version = "0.1.0"
+version = "2.0.0"
 description = "Secure local AIDOCS operator dashboard"
 authors = ["CodeNexus"]
 edition = "2021"

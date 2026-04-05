@@ -20,6 +20,7 @@ export type DashboardConfigEntry = {
   requires_restart: boolean;
   editable: boolean;
   current_value: unknown;
+  scope_values: Record<string, unknown>;
 };
 
 export type DashboardTomlDocument = {
@@ -124,6 +125,11 @@ export type DashboardSnapshot = {
   token_usage: {
     available: boolean;
     reason: string;
+    token_estimates: {
+      tokens_in: number;
+      tokens_out: number;
+      total: number;
+    };
     proxy_series: {
       top_capabilities: DashboardSeriesItem[];
       top_action_kinds: DashboardSeriesItem[];
@@ -190,11 +196,15 @@ export async function saveConfigSetting(
   settingPath: string,
   value: unknown,
   projectRoot?: string,
+  scope?: string,
+  sessionId?: string,
 ): Promise<ConfigSaveResponse> {
   return invoke<ConfigSaveResponse>("save_config_setting", {
     projectRoot,
     settingPath,
     value,
+    scope,
+    sessionId,
   });
 }
 
@@ -220,5 +230,17 @@ export async function saveTomlDocument(
     sessionId,
     relativePath,
     content,
+  });
+}
+
+export async function toggleManagedMode(
+  enable: boolean,
+  projectRoot?: string,
+  sessionId?: string,
+): Promise<{ ok: boolean; managed_mode: Record<string, unknown> }> {
+  return invoke("toggle_managed_mode", {
+    projectRoot,
+    sessionId,
+    enable,
   });
 }

@@ -94,21 +94,46 @@ def _format_toml_value(value: object, value_type: str) -> str:
     return json.dumps(str(value))
 
 
+def _resolve_config_path_for_scope(
+    project_root: Path, scope: str, session_id: str | None = None,
+) -> Path:
+    """Resolve aidocs.toml path for a given scope."""
+    if scope == "session":
+        if not session_id:
+            raise ValueError("Session ID required for session-scoped settings.")
+        return project_root / ".MEMORY" / "sessions" / session_id / "aidocs.toml"
+    if scope == "user":
+        if os.name == "nt":
+            base = Path(os.environ.get("APPDATA", "")) / "aidocs"
+        else:
+            xdg = os.environ.get("XDG_CONFIG_HOME")
+            base = Path(xdg) / "aidocs" if xdg else Path.home() / ".config" / "aidocs"
+        base.mkdir(parents=True, exist_ok=True)
+        return base / "aidocs.toml"
+    return project_root / "aidocs.toml"
+
+
 def _update_project_config_value(
-    project_root: Path, setting_path: str, value: object
+    project_root: Path, setting_path: str, value: object,
+    scope: str = "project", session_id: str | None = None,
+    dashboard: bool = False,
 ) -> Path:
     metadata = SETTINGS_CATALOG.get(setting_path)
     if metadata is None:
         raise ValueError(f"Unknown config setting: {setting_path}.")
-    if not is_setting_agent_editable(
-        setting_path, scope="project", edit_mode="explicit_user_permitted"
+    allowed = metadata.get("allowed_scopes", ["project"])
+    if scope not in allowed:
+        raise ValueError(f"Setting {setting_path} does not support scope '{scope}'. Allowed: {allowed}")
+    # Dashboard is the user — skip agent-editable check for security_sensitive settings
+    if not dashboard and not is_setting_agent_editable(
+        setting_path, scope=scope, edit_mode="explicit_user_permitted"
     ):
         raise ValueError(
             f"Config setting requires controlled edit permission: {setting_path}."
         )
     validate_setting_value(setting_path, value)
 
-    config_path = project_root / "aidocs.toml"
+    config_path = _resolve_config_path_for_scope(project_root, scope, session_id)
     current_text = (
         config_path.read_text(encoding="utf-8") if config_path.is_file() else ""
     )
@@ -1110,8 +1135,11 @@ def cmd_dashboard_set_config(args: list[str]) -> int:
             print(payload["message"])
         return 1
 
+    scope = _option_value(args, "--scope", "project").strip()
+    session_id_arg = _option_value(args, "--session", "").strip() or None
+
     try:
-        config_path = _update_project_config_value(root, setting_path, value)
+        config_path = _update_project_config_value(root, setting_path, value, scope=scope, session_id=session_id_arg, dashboard=True)
     except Exception as exc:
         payload = {
             "ok": False,
@@ -1335,6 +1363,40 @@ def cmd_project_registry(args: list[str]) -> int:
     return 0
 
 
+
+def cmd_managed_mode_set(args: list[str]) -> int:
+    """Enable managed mode for a project+session."""
+    root = _resolve_root(args)
+    session_id = None
+    for i, arg in enumerate(args):
+        if arg == "--session" and i + 1 < len(args):
+            session_id = args[i + 1]
+    if not session_id:
+        print(json.dumps({"ok": False, "error": "Missing --session <id>"}))
+        return 1
+
+    from .mcp_server import _resolve_templates_root
+    from .service_hub import AidocsServiceHub
+
+    hub = AidocsServiceHub(templates_root=_resolve_templates_root())
+    result = hub.managed_mode.set_mode(root, session_id=session_id, source="dashboard")
+    print(json.dumps({"ok": True, "managed_mode": result}))
+    return 0
+
+
+def cmd_managed_mode_clear(args: list[str]) -> int:
+    """Disable managed mode for a project."""
+    root = _resolve_root(args)
+
+    from .mcp_server import _resolve_templates_root
+    from .service_hub import AidocsServiceHub
+
+    hub = AidocsServiceHub(templates_root=_resolve_templates_root())
+    result = hub.managed_mode.clear_mode(root)
+    print(json.dumps({"ok": True, "managed_mode": result}))
+    return 0
+
+
 COMMANDS = {
     "init": cmd_init,
     "status": cmd_status,
@@ -1347,6 +1409,8 @@ COMMANDS = {
     "project-registry": cmd_project_registry,
     "snapshots": cmd_snapshots,
     "version": cmd_version,
+    "managed-mode-set": cmd_managed_mode_set,
+    "managed-mode-clear": cmd_managed_mode_clear,
     "--version": cmd_version,
     "-v": cmd_version,
 }

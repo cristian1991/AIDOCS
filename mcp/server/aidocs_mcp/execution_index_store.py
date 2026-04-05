@@ -480,6 +480,21 @@ class ExecutionIndexStore:
                 f"SELECT COUNT(*) FROM execution_events{where} {'AND' if where else 'WHERE'} procedure_id IS NOT NULL",
                 params,
             ).fetchone()[0]
+            # Token estimates from completed tool calls
+            completed_where = f"{where} {'AND' if where else 'WHERE'} event_kind = 'tool_call_completed'"
+            token_rows = conn.execute(
+                f"SELECT payload_json FROM execution_events{completed_where}",
+                params,
+            ).fetchall()
+        tokens_in = 0
+        tokens_out = 0
+        for row in token_rows:
+            try:
+                payload = __import__("json").loads(row["payload_json"]) if row["payload_json"] else {}
+                tokens_in += int(payload.get("tokens_in_estimate", 0))
+                tokens_out += int(payload.get("tokens_out_estimate", 0))
+            except Exception:
+                pass
         return {
             "session_id": session_id,
             "total_events": int(total_events),
@@ -494,6 +509,11 @@ class ExecutionIndexStore:
             "by_source": {row["source_kind"]: int(row["count"]) for row in sources},
             "ad_hoc_events": int(adhoc_count),
             "procedure_linked_events": int(procedure_count),
+            "token_estimates": {
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "total": tokens_in + tokens_out,
+            },
         }
 
     def query_procedure_compliance(

@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { PieChart as RechartsPie, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from "recharts";
 import type {
   DashboardConfigEntry,
   DashboardSeriesItem,
@@ -10,8 +12,10 @@ import {
   formatTimestamp,
   isDashboardEditable,
   isDocumentActive,
-  type SettingsView,
+  type SettingsScope,
+  type TomlCategory,
 } from "./dashboardUtils";
+
 
 type SelectedSession = DashboardSnapshot["selected_session"];
 type ConductorLane = { lane_id: string; name: string; depends_on?: string[] };
@@ -19,30 +23,45 @@ type ConductorLane = { lane_id: string; name: string; depends_on?: string[] };
 type OverviewPageProps = {
   snapshot: DashboardSnapshot;
   selectedSession: SelectedSession;
-  overviewStats: Array<{ label: string; value: string; note: string }>;
+  tokenEstimates: { tokens_in: number; tokens_out: number; total: number };
 };
 
-export function OverviewPage({ snapshot, selectedSession, overviewStats }: OverviewPageProps) {
+export function OverviewPage({ snapshot, selectedSession, tokenEstimates }: OverviewPageProps) {
+  const tokenData = [
+    { name: "Tokens in", value: tokenEstimates.tokens_in },
+    { name: "Tokens out", value: tokenEstimates.tokens_out },
+  ];
+
   return (
     <section className="page">
-      <div className="dashboard-grid">
-        {overviewStats.map((item) => (
-          <article key={item.label} className="dashboard-card">
-            <div className="section-label">{item.label}</div>
-            <strong>{item.value}</strong>
-            <span>{item.note}</span>
-          </article>
-        ))}
-      </div>
+      <div className="overview-grid overview-grid-3col">
+        <section className="flat-panel">
+          <div className="section-label">Token Usage</div>
+          <div className="chart-container" style={{ height: 160 }}>
+            {tokenEstimates.total > 0 ? (
+              <ResponsiveContainer width="100%" height={160}>
+                <RechartsPie>
+                  <Pie data={tokenData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={35} outerRadius={60}>
+                    <Cell fill="#338441" />
+                    <Cell fill="#8ce0af" />
+                  </Pie>
+                  <Tooltip content={<ChartTooltip />} />
+                  <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: "0.78rem", color: "#b9d0c2" }} />
+                </RechartsPie>
+              </ResponsiveContainer>
+            ) : (
+              <div className="empty-panel">No token data yet</div>
+            )}
+          </div>
+        </section>
 
-      <div className="overview-grid">
         <section className="flat-panel">
           <div className="section-label">Project</div>
           <div className="summary-list">
-            <div className="summary-row"><span>Project root</span><strong>{snapshot.project.project_root}</strong></div>
             <div className="summary-row"><span>Code files</span><strong>{snapshot.project.code_file_count}</strong></div>
             <div className="summary-row"><span>Schema entities</span><strong>{snapshot.project.schema_entity_count}</strong></div>
             <div className="summary-row"><span>Sessions</span><strong>{snapshot.project.session_count}</strong></div>
+            <div className="summary-row"><span>Events</span><strong>{snapshot.execution.summary.total_events}</strong></div>
           </div>
         </section>
 
@@ -55,25 +74,25 @@ export function OverviewPage({ snapshot, selectedSession, overviewStats }: Overv
             <div className="summary-row"><span>Warnings</span><strong>{selectedSession?.compliance.warnings.join(" | ") || "none"}</strong></div>
           </div>
         </section>
-
-        <section className="flat-panel overview-execution-panel">
-          <div className="section-label">Execution</div>
-          <div className="flat-table">
-            <div className="table-head execution-table-row" aria-hidden="true">
-              <span>Capability</span>
-              <span>Action</span>
-              <span>Observed</span>
-            </div>
-            {snapshot.execution.recent.slice(0, 6).map((event) => (
-              <div key={event.event_id} className="feed-row execution-table-row">
-                <strong>{event.capability_name ?? event.event_kind}</strong>
-                <span>{event.action_kind ?? event.event_kind}</span>
-                <time>{formatTimestamp(event.observed_at)}</time>
-              </div>
-            ))}
-          </div>
-        </section>
       </div>
+
+      <section className="flat-panel overview-execution-panel">
+        <div className="section-label">Recent Execution</div>
+        <div className="flat-table">
+          <div className="table-head execution-table-row" aria-hidden="true">
+            <span>Capability</span>
+            <span>Action</span>
+            <span>Observed</span>
+          </div>
+          {snapshot.execution.recent.slice(0, 6).map((event) => (
+            <div key={event.event_id} className="feed-row execution-table-row">
+              <strong>{event.capability_name ?? event.event_kind}</strong>
+              <span>{event.action_kind ?? event.event_kind}</span>
+              <time>{formatTimestamp(event.observed_at)}</time>
+            </div>
+          ))}
+        </div>
+      </section>
     </section>
   );
 }
@@ -196,109 +215,309 @@ export function ExecutionPage({ recentExecution }: ExecutionPageProps) {
 
 type UsagePageProps = {
   reason: string;
-  capabilityRows: Array<DashboardSeriesItem & { width: string }>;
+  tokenEstimates: { tokens_in: number; tokens_out: number; total: number };
   actionRows: Array<DashboardSeriesItem & { width: string }>;
   eventRows: Array<DashboardSeriesItem & { width: string }>;
 };
 
-function MetricList({ items }: { items: Array<DashboardSeriesItem & { width: string }> }) {
+const CHART_COLORS = ["#338441", "#8ce0af", "#4a90d9", "#e8a838", "#d94a6b", "#7c5cbf", "#5cb8a8", "#d97a4a"];
+
+function ChartTooltip({ active, payload }: { active?: boolean; payload?: Array<{ name: string; value: number }> }) {
+  if (!active || !payload?.length) return null;
   return (
-    <div className="metric-list">
-      {items.map((item) => (
-        <div key={item.label} className="metric-row">
-          <span className="metric-label" title={item.label}>{item.label}</span>
-          <div className="metric-track"><div className="metric-fill" style={{ width: item.width }} /></div>
-          <strong>{item.count}</strong>
-        </div>
-      ))}
+    <div className="chart-tooltip">
+      <strong>{payload[0].name}</strong>
+      <span>{payload[0].value.toLocaleString()}</span>
     </div>
   );
 }
 
-export function UsagePage({ reason, capabilityRows, actionRows, eventRows }: UsagePageProps) {
+export function UsagePage({ reason, tokenEstimates, actionRows, eventRows }: UsagePageProps) {
+  const [actionMode, setActionMode] = useState<"bar" | "pie">("bar");
+  const [eventMode, setEventMode] = useState<"bar" | "pie">("bar");
+
+  const tokenData = [
+    { name: "Tokens in", value: tokenEstimates.tokens_in },
+    { name: "Tokens out", value: tokenEstimates.tokens_out },
+  ];
+  const actionData = actionRows.map((r) => ({ name: r.label, value: r.count }));
+  const eventData = eventRows.map((r) => ({ name: r.label, value: r.count }));
+
   return (
     <section className="page">
-      <div className="usage-grid">
+      <div className="usage-header">
+        <div className="usage-token-summary">
+          <div className="token-stat">
+            <span className="section-label">Tokens In</span>
+            <strong>{tokenEstimates.tokens_in.toLocaleString()}</strong>
+          </div>
+          <div className="token-stat">
+            <span className="section-label">Tokens Out</span>
+            <strong>{tokenEstimates.tokens_out.toLocaleString()}</strong>
+          </div>
+          <div className="token-stat">
+            <span className="section-label">Total</span>
+            <strong>{tokenEstimates.total.toLocaleString()}</strong>
+          </div>
+        </div>
+      </div>
+      <section className="flat-panel">
+        <div className="section-label">Token Distribution</div>
+        <div className="chart-container chart-wide">
+          <ResponsiveContainer width="100%" height={180}>
+            <RechartsPie>
+              <Pie data={tokenData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={40} outerRadius={70}>
+                {tokenData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+              </Pie>
+              <Tooltip content={<ChartTooltip />} />
+                  <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: "0.78rem", color: "#b9d0c2" }} />
+            </RechartsPie>
+          </ResponsiveContainer>
+        </div>
+      </section>
+      <div className="usage-grid usage-grid-2col">
         <section className="flat-panel">
-          <div className="section-label">Capabilities</div>
-          <MetricList items={capabilityRows} />
+          <div className="chart-panel-header">
+            <div className="section-label">Action Kinds</div>
+            <div className="chart-mode-toggle">
+              <button type="button" className={actionMode === "bar" ? "toggle-btn is-active" : "toggle-btn"} onClick={() => setActionMode("bar")}>Bars</button>
+              <button type="button" className={actionMode === "pie" ? "toggle-btn is-active" : "toggle-btn"} onClick={() => setActionMode("pie")}>Pie</button>
+            </div>
+          </div>
+          <div className="chart-container">
+            {actionMode === "pie" ? (
+              <ResponsiveContainer width="100%" height={260}>
+                <RechartsPie>
+                  <Pie data={actionData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={85}>
+                    {actionData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip content={<ChartTooltip />} />
+                  <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: "0.78rem", color: "#b9d0c2" }} />
+                </RechartsPie>
+              </ResponsiveContainer>
+            ) : (
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={actionData} layout="vertical" margin={{ left: 0, right: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(153,211,180,0.08)" />
+                  <XAxis type="number" tick={{ fill: "#7c9688", fontSize: 11 }} />
+                  <YAxis type="category" dataKey="name" tick={{ fill: "#b9d0c2", fontSize: 12 }} width={110} />
+                  <Tooltip content={<ChartTooltip />} />
+                  <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                    {actionData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
         </section>
         <section className="flat-panel">
-          <div className="section-label">Action kinds</div>
-          <MetricList items={actionRows} />
-        </section>
-        <section className="flat-panel">
-          <div className="section-label">Event kinds</div>
-          <MetricList items={eventRows} />
-          <p className="panel-copy usage-note">{reason}</p>
+          <div className="chart-panel-header">
+            <div className="section-label">Event Kinds</div>
+            <div className="chart-mode-toggle">
+              <button type="button" className={eventMode === "bar" ? "toggle-btn is-active" : "toggle-btn"} onClick={() => setEventMode("bar")}>Bars</button>
+              <button type="button" className={eventMode === "pie" ? "toggle-btn is-active" : "toggle-btn"} onClick={() => setEventMode("pie")}>Pie</button>
+            </div>
+          </div>
+          <div className="chart-container">
+            {eventMode === "pie" ? (
+              <ResponsiveContainer width="100%" height={260}>
+                <RechartsPie>
+                  <Pie data={eventData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={85}>
+                    {eventData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip content={<ChartTooltip />} />
+                  <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: "0.78rem", color: "#b9d0c2" }} />
+                </RechartsPie>
+              </ResponsiveContainer>
+            ) : (
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={eventData} layout="vertical" margin={{ left: 0, right: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(153,211,180,0.08)" />
+                  <XAxis type="number" tick={{ fill: "#7c9688", fontSize: 11 }} />
+                  <YAxis type="category" dataKey="name" tick={{ fill: "#b9d0c2", fontSize: 12 }} width={130} />
+                  <Tooltip content={<ChartTooltip />} />
+                  <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                    {eventData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
         </section>
       </div>
-    </section>
-  );
+      </section>
+    );
 }
 
 type SettingsPageProps = {
-  settingsView: SettingsView;
-  setSettingsView: (view: SettingsView) => void;
+  settingsScope: SettingsScope;
+  setSettingsScope: (scope: SettingsScope) => void;
+  hasProject: boolean;
+  hasSession: boolean;
   configSections: Array<{ section: string; entries: DashboardConfigEntry[] }>;
   draftValues: Record<string, string>;
   savingSetting: string | null;
-  requestConfigSave: (entry: DashboardConfigEntry) => void;
+  requestConfigSave: (entry: DashboardConfigEntry, scope?: string) => void;
   setDraftValue: (path: string, value: string) => void;
   devModeEntry: DashboardConfigEntry | null;
   openImportExport: () => void;
-  paginatedTomlDocuments: DashboardTomlDocument[];
-  selectedTomlPath: string | null;
-  setSelectedTomlPath: (path: string) => void;
-  tomlPage: number;
-  totalTomlPages: number;
-  setTomlPage: (updater: number | ((current: number) => number)) => void;
-  selectedTomlDocument: DashboardTomlDocument | null;
-  tomlDrafts: Record<string, string>;
-  setTomlDraft: (path: string, value: string) => void;
-  savingTomlPath: string | null;
-  handleTomlSave: () => void;
 };
+
+function SettingDropdown({
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  options: Array<{ value: string; label?: string }>;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = options.find((o) => o.value === value);
+  return (
+    <div className={open ? "setting-dropdown is-open" : "setting-dropdown"}>
+      <button type="button" className="dropdown-trigger" disabled={disabled} onClick={() => setOpen(!open)}>
+        <span className="dropdown-trigger-label">{selected?.label ?? value}</span>
+        <span className="dropdown-trigger-icon" aria-hidden="true">{"\u25be"}</span>
+      </button>
+      {open ? (
+        <div className="dropdown-menu" role="listbox">
+          {options.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className={option.value === value ? "dropdown-option is-selected" : "dropdown-option"}
+              onClick={() => { onChange(option.value); setOpen(false); }}
+            >
+              <span>{option.label ?? option.value}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const KNOWN_LANGUAGES = [
+  "csharp", "css", "dart", "elixir", "go", "html", "java", "javascript", "json",
+  "jsx", "kotlin", "less", "lua", "php", "powershell", "prisma", "python", "razor",
+  "ruby", "rust", "sass", "scss", "shell", "sql", "svelte", "swift", "toml", "tsx",
+  "typescript", "vue", "yaml",
+];
+
+function SettingMultiSelect({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const isAll = value.trim().toLowerCase() === "all" || value.trim() === "";
+  const selected = isAll ? new Set(KNOWN_LANGUAGES) : new Set(value.split(",").map((s) => s.trim()).filter(Boolean));
+  const label = isAll ? "all" : `${selected.size} selected`;
+
+  function toggle(lang: string) {
+    if (disabled) return;
+    const next = new Set(selected);
+    if (isAll) {
+      next.delete(lang);
+    } else if (next.has(lang)) {
+      next.delete(lang);
+    } else {
+      next.add(lang);
+    }
+    onChange(next.size === 0 || next.size >= KNOWN_LANGUAGES.length ? "all" : Array.from(next).join(", "));
+  }
+
+  function toggleAll() {
+    if (disabled) return;
+    onChange(isAll ? "" : "all");
+  }
+
+  return (
+    <div className="setting-dropdown">
+      <button type="button" className="dropdown-trigger" disabled={disabled} onClick={() => setOpen(!open)}>
+        <span className="dropdown-trigger-label">{label}</span>
+        <span className="dropdown-trigger-icon" aria-hidden="true">{"\u25be"}</span>
+      </button>
+      {open ? (
+        <div className="dropdown-menu multiselect-menu" role="listbox">
+          <label className="multiselect-option">
+            <input type="checkbox" checked={isAll} onChange={toggleAll} />
+            <strong>All languages</strong>
+          </label>
+          {KNOWN_LANGUAGES.map((lang) => (
+            <label key={lang} className="multiselect-option">
+              <input type="checkbox" checked={selected.has(lang)} onChange={() => toggle(lang)} />
+              <span>{lang}</span>
+            </label>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function SettingInput({
   entry,
   currentValue,
-  settingTooltip,
   savingSetting,
   onChange,
 }: {
   entry: DashboardConfigEntry;
   currentValue: string;
-  settingTooltip: string;
   savingSetting: string | null;
   onChange: (value: string) => void;
 }) {
   const disabled = !isDashboardEditable(entry) || savingSetting === entry.path;
   if (entry.allowed_values?.length) {
     return (
-      <select value={currentValue} disabled={disabled} title={settingTooltip} onChange={(event) => onChange(event.target.value)}>
-        {entry.allowed_values.map((value) => (
-          <option key={value} value={value}>
-            {value}
-          </option>
-        ))}
-      </select>
+      <SettingDropdown
+        value={currentValue}
+        options={entry.allowed_values.map((v) => ({ value: v }))}
+        disabled={disabled}
+        onChange={onChange}
+      />
     );
   }
   if (entry.type === "boolean") {
     return (
-      <select value={currentValue} disabled={disabled} title={settingTooltip} onChange={(event) => onChange(event.target.value)}>
-        <option value="true">true</option>
-        <option value="false">false</option>
-      </select>
+      <SettingDropdown
+        value={currentValue}
+        options={[{ value: "true", label: "true" }, { value: "false", label: "false" }]}
+        disabled={disabled}
+        onChange={onChange}
+      />
+    );
+    }
+    if (entry.path === "languages.enabled" || entry.path === "index.enabled_languages") {
+      return <SettingMultiSelect value={currentValue} disabled={disabled} onChange={onChange} />;
+    }
+  if (entry.type === "string_list") {
+    const lines = currentValue.split(",").map((s) => s.trim()).filter(Boolean).join("\n");
+    return (
+      <textarea
+        className="setting-list-textarea"
+        value={lines}
+        disabled={disabled}
+        placeholder="One item per line"
+        onChange={(event) => onChange(event.target.value.split("\n").map((s) => s.trim()).filter(Boolean).join(", "))}
+      />
     );
   }
-  return <input value={currentValue} disabled={disabled} title={settingTooltip} onChange={(event) => onChange(event.target.value)} />;
+  return <input value={currentValue} disabled={disabled} onChange={(event) => onChange(event.target.value)} />;
 }
 
 export function SettingsPage({
-  settingsView,
-  setSettingsView,
+  settingsScope,
+  setSettingsScope,
+  hasProject,
+  hasSession,
   configSections,
   draftValues,
   savingSetting,
@@ -306,159 +525,160 @@ export function SettingsPage({
   setDraftValue,
   devModeEntry,
   openImportExport,
-  paginatedTomlDocuments,
+}: SettingsPageProps) {
+    const saveScope = settingsScope === "global" ? "user" : settingsScope;
+
+    function scopeValue(entry: DashboardConfigEntry): string {
+      const draft = draftValues[entry.path];
+      if (draft !== undefined) return draft;
+      const raw = entry.scope_values?.[settingsScope === "global" ? "user" : settingsScope];
+      if (raw !== undefined && raw !== null) return asText(raw);
+      return asText(entry.default);
+    }
+
+    const allEntries = configSections.flatMap(({ entries }) => entries);
+    const dirtyEntries = allEntries.filter((e) => {
+      const draft = draftValues[e.path];
+      if (draft === undefined) return false;
+      const raw = e.scope_values?.[settingsScope === "global" ? "user" : settingsScope];
+      const baseline = raw !== undefined && raw !== null ? asText(raw) : asText(e.default);
+      return draft !== baseline && isDashboardEditable(e);
+    });
+    const devDirty = devModeEntry && draftValues[devModeEntry.path] !== undefined && draftValues[devModeEntry.path] !== asText(devModeEntry.scope_values?.[saveScope] ?? devModeEntry.default);
+    const hasDirty = dirtyEntries.length > 0 || devDirty;
+
+  function saveAll() {
+    for (const entry of dirtyEntries) {
+      requestConfigSave(entry, saveScope);
+    }
+    if (devDirty && devModeEntry) {
+      requestConfigSave(devModeEntry, saveScope);
+    }
+  }
+
+  return (
+    <section className="page page-config">
+      <div className="page-fixed-header config-header-row">
+        <div className="config-tabs">
+          <button type="button" className={settingsScope === "global" ? "config-tab is-active" : "config-tab"} onClick={() => setSettingsScope("global")}>Global</button>
+          <button type="button" className={settingsScope === "project" ? "config-tab is-active" : "config-tab"} disabled={!hasProject} onClick={() => setSettingsScope("project")}>Project</button>
+          <button type="button" className={settingsScope === "session" ? "config-tab is-active" : "config-tab"} disabled={!hasSession} onClick={() => setSettingsScope("session")}>Session</button>
+        </div>
+        <button
+          type="button"
+          className="action-button config-save-button"
+          disabled={!hasDirty || !!savingSetting}
+          onClick={saveAll}
+        >
+          {savingSetting ? "Saving..." : "Save"}
+        </button>
+      </div>
+      <div className="page-scroll-region">
+        <div className="settings-flat-list">
+          {configSections.map(({ section, entries }) => (
+            <div key={section}>
+              <div className="settings-section-header">{section.replace(/_/g, " ")}</div>
+              {entries.map((entry) => {
+                const currentValue = scopeValue(entry);
+                const valueHelp = buildSettingTooltip(entry, currentValue);
+                const hasOptions = !!(entry.allowed_values?.length || entry.type === "boolean");
+                return (
+                  <div key={entry.path} className="setting-row">
+                    <div className="setting-copy">
+                      <div className="setting-title-row">
+                        <strong>{entry.key}</strong>
+                        {hasOptions ? (
+                          <span className="setting-info" title={valueHelp} aria-label={valueHelp}>?</span>
+                        ) : null}
+                      </div>
+                      <p>{entry.description}</p>
+                    </div>
+                    <SettingInput
+                      entry={entry}
+                      currentValue={currentValue}
+                      savingSetting={savingSetting}
+                      onChange={(value) => setDraftValue(entry.path, value)}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          {devModeEntry ? (
+            <div>
+              <div className="settings-section-header">Security</div>
+              <div className="setting-row">
+                <div className="setting-copy">
+                  <strong className="warning-text">DEV_MODE</strong>
+                  <p className="warning-text-soft">Allows agents to edit AIDOCS infrastructure source files. Only enable when intentionally modifying protected code.</p>
+                </div>
+                <SettingDropdown
+                  value={scopeValue(devModeEntry)}
+                  options={[{ value: "true", label: "true" }, { value: "false", label: "false" }]}
+                  disabled={savingSetting === devModeEntry.path}
+                  onChange={(value) => setDraftValue(devModeEntry.path, value)}
+                />
+              </div>
+            </div>
+          ) : null}
+        </div>
+        <div className="settings-footer-actions">
+          <button type="button" className="action-button config-import-export" onClick={openImportExport}>
+            Import / Export config
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+
+type TomlConfigsPageProps = {
+  tomlCategory: TomlCategory;
+  setTomlCategory: (cat: TomlCategory) => void;
+  tomlDocuments: DashboardTomlDocument[];
+  selectedTomlPath: string | null;
+  setSelectedTomlPath: (path: string) => void;
+  selectedTomlDocument: DashboardTomlDocument | null;
+  tomlDrafts: Record<string, string>;
+  setTomlDraft: (path: string, value: string) => void;
+  savingTomlPath: string | null;
+  handleTomlSave: () => void;
+};
+
+export function TomlConfigsPage({
+  tomlCategory,
+  setTomlCategory,
+  tomlDocuments,
   selectedTomlPath,
   setSelectedTomlPath,
-  tomlPage,
-  totalTomlPages,
-  setTomlPage,
   selectedTomlDocument,
   tomlDrafts,
   setTomlDraft,
   savingTomlPath,
   handleTomlSave,
-}: SettingsPageProps) {
-  return (
-    <section className="page page-config">
-      <div className="page-fixed-header">
-        <div className="config-toolbar">
-          <div className="config-tabs" role="tablist" aria-label="Config views">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={settingsView === "typed"}
-              className={settingsView === "typed" ? "config-tab is-active" : "config-tab"}
-              onClick={() => setSettingsView("typed")}
-            >
-              Typed settings
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={settingsView === "documents"}
-              className={settingsView === "documents" ? "config-tab is-active" : "config-tab"}
-              onClick={() => setSettingsView("documents")}
-            >
-              TOML documents
-            </button>
+}: TomlConfigsPageProps) {
+  const categoryPrefix = tomlCategory === "action_tokens" ? "action_tokens/" : tomlCategory === "action_hooks" ? "action_hooks/" : "mcp/server/aidocs_mcp/index_languages/";
+  const filteredDocuments = tomlDocuments.filter((d) => d.path.startsWith(categoryPrefix));
+
+    return (
+      <section className="page page-config">
+        <div className="page-fixed-header">
+          <div className="config-tabs">
+            <button type="button" className={tomlCategory === "action_tokens" ? "config-tab is-active" : "config-tab"} onClick={() => setTomlCategory("action_tokens")}>Action Tokens</button>
+            <button type="button" className={tomlCategory === "action_hooks" ? "config-tab is-active" : "config-tab"} onClick={() => setTomlCategory("action_hooks")}>Action Hooks</button>
+            <button type="button" className={tomlCategory === "language_descriptors" ? "config-tab is-active" : "config-tab"} onClick={() => setTomlCategory("language_descriptors")}>Language Descriptors</button>
           </div>
         </div>
-      </div>
-      <div className="page-scroll-region">
-        {settingsView === "typed" ? (
-          <div className="config-section-list">
-            {configSections.map(({ section, entries }) => (
-              <section key={section} className="flat-panel">
-                <div className="page-header compact-header">
-                  <div>
-                    <div className="section-label">Section</div>
-                    <h3>{section}</h3>
-                  </div>
-                </div>
-                <div className="setting-list">
-                  {entries.map((entry) => {
-                    const currentValue = draftValues[entry.path] ?? asText(entry.current_value);
-                    const settingTooltip = buildSettingTooltip(entry, currentValue);
-                    return (
-                      <div key={entry.path} className="setting-row">
-                        <div className="setting-copy">
-                          <div className="setting-title-row">
-                            <strong>{entry.key}</strong>
-                            <span className="setting-info" title={settingTooltip} aria-label={settingTooltip}>
-                              ?
-                            </span>
-                          </div>
-                          <p>{entry.description}</p>
-                          <small>
-                            Default {asText(entry.default)} · {entry.requires_restart ? "restart required" : "hot reload"}
-                          </small>
-                        </div>
-                        <div className="setting-control">
-                          <SettingInput
-                            entry={entry}
-                            currentValue={currentValue}
-                            settingTooltip={settingTooltip}
-                            savingSetting={savingSetting}
-                            onChange={(value) => setDraftValue(entry.path, value)}
-                          />
-                          <button
-                            className="action-button action-button-small"
-                            type="button"
-                            disabled={!isDashboardEditable(entry) || savingSetting === entry.path}
-                            onClick={() => requestConfigSave(entry)}
-                          >
-                            {savingSetting === entry.path ? "Saving..." : isDashboardEditable(entry) ? "Save" : "Read-only"}
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-            ))}
-            {devModeEntry ? (
-              <section className="flat-panel danger-panel">
-                <div className="page-header compact-header">
-                  <div>
-                    <div className="section-label">Danger Zone</div>
-                    <h3>dev_mode</h3>
-                  </div>
-                </div>
-                <div className="setting-row danger-setting-row">
-                  <div className="setting-copy">
-                    <div className="setting-title-row">
-                      <strong>{devModeEntry.key}</strong>
-                      <span
-                        className="setting-info"
-                        title={buildSettingTooltip(devModeEntry, draftValues[devModeEntry.path] ?? asText(devModeEntry.current_value))}
-                        aria-label={buildSettingTooltip(devModeEntry, draftValues[devModeEntry.path] ?? asText(devModeEntry.current_value))}
-                      >
-                        ?
-                      </span>
-                    </div>
-                    <p>{devModeEntry.description}</p>
-                    <small className="warning-text">
-                      Warning: enabling dev mode allows edits to AIDOCS MCP source files. Use only when you intentionally want to modify infrastructure.
-                    </small>
-                  </div>
-                  <div className="setting-control">
-                    <select
-                      value={draftValues[devModeEntry.path] ?? asText(devModeEntry.current_value)}
-                      disabled={savingSetting === devModeEntry.path}
-                      title={buildSettingTooltip(devModeEntry, draftValues[devModeEntry.path] ?? asText(devModeEntry.current_value))}
-                      onChange={(event) => setDraftValue(devModeEntry.path, event.target.value)}
-                    >
-                      <option value="true">true</option>
-                      <option value="false">false</option>
-                    </select>
-                    <button
-                      className="action-button action-button-small action-button-danger"
-                      type="button"
-                      disabled={savingSetting === devModeEntry.path}
-                      onClick={() => requestConfigSave(devModeEntry)}
-                    >
-                      {savingSetting === devModeEntry.path ? "Saving..." : "Save"}
-                    </button>
-                  </div>
-                </div>
-              </section>
-            ) : null}
-            <div className="settings-footer-actions">
-              <button type="button" className="action-button config-import-export" onClick={openImportExport}>
-                Import / Export config
-              </button>
-            </div>
-          </div>
-        ) : (
+        <div className="page-fill-region">
           <div className="toml-layout settings-documents-layout">
             <div className="flat-table">
               <div className="table-head toml-table-row" aria-hidden="true">
                 <span>Target</span>
-                <span>Scope</span>
                 <span>Active</span>
-                <span>Language / context</span>
+                <span>Context</span>
               </div>
-              {paginatedTomlDocuments.map((document) => (
+              {filteredDocuments.map((document) => (
                 <button
                   key={document.path}
                   type="button"
@@ -466,7 +686,6 @@ export function SettingsPage({
                   onClick={() => setSelectedTomlPath(document.path)}
                 >
                   <span title={document.path}>{document.target}</span>
-                  <span>{document.scope}</span>
                   <span className="toggle-cell" title={document.active}>
                     <span className={isDocumentActive(document) ? "toggle is-on" : "toggle"} aria-hidden="true">
                       <span className="toggle-knob" />
@@ -475,61 +694,33 @@ export function SettingsPage({
                   <span title={document.language_context}>{document.language_context}</span>
                 </button>
               ))}
-              <div className="table-pagination">
-                <button
-                  type="button"
-                  className="action-button action-button-small"
-                  disabled={tomlPage <= 1}
-                  onClick={() => setTomlPage((current) => Math.max(1, current - 1))}
-                >
-                  Previous
-                </button>
-                <span>Page {tomlPage} / {totalTomlPages}</span>
-                <button
-                  type="button"
-                  className="action-button action-button-small"
-                  disabled={tomlPage >= totalTomlPages}
-                  onClick={() => setTomlPage((current) => Math.min(totalTomlPages, current + 1))}
-                >
-                  Next
-                </button>
-              </div>
             </div>
-            <section className="flat-panel editor-panel">
+            <div className="editor-panel">
               {selectedTomlDocument ? (
                 <>
-                  <div className="document-meta-grid">
-                    <div><span className="section-label">Target</span><strong>{selectedTomlDocument.target}</strong></div>
-                    <div><span className="section-label">Category</span><strong>{selectedTomlDocument.category}</strong></div>
-                    <div><span className="section-label">Scope</span><strong>{selectedTomlDocument.scope}</strong></div>
-                    <div><span className="section-label">Editable</span><strong>{selectedTomlDocument.editable ? "Yes" : "No"}</strong></div>
-                  </div>
                   <textarea
                     className="toml-editor"
                     value={tomlDrafts[selectedTomlDocument.path] ?? selectedTomlDocument.content}
                     onChange={(event) => setTomlDraft(selectedTomlDocument.path, event.target.value)}
                   />
-                  <div className="editor-actions">
-                    <button
-                      className="action-button"
-                      type="button"
-                      disabled={!selectedTomlDocument.editable || savingTomlPath === selectedTomlDocument.path}
-                      onClick={handleTomlSave}
-                    >
-                      {savingTomlPath === selectedTomlDocument.path ? "Saving..." : "Save TOML"}
-                    </button>
-                  </div>
+                  <button
+                    className="action-button"
+                    type="button"
+                    disabled={!selectedTomlDocument.editable || savingTomlPath === selectedTomlDocument.path}
+                    onClick={handleTomlSave}
+                  >
+                    {savingTomlPath === selectedTomlDocument.path ? "Saving..." : "Save TOML"}
+                  </button>
                 </>
               ) : (
-                <div className="empty-panel">No TOML settings documents are available for the current project or session.</div>
+                <div className="empty-panel">No TOML documents found for this category.</div>
               )}
-            </section>
+            </div>
           </div>
-        )}
-      </div>
-    </section>
-  );
-}
+        </div>
+      </section>
+    );
+  }
 
 type ImportExportModalProps = {
   selectedConfigTextDocument: DashboardTomlDocument | null;

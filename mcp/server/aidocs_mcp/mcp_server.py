@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import functools
 import signal
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -551,11 +552,13 @@ def create_server() -> Any:
             title=project_root.name,
         )
         run_id = f"mcp-{uuid4()}"
+        args_bytes = len(json.dumps(arguments, default=str)) if isinstance(arguments, dict) else 0
         payload_summary = {
             "tool_name": name,
             "argument_keys": sorted(arguments.keys())
             if isinstance(arguments, dict)
             else [],
+            "tokens_out_estimate": max(1, args_bytes // 4),
         }
         hub.execution.record_run(
             project_root,
@@ -614,6 +617,15 @@ def create_server() -> Any:
             raise
 
         result_summary = _summarize_tool_result(result)
+        result_bytes = 0
+        content = getattr(result, "content", None)
+        if isinstance(content, list):
+            for item in content:
+                text = getattr(item, "text", None)
+                if isinstance(text, str):
+                    result_bytes += len(text)
+        tokens_in_estimate = max(1, result_bytes // 4)
+        payload_summary["tokens_in_estimate"] = tokens_in_estimate
         hub.execution.record_run(
             project_root,
             run_kind="mcp_tool_invocation",

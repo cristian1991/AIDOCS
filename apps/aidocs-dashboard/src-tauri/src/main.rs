@@ -111,12 +111,16 @@ fn register_project_candidate(
     }
 
     let canonical = fs::canonicalize(candidate).unwrap_or_else(|_| candidate.to_path_buf());
-    let key = canonical.to_string_lossy().to_string();
+    let key = canonical
+        .to_string_lossy()
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&canonical.to_string_lossy())
+        .to_string();
     if !seen.insert(key.clone()) {
         return;
     }
 
-    let title = title_hint
+    let raw_title = title_hint
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
@@ -127,6 +131,7 @@ fn register_project_candidate(
                 .map(str::to_string)
         })
         .unwrap_or_else(|| "AIDOCS Project".to_string());
+    let title = raw_title.to_uppercase().replace('-', " ").replace('_', " ");
 
     let current_canonical =
         fs::canonicalize(current_root).unwrap_or_else(|_| current_root.to_path_buf());
@@ -253,6 +258,7 @@ fn allowed_toml_paths(
 
     for relative_dir in [
         PathBuf::from("action_hooks"),
+        PathBuf::from("action_tokens"),
         PathBuf::from("mcp/server/aidocs_mcp/index_languages"),
     ] {
         let dir = project_root.join(relative_dir);
@@ -292,6 +298,13 @@ fn allowed_toml_paths(
 fn toml_label(relative_path: &str) -> String {
     match relative_path {
         "aidocs.toml" => "Project config".into(),
+        value if value.starts_with("action_tokens/") => format!(
+            "Action tokens: {}",
+            Path::new(value)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(value)
+        ),
         value if value.starts_with("action_hooks/") => format!(
             "Action hook: {}",
             Path::new(value)
@@ -322,6 +335,9 @@ fn toml_category(relative_path: &str) -> String {
     if relative_path == "aidocs.toml" {
         return "Project config".into();
     }
+    if relative_path.starts_with("action_tokens/") {
+        return "Intent tokens".into();
+    }
     if relative_path.starts_with("action_hooks/") {
         return "Workflow hooks".into();
     }
@@ -350,6 +366,9 @@ fn toml_scope(relative_path: &str) -> String {
     }
     if relative_path.starts_with(".MEMORY/sessions/") {
         return "Session".into();
+    }
+    if relative_path.starts_with("action_tokens/") {
+        return "Tokens".into();
     }
     if relative_path.starts_with("action_hooks/") {
         return "Hooks".into();
@@ -411,6 +430,9 @@ fn toml_active_status(
     }
     if relative_path.starts_with(".MEMORY/sessions/") {
         return format!("Session {target}");
+    }
+    if relative_path.starts_with("action_tokens/") {
+        return descriptor_enabled(target, enabled_languages);
     }
     if relative_path.starts_with("action_hooks/") {
         return "Loaded".into();
@@ -476,6 +498,10 @@ fn toml_language_context(
         return format!("{name} · {extensions} · project set {connected}");
     }
 
+    if relative_path.starts_with("action_tokens/") {
+        let connected = enabled_languages.unwrap_or("default");
+        return format!("Intent classification tokens · project set {connected}");
+    }
     if relative_path.starts_with("action_hooks/") {
         return "Workflow and interaction hooks".into();
     }
@@ -582,9 +608,11 @@ fn save_config_setting(
     project_root: Option<String>,
     setting_path: String,
     value: Value,
+    scope: Option<String>,
+    session_id: Option<String>,
 ) -> Result<Value, String> {
     let root = resolve_project_root(project_root)?;
-    let args = vec![
+    let mut args = vec![
         "dashboard-set-config".to_string(),
         root.to_string_lossy().to_string(),
         "--json".to_string(),
@@ -593,6 +621,18 @@ fn save_config_setting(
         "--value".to_string(),
         value.to_string(),
     ];
+    if let Some(s) = scope {
+        if !s.trim().is_empty() {
+            args.push("--scope".to_string());
+            args.push(s);
+        }
+    }
+    if let Some(sid) = session_id {
+        if !sid.trim().is_empty() {
+            args.push("--session".to_string());
+            args.push(sid);
+        }
+    }
     run_json_cli(&root, &args)
 }
 
@@ -632,6 +672,37 @@ fn save_toml_document(
     }))
 }
 
+
+#[tauri::command]
+fn toggle_managed_mode(
+    project_root: Option<String>,
+    session_id: Option<String>,
+    enable: bool,
+) -> Result<Value, String> {
+    let root = resolve_project_root(project_root)?;
+    if enable {
+        let sid = session_id.unwrap_or_default();
+        if sid.trim().is_empty() {
+            return Err("Session ID is required to enable managed mode.".into());
+        }
+        let args = vec![
+            "managed-mode-set".to_string(),
+            root.to_string_lossy().to_string(),
+            "--json".to_string(),
+            "--session".to_string(),
+            sid,
+        ];
+        run_json_cli(&root, &args)
+    } else {
+        let args = vec![
+            "managed-mode-clear".to_string(),
+            root.to_string_lossy().to_string(),
+            "--json".to_string(),
+        ];
+        run_json_cli(&root, &args)
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -639,7 +710,8 @@ fn main() {
             load_dashboard,
             save_config_setting,
             load_toml_documents,
-            save_toml_document
+            save_toml_document,
+            toggle_managed_mode
         ])
         .run(tauri::generate_context!())
         .expect("error while running AIDOCS Dashboard");

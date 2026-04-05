@@ -18,8 +18,17 @@ class RuntimePresentationService:
         self, project_root: Path, session_id: str | None
     ) -> list[dict[str, object]]:
         entries: list[dict[str, object]] = []
+        resolver = self.runtime._config_resolver
         for setting_path, metadata in sorted(SETTINGS_CATALOG.items()):
             section, _, key = setting_path.rpartition(".")
+            scope_values: dict[str, object] = {}
+            for scope in metadata["allowed_scopes"]:
+                layer_scope = "user" if scope == "global" else scope
+                raw = resolver.get_layer_value(
+                    setting_path, layer_scope,
+                    project_root=project_root, session_id=session_id,
+                )
+                scope_values[scope] = raw
             entries.append(
                 {
                     "path": setting_path,
@@ -35,11 +44,12 @@ class RuntimePresentationService:
                     "security_sensitive": metadata["security_sensitive"],
                     "requires_restart": metadata["requires_restart"],
                     "editable": "project" in metadata["agent_editable_scopes"],
-                    "current_value": self.runtime._config_resolver.get(
+                    "current_value": resolver.get(
                         setting_path,
                         project_root=project_root,
                         session_id=session_id,
                     ),
+                    "scope_values": scope_values,
                 }
             )
         return entries
@@ -86,12 +96,22 @@ class RuntimePresentationService:
                 key=lambda item: (-item[1], item[0]),
             )[:8]
         ]
+        token_estimates = execution_summary.get("token_estimates") or {}
+        tokens_in = int(token_estimates.get("tokens_in", 0))
+        tokens_out = int(token_estimates.get("tokens_out", 0))
         return {
-            "available": False,
+            "available": tokens_in > 0 or tokens_out > 0,
             "reason": (
-                "Execution evidence currently tracks events and capabilities, but not actual token counts. "
-                "The dashboard shows activity proxies until host/runtime token instrumentation is added."
+                f"Estimated from MCP tool call sizes (~4 chars/token). "
+                f"Tokens in: ~{tokens_in:,} · Tokens out: ~{tokens_out:,} · Total: ~{tokens_in + tokens_out:,}"
+                if tokens_in > 0 or tokens_out > 0
+                else "No token data yet. Token estimates will appear after MCP tool calls are recorded."
             ),
+            "token_estimates": {
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "total": tokens_in + tokens_out,
+            },
             "proxy_series": {
                 "top_capabilities": top_capabilities,
                 "top_action_kinds": top_actions,

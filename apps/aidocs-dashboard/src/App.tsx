@@ -10,6 +10,7 @@ import {
   OverviewPage,
   SessionsPage,
   SettingsPage,
+  TomlConfigsPage,
   ToastStack,
   UsagePage,
 } from "./dashboardPages";
@@ -20,7 +21,8 @@ import {
   scaleRows,
   type DropdownOption,
   type NavKey,
-  type SettingsView,
+  type SettingsScope,
+  type TomlCategory,
 } from "./dashboardUtils";
 import { useDashboardData } from "./useDashboardData";
 import { useDashboardUi } from "./useDashboardUi";
@@ -70,10 +72,10 @@ function HeaderDropdown({
 
 function App() {
   const [activeNav, setActiveNav] = useState<NavKey>("overview");
-  const [settingsView, setSettingsView] = useState<SettingsView>("typed");
+
+  const [settingsScope, setSettingsScope] = useState<SettingsScope>("project");
+  const [tomlCategory, setTomlCategory] = useState<TomlCategory>("action_tokens");
   const {
-    tomlPage,
-    tomlPageSize,
     importExportOpen,
     configTextPath,
     pendingDangerSettingPath,
@@ -119,16 +121,20 @@ function App() {
     return projects.find((project) => project.project_root === currentRoot) ?? null;
   }, [projects, selectedProjectRoot, snapshot]);
   const configSections = useMemo(() => {
+    const scopeKey = settingsScope === "global" ? "user" : settingsScope;
     const groups = new Map<string, DashboardConfigEntry[]>();
     for (const entry of snapshot?.config.entries ?? []) {
       if (entry.path === "global.aidocs_core_version" || entry.path === "dev.dev_mode") {
+        continue;
+      }
+      if (!entry.allowed_scopes.includes(scopeKey) && !entry.allowed_scopes.includes(settingsScope)) {
         continue;
       }
       const section = entry.section || "misc";
       groups.set(section, [...(groups.get(section) ?? []), entry]);
     }
     return Array.from(groups.entries()).map(([section, entries]) => ({ section, entries }));
-  }, [snapshot]);
+  }, [snapshot, settingsScope]);
   const devModeEntry = useMemo(
     () => snapshot?.config.entries.find((entry) => entry.path === "dev.dev_mode") ?? null,
     [snapshot],
@@ -138,7 +144,6 @@ function App() {
   const runnableLaneIds = selectedSession?.conductor?.runnable?.runnable_lane_ids ?? [];
   const blockedReasons = selectedSession?.conductor?.runnable?.blocked_reasons ?? {};
   const progressPercent = parseProgressPercent(selectedSession?.plan_overview.progress);
-  const capabilityRows = useMemo(() => scaleRows(snapshot?.token_usage.proxy_series.top_capabilities ?? []), [snapshot]);
   const actionRows = useMemo(() => scaleRows(snapshot?.token_usage.proxy_series.top_action_kinds ?? []), [snapshot]);
   const eventRows = useMemo(() => scaleRows(snapshot?.token_usage.proxy_series.event_breakdown ?? []), [snapshot]);
   const projectValue = selectedProjectRoot ?? snapshot?.project.project_root ?? projects[0]?.project_root ?? "";
@@ -148,23 +153,7 @@ function App() {
     () => tomlDocuments.filter((document) => document.path === "aidocs.toml" || document.path.endsWith("/aidocs.toml")),
     [tomlDocuments],
   );
-  const totalTomlPages = Math.max(1, Math.ceil(tomlDocuments.length / tomlPageSize));
-  const paginatedTomlDocuments = useMemo(
-    () => tomlDocuments.slice((tomlPage - 1) * tomlPageSize, tomlPage * tomlPageSize),
-    [tomlDocuments, tomlPage, tomlPageSize],
-  );
   const selectedConfigTextDocument = configTextDocuments.find((document) => document.path === configTextPath) ?? configTextDocuments[0] ?? null;
-  const overviewStats = useMemo(() => {
-    if (!snapshot) {
-      return [];
-    }
-    return [
-      { label: "Projects", value: String(projects.length || 1), note: "known to this dashboard" },
-      { label: "Sessions", value: String(snapshot.sessions.length), note: "inside current project" },
-      { label: "Events", value: String(snapshot.execution.summary.total_events), note: "runtime evidence" },
-      { label: "Modes", value: String(snapshot.config.available_edit_modes.length), note: "editable surfaces" },
-    ];
-  }, [projects, snapshot]);
   const projectOptions = useMemo<DropdownOption[]>(
     () => projects.map((project) => ({ value: project.project_root, label: project.title, subtitle: `${project.session_count} sessions` })),
     [projects],
@@ -181,12 +170,12 @@ function App() {
     [snapshot],
   );
 
-  function requestConfigSave(entry: DashboardConfigEntry) {
+  function requestConfigSave(entry: DashboardConfigEntry, scope?: string) {
     if (entry.path === "dev.dev_mode") {
       setPendingDangerSettingPath(entry.path);
       return;
     }
-    void saveConfigEntry(entry);
+    void saveConfigEntry(entry, scope);
   }
 
   async function handleTomlSave() {
@@ -209,21 +198,17 @@ function App() {
     );
   }
 
-  useEffect(() => {
-    setTomlPage((current) => Math.min(current, Math.max(1, Math.ceil(tomlDocuments.length / tomlPageSize))));
-  }, [tomlDocuments.length, tomlPageSize]);
-
 
   useEffect(() => {
-    if (!paginatedTomlDocuments.length) {
+    if (!tomlDocuments.length) {
       return;
     }
     setSelectedTomlPath((current) =>
-      current && paginatedTomlDocuments.some((document) => document.path === current)
+      current && tomlDocuments.some((document) => document.path === current)
         ? current
-        : paginatedTomlDocuments[0].path,
+        : tomlDocuments[0].path,
     );
-  }, [paginatedTomlDocuments]);
+  }, [tomlDocuments]);
 
   useEffect(() => {
     if (!configTextDocuments.length) {
@@ -253,12 +238,19 @@ function App() {
     return () => window.clearTimeout(timeout);
   }, [error]);
 
+
+  // Auto-refresh every 30 seconds
+  useEffect(() => {
+    const interval = window.setInterval(refresh, 30000);
+    return () => window.clearInterval(interval);
+  }, []);
+
   function renderActivePage() {
     if (!snapshot) {
       return null;
     }
     if (activeNav === "overview") {
-      return <OverviewPage snapshot={snapshot} selectedSession={selectedSession} overviewStats={overviewStats} />;
+      return <OverviewPage snapshot={snapshot} selectedSession={selectedSession} tokenEstimates={snapshot.token_usage.token_estimates ?? { tokens_in: 0, tokens_out: 0, total: 0 }} />;
     }
     if (activeNav === "sessions") {
       return <SessionsPage sessions={snapshot.sessions ?? []} sessionValue={sessionValue} onSelectSession={setSelectedSessionId} />;
@@ -281,16 +273,34 @@ function App() {
       return (
         <UsagePage
           reason={snapshot.token_usage.reason}
-          capabilityRows={capabilityRows}
+          tokenEstimates={snapshot.token_usage.token_estimates ?? { tokens_in: 0, tokens_out: 0, total: 0 }}
           actionRows={actionRows}
           eventRows={eventRows}
         />
       );
     }
+    if (activeNav === "config_toml") {
+      return (
+        <TomlConfigsPage
+          tomlCategory={tomlCategory}
+          setTomlCategory={setTomlCategory}
+          tomlDocuments={tomlDocuments}
+          selectedTomlPath={selectedTomlPath}
+          setSelectedTomlPath={(path) => setSelectedTomlPath(path)}
+          selectedTomlDocument={selectedTomlDocument}
+          tomlDrafts={tomlDrafts}
+          setTomlDraft={setTomlDraft}
+          savingTomlPath={savingTomlPath}
+          handleTomlSave={() => void handleTomlSave()}
+        />
+      );
+    }
     return (
       <SettingsPage
-        settingsView={settingsView}
-        setSettingsView={setSettingsView}
+        settingsScope={settingsScope}
+        setSettingsScope={setSettingsScope}
+        hasProject={!!selectedProjectRoot || !!snapshot?.project.project_root}
+        hasSession={!!sessionValue}
         configSections={configSections}
         draftValues={draftValues}
         savingSetting={savingSetting}
@@ -298,17 +308,6 @@ function App() {
         setDraftValue={setDraftValue}
         devModeEntry={devModeEntry}
         openImportExport={() => setImportExportOpen(true)}
-        paginatedTomlDocuments={paginatedTomlDocuments}
-        selectedTomlPath={selectedTomlPath}
-        setSelectedTomlPath={(path) => setSelectedTomlPath(path)}
-        tomlPage={tomlPage}
-        totalTomlPages={totalTomlPages}
-        setTomlPage={setTomlPage}
-        selectedTomlDocument={selectedTomlDocument}
-        tomlDrafts={tomlDrafts}
-        setTomlDraft={setTomlDraft}
-        savingTomlPath={savingTomlPath}
-        handleTomlSave={() => void handleTomlSave()}
       />
     );
   }
@@ -324,22 +323,17 @@ function App() {
           </div>
         </div>
 
-        <section className="sidebar-section">
-          <div className="section-label">Known Projects</div>
-          <div className="project-list">
-            {projects.map((project) => (
-              <button
-                key={project.project_root}
-                className={project.project_root === projectValue ? "project-row is-selected" : "project-row"}
-                type="button"
-                onClick={() => handleProjectChange(project.project_root)}
-              >
-                <span className="project-row-title">{project.title}</span>
-                <span className="project-row-meta">{project.session_count} sessions</span>
-              </button>
-            ))}
+        {snapshot?.managed_mode?.active ? (
+          <div className="managed-indicator is-active">
+            <span className="managed-dot" />
+            <span>Managed mode active</span>
           </div>
-        </section>
+        ) : (
+          <div className="managed-indicator">
+            <span className="managed-dot" />
+            <span>Unmanaged</span>
+          </div>
+        )}
 
         <nav className="nav-list" aria-label="Dashboard navigation">
           {navigation.map((item) => (
@@ -420,7 +414,7 @@ function App() {
             close={() => setPendingDangerSettingPath(null)}
             confirm={() => {
               setPendingDangerSettingPath(null);
-              void saveConfigEntry(devModeEntry);
+              void saveConfigEntry(devModeEntry, settingsScope === "global" ? "user" : settingsScope);
             }}
           />
         ) : null}

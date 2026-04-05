@@ -5,8 +5,9 @@ import type {
   DashboardTomlDocument,
 } from "./dashboardApi";
 
-export type NavKey = "overview" | "sessions" | "conductor" | "execution" | "settings" | "usage";
-export type SettingsView = "typed" | "documents";
+export type NavKey = "overview" | "sessions" | "conductor" | "execution" | "settings" | "config_toml" | "usage";
+export type TomlCategory = "action_tokens" | "action_hooks" | "language_descriptors";
+export type SettingsScope = "global" | "project" | "session";
 
 export type DropdownOption = {
   value: string;
@@ -20,6 +21,7 @@ export const navigation: Array<{ name: string; value: NavKey }> = [
   { name: "Conductor", value: "conductor" },
   { name: "Execution", value: "execution" },
   { name: "Settings", value: "settings" },
+  { name: "TOML Configs", value: "config_toml" },
   { name: "Usage", value: "usage" },
 ];
 
@@ -111,7 +113,8 @@ export function buildSettingTooltip(entry: DashboardConfigEntry, value: string):
 }
 
 export function isDashboardEditable(entry: DashboardConfigEntry): boolean {
-  return entry.editable || entry.path === "dev.dev_mode";
+  // Dashboard is the user, not an agent — security_sensitive settings are editable here
+  return entry.editable || entry.security_sensitive;
 }
 
 export function readAidocsVersion(snapshot: DashboardSnapshot | null): string {

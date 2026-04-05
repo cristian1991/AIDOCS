@@ -48,7 +48,7 @@ function highlightToml(text: string): string {
 
 function TomlEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const taRef = useRef<HTMLTextAreaElement>(null);
-  const preRef = useRef<HTMLPreElement>(null);
+  const preRef = useRef<HTMLDivElement>(null);
 
   const syncScroll = useCallback(() => {
     if (taRef.current && preRef.current) {
@@ -58,6 +58,7 @@ function TomlEditor({ value, onChange }: { value: string; onChange: (v: string) 
   }, []);
 
   return (
+    <div className="toml-editor-wrap">
       <div
         ref={preRef}
         className="toml-layer toml-highlight"

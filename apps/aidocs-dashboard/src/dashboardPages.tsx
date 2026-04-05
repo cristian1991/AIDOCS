@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { PieChart as RechartsPie, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from "recharts";
 import type {
   DashboardConfigEntry,
@@ -29,9 +29,9 @@ function esc(s: string): string {
 function highlightToml(text: string): string {
   return text.split("\n").map((line) => {
     const t = line.trim();
-    if (!t) return "\n";
-    if (t.startsWith("#")) return `<span class="hl-comment">${esc(line)}</span>\n`;
-    if (t.startsWith("[")) return `<span class="hl-section">${esc(line)}</span>\n`;
+    if (!t) return "";
+    if (t.startsWith("#")) return `<span class="hl-comment">${esc(line)}</span>`;
+    if (t.startsWith("[")) return `<span class="hl-section">${esc(line)}</span>`;
     const eq = line.indexOf("=");
     if (eq > 0) {
       const val = line.slice(eq + 1).trim();
@@ -40,34 +40,40 @@ function highlightToml(text: string): string {
       else if (val === "true" || val === "false") vc = "hl-bool";
       else if (/^\d/.test(val)) vc = "hl-number";
       else if (val.startsWith("[")) vc = "hl-array";
-      return `<span class="hl-key">${esc(line.slice(0, eq))}</span><span class="hl-eq">=</span><span class="${vc}">${esc(line.slice(eq + 1))}</span>\n`;
+      return `<span class="hl-key">${esc(line.slice(0, eq))}</span><span class="hl-eq">=</span><span class="${vc}">${esc(line.slice(eq + 1))}</span>`;
     }
-    return esc(line) + "\n";
-  }).join("");
+    return esc(line);
+  }).join("\n");
 }
 
 function TomlEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const [editing, setEditing] = useState(false);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const hlRef = useRef<HTMLDivElement>(null);
 
-  if (editing) {
-    return (
-      <textarea
-        className="toml-editor"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={() => setEditing(false)}
-        spellCheck={false}
-        autoFocus
-      />
-    );
-  }
+  const syncScroll = useCallback(() => {
+    if (taRef.current && hlRef.current) {
+      hlRef.current.scrollTop = taRef.current.scrollTop;
+      hlRef.current.scrollLeft = taRef.current.scrollLeft;
+    }
+  }, []);
 
   return (
-    <div
-      className="toml-highlight"
-      onClick={() => setEditing(true)}
-      dangerouslySetInnerHTML={{ __html: highlightToml(value) + "\n" }}
-    />
+    <div className="toml-editor-wrap">
+      <div
+        ref={hlRef}
+        className="toml-hl-layer"
+        aria-hidden="true"
+        dangerouslySetInnerHTML={{ __html: highlightToml(value) + "\n" }}
+      />
+      <textarea
+        ref={taRef}
+        className="toml-ta-layer"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onScroll={syncScroll}
+        spellCheck={false}
+      />
+    </div>
   );
 }
 

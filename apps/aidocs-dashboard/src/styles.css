@@ -1195,6 +1195,53 @@ select {
   caret-color: var(--accent-bright);
 }
 
+.toml-editor-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #091310;
+  overflow: hidden;
+}
+
+.toml-hl-layer,
+.toml-ta-layer {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  padding: 14px;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  letter-spacing: normal;
+  word-spacing: normal;
+  tab-size: 2;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  overflow: auto;
+  box-sizing: border-box;
+  -webkit-font-smoothing: antialiased;
+}
+
+.toml-hl-layer {
+  pointer-events: none;
+  color: var(--text-soft);
+  z-index: 0;
+}
+
+.toml-ta-layer {
+  color: transparent;
+  caret-color: var(--accent-bright);
+  -webkit-text-fill-color: transparent;
+  resize: none;
+  outline: none;
+  z-index: 1;
+}
+
 .toml-highlight {
   flex: 1;
   min-height: 0;
@@ -1210,7 +1257,6 @@ select {
   cursor: text;
   color: var(--text-soft);
 }
-
 .hl-comment { color: #5c7a6e; font-style: italic; }
 .hl-section { color: var(--accent-bright); font-weight: 700; }
 .hl-key { color: #f2fbf6; font-weight: 600; }

@@ -58,67 +58,30 @@ Lane-aware plan conductor with cross-agent communication and control.
 - Cursor: beyond startup-only packaging
 - GitHub Copilot CLI: initial integration
 
-## Community Contributions Welcome
+## v2.1.0 — Dashboard & Operator UX
 
-AIDOCS is built to be extended. Here's where community contributions make the biggest impact:
+- Memory browser — inspect rules, domains, session context from dashboard
+- Session create/archive from dashboard
+- Live token counter with cost estimation
+- Managed mode toggle from dashboard
+- Dashboard theme customization
 
-### Language Descriptors
+## v2.2.0 — Host Expansion
 
-AIDOCS indexes code using TOML descriptor files (`mcp/server/aidocs_mcp/index_languages/*.toml`). Each descriptor teaches AIDOCS how to parse and understand a language — outline patterns, component semantics, file roles, and module hints.
+- OpenCode: full per-prompt MCP classification
+- Cursor: managed-mode aware integration
+- GitHub Copilot CLI: initial integration path
+- Windsurf / Continue.dev: MCP-based integration
+- Generic hook protocol for any harness
 
-Currently shipped: Python, TypeScript, JavaScript, JSX, TSX, Rust, Go, Java, C#, Ruby, Kotlin, PHP, Swift, Dart, Elixir, Lua, SQL, CSS, SCSS, LESS, Sass, HTML, Vue, Svelte, TOML, YAML, JSON, Prisma, Shell, PowerShell.
+## v3.0.0 — Conductor & Cross-Agent
 
-**Wanted:**
-- Zig, Nim, OCaml, Haskell, Scala, Clojure, F#, R, Julia, Perl
-- Terraform/HCL, Dockerfile, Makefile, CMake
-- GraphQL, Protobuf, Thrift
-- Markdown (structural — headings, links, code blocks)
-- Improvements to existing descriptors (better outline patterns, component semantics)
+- Lane-aware plan conductor with real execution
+- Parallel lane dispatch across multiple agents
+- Cross-agent message passing protocol
+- Operator command injection from dashboard
+- Agent SDK integration for programmatic agent management
+- Cross-harness communication (Claude Code + OpenCode + Cursor in one workflow)
+- Federated cross-project conductor
 
-Contributing a descriptor is one TOML file — see `mcp/INDEX_LANGUAGE_DESCRIPTORS.md` for the schema.
-
-### Host / Harness Integrations
-
-AIDOCS currently supports Claude Code (hooks) and OpenCode (plugin). We want more:
-
-**Wanted:**
-- **Cursor** — deeper integration beyond startup-only packaging
-- **GitHub Copilot CLI** — initial hook/plugin path
-- **Windsurf / Codeium** — MCP-based integration
-- **Continue.dev** — MCP or plugin integration
-- **Aider** — hook or wrapper integration
-- **Custom MCP clients** — any client that speaks MCP stdio
-
-Each integration needs: startup routing, managed-mode awareness, and tool guardrails.
-
-### Action Tokens (Intent Classification)
-
-AIDOCS classifies user prompts into action kinds (edit, understand, trace, etc.) using language-specific token files (`action_tokens/*.toml`).
-
-Currently shipped: English.
-
-**Wanted:**
-- Spanish, French, German, Portuguese, Italian, Romanian, Dutch
-- Japanese, Chinese, Korean
-- Hindi, Arabic, Turkish
-- Any language where developers work
-
-Contributing is one TOML file per language with translated intent phrases.
-
-### Benchmarks
-
-**Wanted:**
-- Realistic prompt sets that test deep retrieval vs naive grep
-- Multi-language project samples (public-safe)
-- Workflow-heavy scenarios (session handoff, plan execution)
-- Adversarial prompts that expose weak spots
-
-### Dashboard
-
-**Wanted:**
-- UI/UX feedback and bug reports
-- Feature requests for the operator dashboard
-- Accessibility improvements
-- Theme customization ideas
-
-See [Issues](https://github.com/cristian1991/AIDOCS/issues) for specific tasks or open a discussion.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute.

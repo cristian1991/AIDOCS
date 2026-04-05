@@ -540,8 +540,8 @@ select {
 
 .overview-info {
   display: grid;
+  grid-template-rows: 1fr 1fr;
   gap: 12px;
-  align-content: start;
 }
 
 .overview-execution-panel {

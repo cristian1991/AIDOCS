@@ -610,6 +610,19 @@ class ClaudeHookHandler:
                 if key
                 in {"hook_event_name", "tool_name", "tool_input", "prompt", "cwd"}
             }
+            # Token estimation from hook payloads
+            tokens_in = 0
+            tokens_out = 0
+            if prompt:
+                tokens_in += max(1, len(prompt) // 4)
+            tool_input = payload.get("tool_input")
+            if isinstance(tool_input, dict):
+                try:
+                    tokens_out += max(1, len(json.dumps(tool_input, default=str)) // 4)
+                except Exception:
+                    pass
+            elif isinstance(tool_input, str):
+                tokens_out += max(1, len(tool_input) // 4)
             self.runtime.hub.execution.record_event(
                 project_root,
                 event_kind=event_kind,
@@ -621,7 +634,10 @@ class ClaudeHookHandler:
                 payload={
                     **payload_summary,
                     "prompt_preview": prompt[:200] if prompt else None,
+                    "tokens_in_estimate": tokens_in,
+                    "tokens_out_estimate": tokens_out,
                 },
+            )
             )
         except Exception as exc:
             logger.debug("Failed to record hook event: %s", exc)

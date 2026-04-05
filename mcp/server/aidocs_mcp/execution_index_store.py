@@ -480,10 +480,10 @@ class ExecutionIndexStore:
                 f"SELECT COUNT(*) FROM execution_events{where} {'AND' if where else 'WHERE'} procedure_id IS NOT NULL",
                 params,
             ).fetchone()[0]
-            # Token estimates from completed tool calls
-            completed_where = f"{where} {'AND' if where else 'WHERE'} event_kind = 'tool_call_completed'"
+            # Token estimates from all events that carry token data
+            token_where = f"{where} {'AND' if where else 'WHERE'} payload_json LIKE '%tokens_in_estimate%'"
             token_rows = conn.execute(
-                f"SELECT payload_json FROM execution_events{completed_where}",
+                f"SELECT payload_json FROM execution_events{token_where}",
                 params,
             ).fetchall()
         tokens_in = 0
@@ -524,7 +524,7 @@ class ExecutionIndexStore:
         import json as _json
         with self.connect(project_root) as conn:
             rows = conn.execute(
-                "SELECT session_id, payload_json FROM execution_events WHERE event_kind = 'tool_call_completed'"
+                "SELECT session_id, payload_json FROM execution_events WHERE payload_json LIKE '%tokens_in_estimate%'"
             ).fetchall()
         sessions: dict[str, dict[str, int]] = {}
         for row in rows:

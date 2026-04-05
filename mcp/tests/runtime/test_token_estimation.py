@@ -99,6 +99,53 @@ def test_token_estimates_filter_by_session(tmp_path: Path) -> None:
     assert summary_all["token_estimates"]["tokens_in"] == 300
 
 
+def test_token_estimates_include_hook_events(tmp_path: Path) -> None:
+    """Token estimates include hook events (UserPromptSubmit, PreToolUse)."""
+    store = ExecutionIndexStore()
+    store.init_db(tmp_path)
+
+    # Simulate a UserPromptSubmit hook event
+    store.record_event(
+        tmp_path,
+        event_kind="userpromptsubmit",
+        source_kind="claude_hook",
+        action_kind="hook_intercept",
+        payload={
+            "tokens_in_estimate": 250,
+            "tokens_out_estimate": 0,
+        },
+    )
+    # Simulate a PreToolUse hook event
+    store.record_event(
+        tmp_path,
+        event_kind="pretooluse",
+        source_kind="claude_hook",
+        capability_name="Bash",
+        action_kind="hook_intercept",
+        payload={
+            "tokens_in_estimate": 0,
+            "tokens_out_estimate": 100,
+        },
+    )
+    # Plus a normal MCP completed event
+    store.record_event(
+        tmp_path,
+        event_kind="tool_call_completed",
+        source_kind="mcp_call",
+        payload={
+            "tokens_in_estimate": 500,
+            "tokens_out_estimate": 120,
+        },
+    )
+
+    summary = store.query_execution_summary(tmp_path)
+    tokens = summary["token_estimates"]
+
+    assert tokens["tokens_in"] == 750  # 250 + 0 + 500
+    assert tokens["tokens_out"] == 220  # 0 + 100 + 120
+    assert tokens["total"] == 970
+
+
 def test_token_estimation_formula() -> None:
     """Token estimation uses ~4 chars per token."""
     test_args = {"query": "AccessGate", "mode": "symbols", "limit": 50}

@@ -209,7 +209,6 @@ fn resolve_project_root(project_root: Option<String>) -> Result<PathBuf, String>
     }
     Err("Could not resolve the AIDOCS project root for the dashboard.".into())
 }
-}
 
 fn run_json_cli(project_root: &Path, args: &[String]) -> Result<Value, String> {
     let command_sets = vec![

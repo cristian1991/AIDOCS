@@ -135,6 +135,13 @@ export type DashboardSnapshot = {
       top_action_kinds: DashboardSeriesItem[];
       event_breakdown: DashboardSeriesItem[];
     };
+    session_breakdown: Array<{
+      session_id: string;
+      tokens_in: number;
+      tokens_out: number;
+      total: number;
+      events: number;
+    }>;
   };
   config: {
     project_config_path: string;

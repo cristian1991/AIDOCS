@@ -20,60 +20,62 @@ import {
 type SelectedSession = DashboardSnapshot["selected_session"];
 type ConductorLane = { lane_id: string; name: string; depends_on?: string[] };
 
+const CHART_COLORS = ["#338441", "#8ce0af", "#4a90d9", "#e8a838", "#d94a6b", "#7c5cbf", "#5cb8a8", "#d97a4a"];
+
 type OverviewPageProps = {
   snapshot: DashboardSnapshot;
   selectedSession: SelectedSession;
-  tokenEstimates: { tokens_in: number; tokens_out: number; total: number };
+  sessionBreakdown: DashboardSnapshot["token_usage"]["session_breakdown"];
 };
 
-export function OverviewPage({ snapshot, selectedSession, tokenEstimates }: OverviewPageProps) {
-  const tokenData = [
-    { name: "Tokens in", value: tokenEstimates.tokens_in },
-    { name: "Tokens out", value: tokenEstimates.tokens_out },
-  ];
+export function OverviewPage({ snapshot, selectedSession, sessionBreakdown }: OverviewPageProps) {
+  const sessionData = sessionBreakdown
+    .filter((s) => s.total > 0)
+    .map((s) => ({ name: s.session_id.replace(/^\d{4}-\d{2}-\d{2}-/, ""), value: s.total }));
 
   return (
     <section className="page">
-      <div className="overview-grid overview-grid-3col">
-        <section className="flat-panel">
-          <div className="section-label">Token Usage</div>
-          <div className="chart-container" style={{ height: 160 }}>
-            {tokenEstimates.total > 0 ? (
-              <ResponsiveContainer width="100%" height={160}>
+      <div className="overview-top">
+        <section className="flat-panel overview-token-panel">
+          <div className="section-label">Token Usage by Session</div>
+          <div className="chart-container-fill">
+            {sessionData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
                 <RechartsPie>
-                  <Pie data={tokenData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={35} outerRadius={60}>
-                    <Cell fill="#338441" />
-                    <Cell fill="#8ce0af" />
+                  <Pie data={sessionData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="35%" outerRadius="70%">
+                    {sessionData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                   </Pie>
                   <Tooltip content={<ChartTooltip />} />
                   <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: "0.78rem", color: "#b9d0c2" }} />
                 </RechartsPie>
               </ResponsiveContainer>
             ) : (
-              <div className="empty-panel">No token data yet</div>
+              <div className="empty-panel">No token data yet. Estimates appear after MCP tool calls.</div>
             )}
           </div>
         </section>
 
-        <section className="flat-panel">
-          <div className="section-label">Project</div>
-          <div className="summary-list">
-            <div className="summary-row"><span>Code files</span><strong>{snapshot.project.code_file_count}</strong></div>
-            <div className="summary-row"><span>Schema entities</span><strong>{snapshot.project.schema_entity_count}</strong></div>
-            <div className="summary-row"><span>Sessions</span><strong>{snapshot.project.session_count}</strong></div>
-            <div className="summary-row"><span>Events</span><strong>{snapshot.execution.summary.total_events}</strong></div>
-          </div>
-        </section>
+        <div className="overview-info">
+          <section className="flat-panel">
+            <div className="section-label">Project</div>
+            <div className="summary-list">
+              <div className="summary-row"><span>Code files</span><strong>{snapshot.project.code_file_count}</strong></div>
+              <div className="summary-row"><span>Schema entities</span><strong>{snapshot.project.schema_entity_count}</strong></div>
+              <div className="summary-row"><span>Sessions</span><strong>{snapshot.project.session_count}</strong></div>
+              <div className="summary-row"><span>Events</span><strong>{snapshot.execution.summary.total_events}</strong></div>
+            </div>
+          </section>
 
-        <section className="flat-panel">
-          <div className="section-label">Session</div>
-          <div className="summary-list">
-            <div className="summary-row"><span>Status</span><strong>{selectedSession?.overview.status ?? "unknown"}</strong></div>
-            <div className="summary-row"><span>Goal</span><strong>{selectedSession?.overview.goal ?? "none"}</strong></div>
-            <div className="summary-row"><span>Next step</span><strong>{selectedSession?.plan_overview.next_step ?? "none"}</strong></div>
-            <div className="summary-row"><span>Warnings</span><strong>{selectedSession?.compliance.warnings.join(" | ") || "none"}</strong></div>
-          </div>
-        </section>
+          <section className="flat-panel">
+            <div className="section-label">Session</div>
+            <div className="summary-list">
+              <div className="summary-row"><span>Status</span><strong>{selectedSession?.overview.status ?? "unknown"}</strong></div>
+              <div className="summary-row"><span>Goal</span><strong>{selectedSession?.overview.goal ?? "none"}</strong></div>
+              <div className="summary-row"><span>Next step</span><strong>{selectedSession?.plan_overview.next_step ?? "none"}</strong></div>
+              <div className="summary-row"><span>Warnings</span><strong>{selectedSession?.compliance.warnings.join(" | ") || "none"}</strong></div>
+            </div>
+          </section>
+        </div>
       </div>
 
       <section className="flat-panel overview-execution-panel">
@@ -220,7 +222,6 @@ type UsagePageProps = {
   eventRows: Array<DashboardSeriesItem & { width: string }>;
 };
 
-const CHART_COLORS = ["#338441", "#8ce0af", "#4a90d9", "#e8a838", "#d94a6b", "#7c5cbf", "#5cb8a8", "#d97a4a"];
 
 function ChartTooltip({ active, payload }: { active?: boolean; payload?: Array<{ name: string; value: number }> }) {
   if (!active || !payload?.length) return null;

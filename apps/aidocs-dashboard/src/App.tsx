@@ -250,7 +250,7 @@ function App() {
       return null;
     }
     if (activeNav === "overview") {
-      return <OverviewPage snapshot={snapshot} selectedSession={selectedSession} tokenEstimates={snapshot.token_usage.token_estimates ?? { tokens_in: 0, tokens_out: 0, total: 0 }} />;
+      return <OverviewPage snapshot={snapshot} selectedSession={selectedSession} sessionBreakdown={snapshot.token_usage.session_breakdown ?? []} />;
     }
     if (activeNav === "sessions") {
       return <SessionsPage sessions={snapshot.sessions ?? []} sessionValue={sessionValue} onSelectSession={setSelectedSessionId} />;

@@ -487,6 +487,29 @@ select {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.overview-top {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  min-height: 280px;
+}
+
+.overview-token-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-container-fill {
+  flex: 1;
+  min-height: 200px;
+}
+
+.overview-info {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
 .overview-execution-panel {
   grid-column: 1 / -1;
 }

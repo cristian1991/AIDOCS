@@ -516,6 +516,40 @@ class ExecutionIndexStore:
             },
         }
 
+    def query_token_breakdown_by_session(
+        self, project_root: Path,
+    ) -> list[dict[str, object]]:
+        """Return per-session token estimates for the project."""
+        self.init_db(project_root)
+        import json as _json
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                "SELECT session_id, payload_json FROM execution_events WHERE event_kind = 'tool_call_completed'"
+            ).fetchall()
+        sessions: dict[str, dict[str, int]] = {}
+        for row in rows:
+            sid = str(row["session_id"] or "unbound")
+            if sid not in sessions:
+                sessions[sid] = {"tokens_in": 0, "tokens_out": 0, "events": 0}
+            sessions[sid]["events"] += 1
+            try:
+                payload = _json.loads(row["payload_json"]) if row["payload_json"] else {}
+                sessions[sid]["tokens_in"] += int(payload.get("tokens_in_estimate", 0))
+                sessions[sid]["tokens_out"] += int(payload.get("tokens_out_estimate", 0))
+            except Exception:
+                pass
+        return [
+            {
+                "session_id": sid,
+                "tokens_in": data["tokens_in"],
+                "tokens_out": data["tokens_out"],
+                "total": data["tokens_in"] + data["tokens_out"],
+                "events": data["events"],
+            }
+            for sid, data in sorted(sessions.items(), key=lambda x: -(x[1]["tokens_in"] + x[1]["tokens_out"]))
+        ]
+
+
     def query_procedure_compliance(
         self,
         project_root: Path,

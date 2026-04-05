@@ -624,6 +624,7 @@ export function SettingsPage({
     const hasDirty = dirtyEntries.length > 0 || devDirty;
 
   function saveAll() {
+    console.log("saveAll called", { dirtyCount: dirtyEntries.length, devDirty, saveScope, hasDirty, draftValues });
     for (const entry of dirtyEntries) {
       requestConfigSave(entry, saveScope);
     }

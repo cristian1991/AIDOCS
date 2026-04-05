@@ -8,9 +8,21 @@ import type { StringStream } from "@codemirror/language";
 
 const tomlMode = {
   startState() {
-    return {};
+    return { inString: "" as "" | '"' | "'" };
   },
-  token(stream: StringStream) {
+  token(stream: StringStream, state: { inString: "" | '"' | "'" }) {
+    // Inside a string — look for aidocs or closing quote
+    if (state.inString) {
+      if (stream.match(/^\/?aidocs/i)) {
+        return "keyword";
+      }
+      if (stream.eat(state.inString)) {
+        state.inString = "";
+        return "string";
+      }
+      stream.next();
+      return "string";
+    }
     if (stream.sol() && stream.peek() === "#") {
       stream.skipToEnd();
       return "lineComment";
@@ -24,10 +36,8 @@ const tomlMode = {
     if (stream.match("=")) {
       return "punctuation";
     }
-    if (stream.match(/^"[^"]*"/)) {
-      return "string";
-    }
-    if (stream.match(/^'[^']*'/)) {
+    if (stream.peek() === '"' || stream.peek() === "'") {
+      state.inString = stream.next() as '"' | "'";
       return "string";
     }
     if (stream.match(/^(true|false)\b/)) {

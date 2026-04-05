@@ -13,7 +13,7 @@ const tomlMode = {
   token(stream: StringStream, state: { inString: "" | '"' | "'" }) {
     // Inside a string — look for aidocs or closing quote
     if (state.inString) {
-      if (stream.match(/^\/?aidocs/i)) {
+      if (stream.match(/^\/?aidocs(\s+mcp)?\b/i)) {
         return "keyword";
       }
       if (stream.eat(state.inString)) {
@@ -52,7 +52,7 @@ const tomlMode = {
     if (stream.match(/^[,{}]/)) {
       return "punctuation";
     }
-    if (stream.match(/^\/?aidocs\b/i)) {
+    if (stream.match(/^\/?aidocs(\s+mcp)?\b/i)) {
       return "keyword";
     }
     stream.next();

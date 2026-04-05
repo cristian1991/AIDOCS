@@ -514,7 +514,7 @@ For documentation changes that describe supported behavior:
 - `mcp/server/aidocs_mcp/related_project_service.py` — related-project config and comparison surfaces
 - `mcp/server/aidocs_mcp/language_descriptors.py` — descriptor-driven indexing configuration
 - `core/plugins/aidocs.js` — OpenCode plugin logic
-- `core/scripts/install-agent-routing.*` — platform installation and host asset wiring
+- `core/scripts/setup.*` — platform installation and host asset wiring
 
 ## Current Honest Status
 

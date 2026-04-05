@@ -9,8 +9,8 @@ Current installer status: Windows and Linux/macOS installer paths are shipped.
 From this `core/` directory, run:
 
 ```powershell
-scripts\install-agent-routing.cmd      # Windows
-bash scripts/install-agent-routing.sh   # Linux/macOS
+scripts\setup.cmd                      # Windows
+bash scripts/setup.sh                   # Linux/macOS
 ```
 
 ## What the installer does
@@ -31,7 +31,7 @@ In a target project:
 2. OpenCode will auto-load the AIDOCS plugin and gate core tool usage until managed mode is active
 3. after `/aidocs`, normal Claude Code prompts are routed through the AIDOCS managed-mode hook path
 4. after `/aidocs`, OpenCode gets AIDOCS system context plus compiled workflow-action summaries through the plugin path
-5. rerun `core\scripts\install-agent-routing.cmd` when you want to refresh the global routing, OpenCode plugin, and Claude hook wiring
+5. rerun `core\scripts\setup.cmd` when you want to refresh the global routing, OpenCode plugin, and Claude hook wiring
 
 ## Expected project routing
 

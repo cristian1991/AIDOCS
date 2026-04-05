@@ -5,7 +5,7 @@ set AIDOCS_PATH=%~dp0..\..
 if defined AIDOCS_PATH (
   set DASHBOARD_DIR=%AIDOCS_PATH%\apps\aidocs-dashboard
 ) else (
-  echo AIDOCS_PATH not set. Run install-agent-routing first.
+  echo AIDOCS_PATH not set. Run setup.cmd first.
   pause
   exit /b 1
 )

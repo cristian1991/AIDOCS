@@ -33,3 +33,5 @@ apps/aidocs-dashboard/src-tauri/target/
 
 # Local git worktrees
 .worktrees/
+.playwright-mcp/
+overlay-*.png

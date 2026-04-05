@@ -402,10 +402,41 @@ if ($currentAidocsPath -ne $projectRoot) {
 Write-Host "AIDOCS source wired to:" $projectRoot
 Write-Host "AIDOCS core assets wired to:" $coreRoot
 Write-Host "Command pack version:" $commandPackVersion
-Write-Host ""
-Write-Host "Dashboard:"
-Write-Host "  Launch: core\scripts\launch-dashboard.cmd"
-Write-Host "  Shortcut: powershell core\scripts\create-desktop-shortcut.ps1"
+
+# ── Create desktop shortcut ──
+$desktopPath = [Environment]::GetFolderPath("Desktop")
+$shortcutPath = Join-Path $desktopPath "AIDOCS.lnk"
+$launchScript = Join-Path $coreRoot "scripts\launch-dashboard.cmd"
+$iconSource = Join-Path $projectRoot "apps\aidocs-dashboard\src-tauri\icons\icon.ico"
+$logoSvg = Join-Path $projectRoot "docs\assets\cn-logo.svg"
+
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut($shortcutPath)
+$shortcut.TargetPath = $launchScript
+$shortcut.WorkingDirectory = $projectRoot
+$shortcut.Description = "AIDOCS Dashboard"
+if (Test-Path $iconSource) {
+  $shortcut.IconLocation = $iconSource
+}
+$shortcut.Save()
+Write-Host "Desktop shortcut created: $shortcutPath"
+
+# ── Create aidocs-dashboard shell command ──
+$aidocsBinDir = Join-Path $env:USERPROFILE ".aidocs\bin"
+New-Item -ItemType Directory -Force -Path $aidocsBinDir | Out-Null
+$dashCmd = Join-Path $aidocsBinDir "aidocs-dashboard.cmd"
+@"
+@echo off
+call "$launchScript" %*
+"@ | Set-Content -Path $dashCmd -Encoding UTF8
+# Add to PATH if not already there
+$userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+if ($userPath -notlike "*$aidocsBinDir*") {
+  [Environment]::SetEnvironmentVariable("PATH", "$userPath;$aidocsBinDir", "User")
+  $env:PATH = "$env:PATH;$aidocsBinDir"
+  Write-Host "Added $aidocsBinDir to PATH"
+}
+Write-Host "Shell command: aidocs-dashboard"
 
 $requiredCommandFiles = @(
   "aidocs.md",

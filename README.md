@@ -83,8 +83,8 @@ In practice, that means agents can resume work, follow session context, and use 
 
 ```bash
 # Install global routing + commands
-core\scripts\install-agent-routing.cmd    # Windows
-bash core/scripts/install-agent-routing.sh  # Linux/macOS
+core\scripts\setup.cmd                    # Windows
+bash core/scripts/setup.sh                  # Linux/macOS
 
 # In any project:
 /aidocs    # Bootstrap or resume AIDOCS for the project

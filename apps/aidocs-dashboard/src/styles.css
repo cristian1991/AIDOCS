@@ -463,12 +463,14 @@ select {
 .page-usage .usage-grid {
   min-height: 0;
   align-items: stretch;
+  grid-template-rows: 1fr;
 }
 
-.page-usage .flat-panel {
+.page-usage .usage-grid > .flat-panel {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  height: 100%;
 }
 
 .page-usage .chart-container {

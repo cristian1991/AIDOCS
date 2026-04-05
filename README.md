@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.0-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-2.0.1-blue" alt="version">
   <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="license">
   <img src="https://img.shields.io/badge/python-3.11%2B-yellow" alt="python">
   <img src="https://img.shields.io/badge/tests-812%20passing-brightgreen" alt="tests">
@@ -264,6 +264,7 @@ These are real shipped features, but they are more advanced than the normal quic
 
 | Version | Highlights |
 |---------|------------|
+| **2.0.1** | Dashboard overhaul — recharts, CodeMirror TOML editor, token tracking, scoped settings (Global/Project/Session), conductor SOON™ mockup, per-session token breakdown |
 | **2.0.0** | Unified AccessGate (6-level cascade), hard gate enforcement, per-file discovery, optional `root` param, CC auto-memory disable, `code_text_search`/`code_str_replace`, slimmed responses, TOML externalization, 812 tests |
 | **1.3.0** | Tool prefix removal, `code_insert_lines`, pytest config, conftest fixtures, 3 bug fixes |
 | **1.2.0** | Add `aidocs` CLI (`init`, `status`, `config`, `sync`, `benchmark`, `version`), package/install cleanup, and 255 tests |

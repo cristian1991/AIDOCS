@@ -240,10 +240,10 @@ function App() {
   }, [error]);
 
 
-  // Auto-refresh every 30 seconds — skip when editing TOML configs
+  // Auto-refresh every 30 seconds — skip when editing configs
   useEffect(() => {
     const interval = window.setInterval(() => {
-      if (activeNav !== "config_toml") refresh();
+      if (activeNav !== "config_toml" && activeNav !== "settings") refresh();
     }, 30000);
     return () => window.clearInterval(interval);
   }, [activeNav]);

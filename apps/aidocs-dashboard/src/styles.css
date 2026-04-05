@@ -1237,6 +1237,8 @@ select {
   resize: none;
   z-index: 1;
   -webkit-text-fill-color: transparent;
+  outline: none;
+  -webkit-appearance: none;
 }
 
 .hl-comment { color: #5c7a6e; font-style: italic; }

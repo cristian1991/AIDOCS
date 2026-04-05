@@ -58,8 +58,7 @@ function TomlEditor({ value, onChange }: { value: string; onChange: (v: string) 
   }, []);
 
   return (
-    <div className="toml-editor-wrap">
-      <pre
+      <div
         ref={preRef}
         className="toml-layer toml-highlight"
         aria-hidden="true"

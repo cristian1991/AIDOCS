@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useState } from "react";
 import { PieChart as RechartsPie, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from "recharts";
 import type {
   DashboardConfigEntry,
@@ -34,42 +34,40 @@ function highlightToml(text: string): string {
     if (t.startsWith("[")) return `<span class="hl-section">${esc(line)}</span>\n`;
     const eq = line.indexOf("=");
     if (eq > 0) {
-      const key = line.slice(0, eq);
       const val = line.slice(eq + 1).trim();
-      let valClass = "hl-value";
-      if (val.startsWith('"')) valClass = "hl-string";
-      else if (val === "true" || val === "false") valClass = "hl-bool";
-      else if (/^\d/.test(val)) valClass = "hl-number";
-      else if (val.startsWith("[")) valClass = "hl-array";
-      return `<span class="hl-key">${esc(key)}</span><span class="hl-eq">=</span><span class="${valClass}">${esc(line.slice(eq + 1))}</span>\n`;
+      let vc = "hl-value";
+      if (val.startsWith('"')) vc = "hl-string";
+      else if (val === "true" || val === "false") vc = "hl-bool";
+      else if (/^\d/.test(val)) vc = "hl-number";
+      else if (val.startsWith("[")) vc = "hl-array";
+      return `<span class="hl-key">${esc(line.slice(0, eq))}</span><span class="hl-eq">=</span><span class="${vc}">${esc(line.slice(eq + 1))}</span>\n`;
     }
     return esc(line) + "\n";
   }).join("");
 }
 
 function TomlEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const preRef = useRef<HTMLPreElement>(null);
+  const [editing, setEditing] = useState(false);
 
-  const handleScroll = useCallback(() => {
-    if (textareaRef.current && preRef.current) {
-      preRef.current.scrollTop = textareaRef.current.scrollTop;
-      preRef.current.scrollLeft = textareaRef.current.scrollLeft;
-    }
-  }, []);
-
-  return (
-    <div className="toml-editor-wrap">
-      <pre ref={preRef} className="toml-highlight" dangerouslySetInnerHTML={{ __html: highlightToml(value) + "\n" }} />
+  if (editing) {
+    return (
       <textarea
-        ref={textareaRef}
-        className="toml-editor toml-editor-input"
+        className="toml-editor"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        onScroll={handleScroll}
+        onBlur={() => setEditing(false)}
         spellCheck={false}
+        autoFocus
       />
-    </div>
+    );
+  }
+
+  return (
+    <pre
+      className="toml-highlight"
+      onClick={() => setEditing(true)}
+      dangerouslySetInnerHTML={{ __html: highlightToml(value) + "\n" }}
+    />
   );
 }
 

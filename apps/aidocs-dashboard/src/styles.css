@@ -1193,47 +1193,20 @@ select {
   overflow: auto;
 }
 
-.toml-editor-wrap {
-  position: relative;
+.toml-highlight {
   flex: 1;
   min-height: 0;
+  margin: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: #091310;
-  overflow: hidden;
-}
-
-.toml-editor-wrap .toml-highlight,
-.toml-editor-wrap .toml-editor-input {
-  position: absolute;
-  inset: 0;
-  margin: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
   font: 0.9rem/1.55 "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   padding: 14px;
   white-space: pre-wrap;
   word-wrap: break-word;
   overflow: auto;
-}
-
-.toml-highlight {
-  pointer-events: none;
-  color: transparent;
-}
-
-.toml-editor-input {
-  color: transparent;
-  caret-color: var(--accent-bright);
-  resize: none;
-  z-index: 1;
-  -webkit-text-fill-color: transparent;
-}
-
-.toml-editor-input::selection {
-  background: rgba(140, 224, 175, 0.15);
-  -webkit-text-fill-color: transparent;
+  cursor: text;
+  color: var(--text-soft);
 }
 
 .hl-comment { color: #5c7a6e; font-style: italic; }
@@ -1245,7 +1218,6 @@ select {
 .hl-number { color: #d97a4a; }
 .hl-array { color: #5cb8a8; }
 .hl-value { color: #b9d0c2; }
-
 .document-meta-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

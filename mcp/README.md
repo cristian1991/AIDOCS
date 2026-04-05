@@ -70,67 +70,46 @@ mcp/
   pyproject.toml
   README.md
 ```
-  - `aidocs descriptors --validate`
-  - `aidocs descriptors --match <path>`
-
-## Index Snapshots
-
-- Local copied test snapshots can be inspected with:
-  - `aidocs snapshots`
-  - `aidocs snapshots --json`
 
 ## Tool Model
 
-The MCP server exposes 88 tools, but agents should not start by memorizing all 88.
+85+ tools organized by purpose. Agents should start with entry points, not memorize all tools.
 
-### Start Here
+### Entry Points
 
-Use these as the default entry points:
+- `orchestrate` — `/aidocs` bootstrap/orchestration
+- `classify_prompt` + `route_prompt` — advisory routing
+- `code_investigate` — broad "start here" investigation
+- `code_find` — unified symbol/reference search
+- `code_trace` — relationship tracing
+- `code_bundle` — context retrieval
+- `schema_query` — database schema
 
-- `aidocs_orchestrate` — `/aidocs` bootstrap/orchestration entry
-- `aidocs_classify_prompt` + `aidocs_route_prompt` — lightweight advisory routing
-- `code_investigate` — broad “start here” investigation
-- `code_find` — unified find surface
-- `code_trace` — unified trace surface
-- `code_bundle` — unified retrieval/context surface
-- `schema_query` — unified schema surface
+### Core Runtime
 
-### Core Runtime Surfaces
-
-These make up the main operational AIDOCS runtime:
-
-- managed mode: `aidocs_mode_get`, `aidocs_mode_set`, `aidocs_mode_clear`
-- session lifecycle: `session_start`, `session_list`, `session_select`, `session_read`, `session_create`, `session_update`
-- task lifecycle: `task_begin`, `task_update`, `task_complete`
+- managed mode: `mode_get`, `mode_set`, `mode_clear`
+- sessions: `session_start`, `session_list`, `session_select`, `session_create`
+- tasks: `task_begin`, `task_update`, `task_complete`
 - memory: `memory_read`, `memory_capture`, `memory_search`
-- project operations: `project_init`, `project_bootstrap_or_resume`, `project_sync_indexes`, `project_status`
+- project: `project_init`, `project_bootstrap_or_resume`, `project_sync_indexes`
 
-### Advanced / Specialist Surfaces
+### Code Operations
 
-These remain useful when the host or agent already knows what it needs:
+- read: `code_get_lines`, `code_text_search`, `code_search`
+- edit: `code_edit_lines`, `code_str_replace`, `code_batch_str_replace`, `code_batch_edit`
+- create: `code_create_file`, `code_insert_lines`
+- analysis: `code_find_dead_code`, `code_find_stale_references`, `code_suggest_extractions`
 
-- code specialists such as `code_get_outline`, `code_get_symbol_snippet`, `code_search`, `code_get_dependencies`
-- precision helpers such as `code_get_method_signature`, `code_get_method_signatures`, `code_get_constructor_params`, `code_get_enum_values`, `code_get_service_api`
-- lighter schema helpers such as `schema_query(mode="properties")` and `schema_query(mode="batch_entity")`
-- git analysis tools such as `git_fork_status`, `git_merge_plan`, `git_conflict_analysis`, `git_upstream_changes`
-- action-surface and execution-evidence tools for operator-level debugging and runtime analysis
-- capability inspection tools for understanding the indexed MCP surface
-- procedure and procedure-link tools as advanced/optional structure derived from workflow definitions, not required for normal AIDOCS use
+### Precision Helpers
 
-### Important Guidance
+- `code_get_method_signature` / `code_get_method_signatures`
+- `code_get_constructor_params` / `code_get_constructor_params_batch`
+- `code_get_enum_values`, `code_get_entity_properties`, `code_get_service_api`
 
-- Prefer unified entry points over old granular search habits.
-- Prefer advisory runtime routing over raw keyword guessing.
-- Treat many specialist tools as advanced surfaces, not the default starting point.
-- Treat procedures as optional structure for workflow/execution analysis, not as a prerequisite for runtime value.
-- For deep test or validation work, use test-inclusive indexing only when intentionally needed, then prefer the precision chain over guessing: service API -> method signatures -> constructor params -> enum values -> entity properties.
-- Use `mcp/HOST_INTEGRATION.md` for the host behavior contract instead of inferring it from the raw tool list.
+## Run
 
-Run (after installing dependencies)
 ```bash
-cd mcp
-pip install -e .
+pip install aidocs-mcp
 aidocs --version
-aidocs benchmark . --json --iterations 10
-aidocs-mcp
+aidocs-mcp   # start MCP server
 ```

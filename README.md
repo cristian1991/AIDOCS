@@ -109,7 +109,7 @@ cd mcp && pip install -e .
 aidocs.toml                # MCP/runtime configuration
 aidocs-plugin.json         # OpenCode plugin configuration
 action_tokens/             # Prompt-classification language files
-  en.yaml, it.yaml, ...
+  en.toml, it.toml, ...
 
 core/                      # Portable memory/command/bootstrap layer
   .commands/                # Global commands (/aidocs, /reingest, /archive, etc.)
@@ -118,7 +118,7 @@ core/                      # Portable memory/command/bootstrap layer
 
 mcp/                        # Optional MCP runtime + CLI layer
   server/aidocs_mcp/        # Python MCP server and CLI implementation
-  tests/                    # 255 tests (private repo only)
+  tests/                    # 812 tests (private repo only)
 ```
 
 ## Memory Model
@@ -169,11 +169,11 @@ Edit these files to customize behavior:
 | `aidocs.toml` | TOML | Journal limits, index skip dirs, module hints, JSON size limit, language filtering |
 | `action_hooks/*.toml` | TOML | Default interaction text templates for host/runtime user-facing guidance |
 | `aidocs-plugin.json` | JSON | OpenCode directive injection, directive style |
-| `action_tokens/*.yaml` | YAML | Per-language user-intent descriptors for action classification and runtime interpretation |
+| `action_tokens/*.toml` | TOML | Per-language user-intent descriptors for action classification and runtime interpretation |
 
 You can override shipped interaction text templates in `aidocs.toml` under `interaction.*` tables when you need project- or session-specific wording.
 
-`action_tokens/en.yaml` now contains two kinds of entries:
+`action_tokens/en.toml` now contains two kinds of entries:
 
 - normal keys like `edit`, `trace`, `understand`: these map user wording to internal action kinds
 - reserved keys starting with `__`: these are runtime interpretation groups, not action kinds
@@ -193,6 +193,7 @@ Example — English-only classification for fastest startup:
 [languages]
 enabled = "en"
 ```
+
 
 ## Skills
 
@@ -263,6 +264,8 @@ These are real shipped features, but they are more advanced than the normal quic
 
 | Version | Highlights |
 |---------|------------|
+| **2.0.0** | Unified AccessGate (6-level cascade), hard gate enforcement, per-file discovery, optional `root` param, CC auto-memory disable, `code_text_search`/`code_str_replace`, slimmed responses, TOML externalization, 812 tests |
+| **1.3.0** | Tool prefix removal, `code_insert_lines`, pytest config, conftest fixtures, 3 bug fixes |
 | **1.2.0** | Add `aidocs` CLI (`init`, `status`, `config`, `sync`, `benchmark`, `version`), package/install cleanup, and 255 tests |
 | 1.1.0 | Tool consolidation (6 unified entry points), git analysis tools, project_init rewrite (no shell deps), MCP subprocess fix for Windows, 194 tests |
 | 1.0.2 | Index hardening (16 languages, monorepo modules, os.walk pruning), `code_investigate` entry tool, CSS compound+HTML tracing, CamelCase search, session journal, `aidocs.toml` config |

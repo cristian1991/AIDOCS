@@ -45,10 +45,10 @@ There are two different token/config surfaces and they should not be mixed:
 
 | Surface | Owns | Examples |
 |---|---|---|
-| `action_tokens/*.yaml` | user-intent descriptors by language | action classification phrases, helper trigger phrases, vague-step patterns |
+| `action_tokens/*.toml` | user-intent descriptors by language | action classification phrases, helper trigger phrases, vague-step patterns |
 | `action_hooks/*.toml` | runtime/host -> agent guidance text | startup warnings, managed-mode guidance, action directives, host-facing error text |
 
-`action_tokens/en.yaml` supports:
+`action_tokens/en.toml` supports:
 
 - normal action-kind keys such as `edit`, `trace`, `understand`
 - reserved interpretation keys prefixed with `__`
@@ -328,12 +328,12 @@ This controls OpenCode plugin behavior such as:
 
 | Goal | Command / file |
 |---|---|
-| structural sanity | `aidocs_project_check` |
-| workflow compile sanity | `aidocs_workflow_actions_compile` |
-| Claude integration sanity | `pytest tests/test_claude_hook.py -q` |
-| host packaging sanity | `pytest tests/test_host_integration.py -q` |
-| skill integration sanity | `pytest tests/test_opencode_external_skill_integration.py tests/test_claude_external_skill_integration.py -q` |
-| interaction text config sanity | `pytest tests/test_config_resolution.py -q` |
+| structural sanity | `project_check` |
+| workflow compile sanity | `workflow_actions_compile` |
+| Claude integration sanity | `pytest tests/host/test_claude_hook.py -q` |
+| host packaging sanity | `pytest tests/host/test_host_integration.py -q` |
+| skill integration sanity | `pytest tests/host/ -k external_skill -q` |
+| interaction text config sanity | `pytest tests/config/ -q` |
 | inspect provider registry | `/.MEMORY/config/skill-providers.json` |
 | inspect active host skill state | `/.MEMORY/.runtime/sessions/<session-id>/host-skill-state.json` |
 
@@ -456,15 +456,15 @@ Check:
 
 For memory/layout changes:
 
-- run `aidocs_project_check`
+- run `project_check`
 - check `/.MEMORY/.aidocs/index.aidocs`
 - check `/.MEMORY/INDEX.md`
 - confirm session-local paths are still authoritative
 
 For workflow changes:
 
-- run `aidocs_workflow_actions_compile`
-- inspect `aidocs_workflow_actions_get`
+- run `workflow_actions_compile`
+- inspect `workflow_actions_get`
 - confirm unsupported guidance bullets are not being compiled as rules
 
 For Claude changes:
@@ -501,8 +501,9 @@ For documentation changes that describe supported behavior:
 
 ## Important Code Areas
 
-- `mcp/server/aidocs_mcp/mcp_server.py` — MCP tool registration and timeout wrappers
+- `mcp/server/aidocs_mcp/mcp_server.py` — MCP tool registration, middleware, and server_*.py tool modules
 - `mcp/server/aidocs_mcp/runtime_service.py` — orchestration and managed runtime flow
+- `mcp/server/aidocs_mcp/access_gate.py` — unified 6-level security cascade (managed mode, infrastructure, sensitive files, memory path, read gate, edit gate)
 - `mcp/server/aidocs_mcp/policy_service.py` — routing and preflight policy
 - `mcp/server/aidocs_mcp/workflow_action_service.py` — workflow rule compilation
 - `mcp/server/aidocs_mcp/claude_hook.py` — Claude host handler

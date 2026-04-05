@@ -1,6 +1,6 @@
 # AIDOCS Install
 
-This install path targets the `1.2.0` release line. Rerun the installer after local AIDOCS updates to refresh the global command pack, OpenCode plugin, and Claude hook wiring.
+This install path targets the `2.0.0` release line. Rerun the installer after local AIDOCS updates to refresh the global command pack, OpenCode plugin, and Claude hook wiring.
 
 Current installer status: Windows and Linux/macOS installer paths are shipped.
 
@@ -31,7 +31,7 @@ In a target project:
 2. OpenCode will auto-load the AIDOCS plugin and gate core tool usage until managed mode is active
 3. after `/aidocs`, normal Claude Code prompts are routed through the AIDOCS managed-mode hook path
 4. after `/aidocs`, OpenCode gets AIDOCS system context plus compiled workflow-action summaries through the plugin path
-5. rerun `build\scripts\install-agent-routing.cmd` when you want to refresh the global routing, OpenCode plugin, and Claude hook wiring
+5. rerun `core\scripts\install-agent-routing.cmd` when you want to refresh the global routing, OpenCode plugin, and Claude hook wiring
 
 ## Expected project routing
 

@@ -425,10 +425,8 @@ Write-Host "Desktop shortcut created: $shortcutPath"
 $aidocsBinDir = Join-Path $env:USERPROFILE ".aidocs\bin"
 New-Item -ItemType Directory -Force -Path $aidocsBinDir | Out-Null
 $dashCmd = Join-Path $aidocsBinDir "aidocs-dashboard.cmd"
-@"
-@echo off
-call "$launchScript" %*
-"@ | Set-Content -Path $dashCmd -Encoding UTF8
+$dashCmdContent = "@echo off`r`ncall `"$launchScript`" %*"
+Set-Content -Path $dashCmd -Value $dashCmdContent -Encoding UTF8
 # Add to PATH if not already there
 $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
 if ($userPath -notlike "*$aidocsBinDir*") {

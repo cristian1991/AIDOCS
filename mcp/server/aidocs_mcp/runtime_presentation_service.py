@@ -60,7 +60,6 @@ class RuntimePresentationService:
         recent_execution: list[dict[str, object]],
         session_breakdown: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
-    ) -> dict[str, object]:
         capability_counts: dict[str, int] = {}
         action_counts = {
             str(key): int(value)
@@ -236,6 +235,7 @@ class RuntimePresentationService:
             "token_usage": self.dashboard_token_usage(
                 execution_summary, recent_execution,
                 session_breakdown=runtime.hub.execution.query_token_breakdown_by_session(project_root),
+            ),
             "config": {
                 "project_config_path": str(
                     runtime._config_resolver.project_config_path(project_root) or ""

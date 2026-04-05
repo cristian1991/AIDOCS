@@ -59,6 +59,7 @@ textarea:focus-visible {
 
 .shell {
   height: 100vh;
+  min-height: 900px;
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
   overflow: hidden;

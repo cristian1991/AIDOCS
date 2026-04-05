@@ -445,7 +445,7 @@ select {
 .page-overview {
   height: 100%;
   overflow: auto;
-  grid-template-rows: minmax(300px, 1fr) auto;
+  grid-template-rows: minmax(300px, 0.6fr) minmax(200px, 0.4fr);
   grid-auto-rows: auto;
   align-content: stretch;
   align-items: stretch;

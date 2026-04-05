@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.1-blue" alt="version">
+  <img src="https://img.shields.io/github/v/release/cristian1991/AIDOCS?label=version&color=blue" alt="version">
   <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="license">
   <img src="https://img.shields.io/badge/python-3.11%2B-yellow" alt="python">
   <img src="https://img.shields.io/badge/tests-812%20passing-brightgreen" alt="tests">

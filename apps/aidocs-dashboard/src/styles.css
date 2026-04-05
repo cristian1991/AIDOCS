@@ -445,19 +445,24 @@ select {
 .page-overview {
   height: 100%;
   overflow: hidden;
-  grid-template-rows: minmax(260px, 1fr) auto;
+  grid-template-rows: 1fr auto;
+  grid-auto-rows: auto;
   align-content: stretch;
+  align-items: stretch;
 }
 
 .page-usage {
   height: 100%;
   overflow: hidden;
   grid-template-rows: auto 1fr 1fr;
+  grid-auto-rows: auto;
   align-content: stretch;
+  align-items: stretch;
 }
 
 .page-usage .usage-grid {
   min-height: 0;
+  align-items: stretch;
 }
 
 .page-usage .flat-panel {

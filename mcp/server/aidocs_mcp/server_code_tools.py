@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from .mcp_server_runtime_helpers import resolve_project_root
 from typing import Any
 
 from .language_descriptors import (
@@ -59,7 +60,7 @@ def register_code_tools(
     )
     def code_search(root: str, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """Search the derived code index by file path and lightweight summary."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.code.search_code(root, query=query, limit=limit)
         for item in result:
             grant_known_exact_path_read(hub, root, "code_search", str(item.get("path", "")))
@@ -74,16 +75,16 @@ def register_code_tools(
         meta={"anthropic/searchHint": True},
     )
     def code_text_search(
-        root: str,
         text: str,
         glob: str | None = None,
         case_sensitive: bool = False,
         regex: bool = False,
         limit: int = 50,
         include_tests: bool = False,
+        root: str = "",
     ) -> dict[str, Any]:
         """Literal text search across indexed files. Use | or OR between terms for multi-match. Set regex=true for pattern matching."""
-        root = Path(root)
+        root = resolve_project_root(root)
         matches = hub.code.search_text(
             root,
             text,
@@ -105,14 +106,14 @@ def register_code_tools(
         },
     )
     def code_find_stale_references(
-        root: str,
         symbols: list[str],
         exclude_path: str | None = None,
         include_tests: bool = False,
         limit: int = 50,
+        root: str = "",
     ) -> dict[str, Any]:
         """After renaming/deleting symbols, find remaining references that need updating."""
-        root = Path(root)
+        root = resolve_project_root(root)
         results = hub.code.find_stale_references(
             root,
             symbols,
@@ -130,11 +131,11 @@ def register_code_tools(
         },
     )
     def code_find_dead_code(
-        root: str,
         path: str,
+        root: str = "",
     ) -> dict[str, Any]:
         """Find dead imports and unused locals in a file. Use after refactors to clean up."""
-        return hub.code.find_dead_code(Path(root), path)
+        return hub.code.find_dead_code(resolve_project_root(root), path)
 
     @server.tool(
         annotations={
@@ -144,7 +145,6 @@ def register_code_tools(
         }
     )
     def code_extract_block(
-        root: str,
         source_path: str,
         start_line: int,
         end_line: int,
@@ -152,9 +152,10 @@ def register_code_tools(
         target_position: str = "append",
         target_line: int | None = None,
         remove_from_source: bool = True,
+        root: str = "",
     ) -> dict[str, Any]:
         """Move a code block from source to target file. Atomic: extracts lines, places in target, removes from source. Use for refactoring large files into modules."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = file_extract_block(
             root,
             source_path,
@@ -188,15 +189,15 @@ def register_code_tools(
         },
     )
     def code_find_symbol_range(
-        root: str,
         path: str,
         symbol: str,
         kind: str | None = None,
         line_number: int | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Find start and end line of a symbol using the index. Use before extract_block to avoid manual line counting."""
         return hub.code.find_symbol_range(
-            Path(root), path, symbol, kind=kind, line_number=line_number
+            resolve_project_root(root), path, symbol, kind=kind, line_number=line_number
         )
 
     @server.tool(
@@ -207,13 +208,13 @@ def register_code_tools(
         },
     )
     def code_preview_extraction_deps(
-        root: str,
         path: str,
         start_line: int,
         end_line: int,
+        root: str = "",
     ) -> dict[str, Any]:
         """Before extracting a block, show what imports and helpers it depends on that won't come with it."""
-        return hub.code.preview_extraction_deps(Path(root), path, start_line, end_line)
+        return hub.code.preview_extraction_deps(resolve_project_root(root), path, start_line, end_line)
 
 
     @server.tool(
@@ -224,20 +225,20 @@ def register_code_tools(
         },
     )
     def code_extract_symbol(
-        root: str,
         source_path: str,
         symbol: str,
         target_path: str,
         kind: str | None = None,
         target_position: str = "append",
         remove_from_source: bool = True,
+        root: str = "",
     ) -> dict[str, Any]:
         """Move a symbol (function/class/method) from source to target file by name. No line numbers needed — uses the index to find boundaries."""
-        rng = hub.code.find_symbol_range(Path(root), source_path, symbol, kind=kind)
+        rng = hub.code.find_symbol_range(resolve_project_root(root), source_path, symbol, kind=kind)
         if "error" in rng:
             return {"success": False, "error": rng["error"]}
         result = file_extract_block(
-            Path(root),
+            resolve_project_root(root),
             source_path,
             int(rng["start"]),
             int(rng["end"]),
@@ -247,10 +248,10 @@ def register_code_tools(
         )
         if result.get("success"):
             post_edit_reindex_and_grant(
-                hub, Path(root), "code_extract_symbol", source_path
+                hub, resolve_project_root(root), "code_extract_symbol", source_path
             )
             post_edit_reindex_and_grant(
-                hub, Path(root), "code_extract_symbol", target_path
+                hub, resolve_project_root(root), "code_extract_symbol", target_path
             )
         return result
 
@@ -262,14 +263,14 @@ def register_code_tools(
         },
     )
     def code_suggest_extractions(
-        root: str,
         path: str,
         min_lines: int = 20,
         limit: int = 10,
+        root: str = "",
     ) -> dict[str, Any]:
         """Show the largest symbols in a file that are good extraction candidates. Use to plan deslopification."""
         candidates = hub.code.suggest_extractions(
-            Path(root), path, min_lines=min_lines, limit=limit
+            resolve_project_root(root), path, min_lines=min_lines, limit=limit
         )
         return {"path": path, "candidates": candidates, "total": len(candidates)}
 
@@ -281,14 +282,14 @@ def register_code_tools(
         },
     )
     def code_refactor_extract(
-        root: str,
         source_path: str,
         symbol: str,
         target_path: str,
         kind: str | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Full refactor pipeline: find symbol → extract to target → reindex both → detect stale references + dead code. Returns extraction result plus cleanup suggestions."""
-        r = Path(root)
+        r = resolve_project_root(root)
 
         # 1. Find symbol range
         rng = hub.code.find_symbol_range(r, source_path, symbol, kind=kind)
@@ -349,7 +350,7 @@ def register_code_tools(
     )
     def code_get_dependencies(root: str, path: str) -> list[dict[str, str]]:
         """Return lightweight dependency edges for one indexed code file."""
-        return hub.code.get_dependencies(Path(root), path=path)
+        return hub.code.get_dependencies(resolve_project_root(root), path=path)
 
     @server.tool(
         annotations={
@@ -360,14 +361,14 @@ def register_code_tools(
         meta={"anthropic/searchHint": True},
     )
     def code_get_symbol_snippet(
-        root: str,
         path: str,
         symbol: str,
         kind: str | None = None,
         line_number: int | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return an exact code snippet for an indexed outline symbol."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.code.get_symbol_snippet(
             root,
             path=path,
@@ -388,13 +389,13 @@ def register_code_tools(
         meta={"anthropic/searchHint": True},
     )
     def code_get_method_signature(
-        root: str,
         method: str,
         container: str | None = None,
         limit: int = 20,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return exact method signatures so agents can call methods correctly without reading whole files."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.code.get_method_signature(
             root, method_name=method, container=container, limit=limit
         )
@@ -411,13 +412,13 @@ def register_code_tools(
         meta={"anthropic/searchHint": True},
     )
     def code_get_method_signature(
-        root: str,
         method: str,
         container: str | None = None,
         limit: int = 20,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return exact method signatures so agents can call methods correctly without reading whole files."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.code.get_method_signature(
             root, method_name=method, container=container, limit=limit
         )
@@ -434,13 +435,13 @@ def register_code_tools(
         meta={"anthropic/searchHint": True},
     )
     def code_get_method_signatures(
-        root: str,
         methods: list[str],
         container: str | None = None,
         limit_per_method: int = 20,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return exact signatures for multiple methods in one call."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.code.get_method_signatures(
             root,
             methods=methods,
@@ -460,13 +461,13 @@ def register_code_tools(
         meta={"anthropic/searchHint": True},
     )
     def code_get_enum_values(
-        root: str,
         enum_name: str,
         limit: int = 50,
         include_related: bool = False,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return indexed enum definitions with their enum members."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.code.get_enum_values(
             root, enum_name=enum_name, limit=limit, include_related=include_related
         )
@@ -483,13 +484,13 @@ def register_code_tools(
         meta={"anthropic/searchHint": True},
     )
     def code_get_constructor_params(
-        root: str,
         type_name: str,
         limit: int = 20,
         include_related: bool = False,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return constructor or record positional parameter information for a type."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.code.get_constructor_params(
             root, type_name=type_name, limit=limit, include_related=include_related
         )
@@ -506,13 +507,13 @@ def register_code_tools(
         meta={"anthropic/searchHint": True},
     )
     def code_get_constructor_params_batch(
-        root: str,
         types: list[str],
         include_related: bool = False,
         limit_per_type: int = 20,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return constructor or record positional parameter information for multiple types."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.code.get_constructor_params_batch(
             root,
             types=types,
@@ -532,12 +533,12 @@ def register_code_tools(
         meta={"anthropic/searchHint": True},
     )
     def code_get_service_api(
-        root: str,
         service_name: str,
         limit: int = 100,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return all indexed public method signatures for a service-like class."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.code.get_service_api(root, service_name=service_name, limit=limit)
         if result.get("methods"):
             pass  # Precision tool - no blanket read grant
@@ -552,11 +553,11 @@ def register_code_tools(
         meta={"anthropic/searchHint": True},
     )
     def code_get_entity_properties(
-        root: str,
         entity_name: str,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return a lightweight property list for an entity or DTO."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.code.get_entity_properties(root, entity_name=entity_name)
         if result.get("entity_name") and (
             result.get("properties") or result.get("note")
@@ -574,12 +575,12 @@ def register_code_tools(
     )
     @timed_tool
     def code_investigate(
-        root: str,
         concept: str,
         limit: int = 5,
         depth: str = "standard",
         focus: str = "general",
         timeout: int | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """START HERE — investigate a concept, feature, or bug area.
 
@@ -593,7 +594,7 @@ def register_code_tools(
             depth: `shallow`, `standard`, or `deep`.
             focus: `general`, `workflow`, `service`, `schema`, `ui`, or `backend`.
         """
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.code.investigate(
             root, concept=concept, limit=limit, depth=depth, focus=focus
         )
@@ -661,7 +662,6 @@ def register_code_tools(
     )
     @timed_tool
     def code_find(
-        root: str,
         query: str,
         mode: str = "symbols",
         kind: str | None = None,
@@ -669,6 +669,7 @@ def register_code_tools(
         include_tests: bool = False,
         limit: int = 50,
         timeout: int | None = None,
+        root: str = "",
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Unified find tool — replaces all code_find_* and code_search_* tools.
 
@@ -684,7 +685,7 @@ def register_code_tools(
             role: Filter by file role (only for mode=symbols).
             include_tests: Include test/fixture files in search. Default False. Auto-enabled for mode=factories.
         """
-        root = Path(root)
+        root = resolve_project_root(root)
         m = mode.strip().lower()
 
         # Auto-enable include_tests for modes that commonly need test/fixture content
@@ -810,12 +811,12 @@ def register_code_tools(
     )
     @timed_tool
     def code_trace(
-        root: str,
         query: str,
         mode: str = "field_flow",
         limit: int = 50,
         max_depth: int | None = None,
         timeout: int | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Unified trace tool — replaces all code_trace_* tools.
 
@@ -825,7 +826,7 @@ def register_code_tools(
             query: What to trace (field name, service name, component name, CSS class, etc.).
             mode: Which trace mode to use.
         """
-        root = Path(root)
+        root = resolve_project_root(root)
         m = mode.strip().lower()
 
         def _grant(result: dict[str, Any]) -> dict[str, Any]:
@@ -916,12 +917,12 @@ def register_code_tools(
     )
     @timed_tool
     def code_bundle(
-        root: str,
         target: str,
         mode: str = "file",
         session_id: str | None = None,
         limit: int = 20,
         timeout: int | None = None,
+        root: str = "",
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Unified bundle tool — replaces all code_get_*_bundle tools.
 
@@ -933,7 +934,7 @@ def register_code_tools(
             mode: Which bundle mode to use.
             session_id: Required for session/context modes.
         """
-        root = Path(root)
+        root = resolve_project_root(root)
         m = mode.strip().lower()
 
         def _grant(
@@ -1061,12 +1062,12 @@ def register_code_tools(
     )
     @timed_tool
     def schema_query(
-        root: str,
         query: str,
         mode: str = "entities",
         limit: int = 50,
         include_related: bool = False,
         timeout: int | None = None,
+        root: str = "",
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Unified schema tool — replaces all schema_find_*, schema_get_*, schema_trace_* tools.
 
@@ -1076,7 +1077,7 @@ def register_code_tools(
             query: Entity name, field name, or "source→target" for trace_path mode.
             mode: Which schema operation to run.
         """
-        root = Path(root)
+        root = resolve_project_root(root)
         m = mode.strip().lower()
 
         def _grant(
@@ -1162,10 +1163,10 @@ def register_code_tools(
         meta={"anthropic/alwaysLoad": True},
     )
     def memory_capture(
-        root: str,
         kind: str,
         content: str,
         target_hint: str | None = None,
+        root: str = "",
     ) -> dict[str, str]:
         """Capture a durable fact/rule into canonical memory.
 
@@ -1186,7 +1187,7 @@ def register_code_tools(
                 Prefer providing target_hint for accurate routing.
         """
         result = hub.memory.capture_memory(
-            Path(root),
+            resolve_project_root(root),
             kind=kind,
             content=content,
             target_hint=target_hint,
@@ -1205,10 +1206,10 @@ def register_code_tools(
     )
     @timed_sync
     def project_init(
-        root: str,
         init_git: bool = True,
         create_remote: bool = False,
         timeout: int | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Initialize AIDOCS structure on a new project — creates .MEMORY/, AGENTS.md/CLAUDE.md, and templates.
 
@@ -1221,7 +1222,7 @@ def register_code_tools(
             create_remote: If True, create a private GitHub repo using `gh` CLI. Default: False (opt-in).
         """
         return runtime.project_init(
-            Path(root), init_git=init_git, create_remote=create_remote
+            resolve_project_root(root), init_git=init_git, create_remote=create_remote
         )
 
     @server.tool(
@@ -1237,7 +1238,7 @@ def register_code_tools(
         Idempotent — safe to call repeatedly. Creates or updates .mcp.json as needed.
         Preserves any existing non-aidocs MCP server entries.
         """
-        return runtime.ensure_claude_mcp_config(Path(root))
+        return runtime.ensure_claude_mcp_config(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -1248,7 +1249,7 @@ def register_code_tools(
     )
     def project_check(root: str) -> dict[str, Any]:
         """Run strict session-era structural check on a project."""
-        return hub.updater.run_check(Path(root))
+        return hub.updater.run_check(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -1259,7 +1260,7 @@ def register_code_tools(
     )
     def project_check_legacy(root: str) -> dict[str, Any]:
         """Run legacy-compatible structural check on a project."""
-        return hub.updater.run_check_legacy(Path(root))
+        return hub.updater.run_check_legacy(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -1270,7 +1271,7 @@ def register_code_tools(
     )
     def project_fix(root: str) -> dict[str, Any]:
         """Run safe deterministic structural fixes on a project."""
-        return hub.updater.run_fix(Path(root))
+        return hub.updater.run_fix(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -1281,7 +1282,7 @@ def register_code_tools(
     )
     def project_inspect_legacy(root: str) -> dict[str, Any]:
         """Inspect whether legacy runtime files/folders are still present."""
-        return hub.updater.inspect_legacy_runtime(Path(root))
+        return hub.updater.inspect_legacy_runtime(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -1296,7 +1297,7 @@ def register_code_tools(
         root: str, include_tests: bool = False, timeout: int | None = None
     ) -> dict[str, Any]:
         """Refresh all derived indexes for a project in one call."""
-        root = Path(root)
+        root = resolve_project_root(root)
         capability_count = hub.capabilities.sync_capabilities(root, registered_tools())
         workflow_sync = hub.workflow.compile_project_rules(root)
         procedure_count = hub.procedures.sync_procedures(
@@ -1333,7 +1334,7 @@ def register_code_tools(
     )
     def project_status(root: str) -> dict[str, Any]:
         """Return a consolidated status view for memory, code, and schema indexes."""
-        root = Path(root)
+        root = resolve_project_root(root)
         return {
             "origins": runtime.project_origins(root),
             "repo_summary": runtime.repo_summary(root),
@@ -1357,7 +1358,7 @@ def register_code_tools(
     )
     def project_origins_get(root: str) -> dict[str, Any]:
         """Return git remote/origin context, including private/public split hints."""
-        root = Path(root)
+        root = resolve_project_root(root)
         return runtime.project_origins(root)
 
     @server.tool(
@@ -1369,7 +1370,7 @@ def register_code_tools(
     )
     def index_language_descriptors_get(root: str) -> dict[str, Any]:
         """Return the active built-in + project-local language descriptor registry summary."""
-        return descriptor_registry_summary(Path(root))
+        return descriptor_registry_summary(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -1380,7 +1381,7 @@ def register_code_tools(
     )
     def index_language_descriptors_validate(root: str) -> dict[str, Any]:
         """Validate built-in and project-local TOML language descriptors."""
-        return validate_language_descriptors(Path(root))
+        return validate_language_descriptors(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -1404,7 +1405,7 @@ def register_code_tools(
         root: str, relative_path: str
     ) -> dict[str, Any]:
         """Show which descriptor would classify a given project-relative path."""
-        return descriptor_match_summary(Path(root), relative_path)
+        return descriptor_match_summary(resolve_project_root(root), relative_path)
 
     @server.tool(
         annotations={
@@ -1415,7 +1416,7 @@ def register_code_tools(
     )
     def capability_index_status(root: str) -> dict[str, Any]:
         """Return current MCP capability index status for a project."""
-        return hub.capabilities.capability_status(Path(root))
+        return hub.capabilities.capability_status(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -1429,7 +1430,7 @@ def register_code_tools(
         root: str, query: str | None = None, limit: int = 50
     ) -> dict[str, Any]:
         """Return indexed MCP capability definitions, optionally filtered by query."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.capabilities.find_capabilities(root, query=query, limit=limit)
         return runtime.build_artifact_backed_result(
             root,

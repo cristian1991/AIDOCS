@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from .mcp_server_runtime_helpers import resolve_project_root
 from typing import Any
 
 
@@ -20,7 +21,7 @@ def register_skill_tools(
     )
     def skill_registry_get(root: str) -> dict[str, Any]:
         """Return the available built-in + project-local skills."""
-        return {"skills": hub.skills.list_skills(Path(root))}
+        return {"skills": hub.skills.list_skills(resolve_project_root(root))}
 
     @server.tool(
         annotations={
@@ -31,7 +32,7 @@ def register_skill_tools(
     )
     def session_skills_get(root: str, session_id: str) -> dict[str, Any]:
         """Return the selected skills for a session."""
-        return hub.skills.get_selected_skills(Path(root), session_id)
+        return hub.skills.get_selected_skills(resolve_project_root(root), session_id)
 
     @server.tool(
         annotations={
@@ -41,15 +42,15 @@ def register_skill_tools(
         }
     )
     def skill_trigger_state_get(
-        root: str,
         session_id: str,
         intent: str,
         workflow_state: str | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return the AIDOCS-native active skill trigger state for a session."""
         return annotate_skill_result(
             runtime.skill_trigger_state(
-                Path(root), session_id, intent, workflow_state
+                resolve_project_root(root), session_id, intent, workflow_state
             ),
             override_store=runtime._skill_overrides,
         )
@@ -79,7 +80,7 @@ def register_skill_tools(
         root: str, provider_id: str
     ) -> dict[str, Any]:
         """Return compatibility status and user choices for one external skill provider."""
-        return runtime.skill_provider_status(Path(root), provider_id)
+        return runtime.skill_provider_status(resolve_project_root(root), provider_id)
 
     @server.tool(
         annotations={
@@ -93,7 +94,7 @@ def register_skill_tools(
     ) -> dict[str, Any]:
         """Persist a user override choice for one external skill provider."""
         return runtime.set_skill_provider_override(
-            Path(root), provider_id, choice
+            resolve_project_root(root), provider_id, choice
         )
 
     @server.tool(
@@ -108,7 +109,7 @@ def register_skill_tools(
     ) -> dict[str, Any]:
         """Set the selected skills for a session."""
         return runtime.set_session_skills(
-            Path(root), session_id, selected_skills
+            resolve_project_root(root), session_id, selected_skills
         )
 
     @server.tool(
@@ -120,15 +121,15 @@ def register_skill_tools(
         meta={"anthropic/searchHint": True},
     )
     def session_resume_bundle(
-        root: str,
         session_id: str,
         include_code_bundle: bool = False,
         include_tests: bool = False,
         journal_last_n: int = 10,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return a collaboration-oriented resume bundle for a session."""
         return runtime.session_resume_bundle(
-            Path(root),
+            resolve_project_root(root),
             session_id=session_id,
             include_code_bundle=include_code_bundle,
             include_tests=include_tests,

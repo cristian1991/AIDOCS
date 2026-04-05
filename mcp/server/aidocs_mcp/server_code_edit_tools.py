@@ -28,12 +28,12 @@ def register_code_edit_tools(
         meta={"anthropic/alwaysLoad": True},
     )
     def code_get_lines(
-        root: str,
         path: str,
         start_line: int = 1,
         count: int = 30,
         show_line_numbers: bool = True,
         known_exact_path: bool = False,
+        root: str = "",
     ) -> dict[str, Any]:
         """Read specific lines from any file after indexed retrieval has established enough context."""
         project_root = Path(root)
@@ -64,10 +64,10 @@ def register_code_edit_tools(
         }
     )
     def code_create_file(
-        root: str,
         path: str,
         content: str,
         config_edit_mode: str | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Create a new file at a relative path with exact content."""
         project_root = Path(root)
@@ -94,11 +94,11 @@ def register_code_edit_tools(
         }
     )
     def code_insert_lines(
-        root: str,
         path: str,
         before_line: int,
         content: str,
         config_edit_mode: Literal["explicit_user_permitted"] | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Insert content before a specific line. Clearer than code_edit_lines insert mode."""
         project_root = Path(root)
@@ -124,7 +124,6 @@ def register_code_edit_tools(
         }
     )
     def code_edit_lines(
-        root: str,
         path: str,
         start_line: int,
         end_line: int,
@@ -133,6 +132,7 @@ def register_code_edit_tools(
         dry_run: bool = False,
         mode: str = "auto",
         config_edit_mode: str | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Replace a range of lines with new content, with safety verification."""
         project_root = Path(root)
@@ -164,11 +164,11 @@ def register_code_edit_tools(
         }
     )
     def code_batch_edit(
-        root: str,
         edits: list[dict[str, Any]],
         dry_run: bool = False,
         atomic: bool = True,
         config_edit_mode: str | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Apply multiple line edits atomically across one or more files."""
         project_root = Path(root)
@@ -233,10 +233,10 @@ def register_code_edit_tools(
         }
     )
     def code_batch_str_replace(
-        root: str,
         edits: list[dict[str, Any]],
         atomic: bool = True,
         config_edit_mode: str | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Multiple string-match replacements across files, atomic."""
         project_root = Path(root)

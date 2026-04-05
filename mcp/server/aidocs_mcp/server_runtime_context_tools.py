@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from .mcp_server_runtime_helpers import resolve_project_root
 from typing import Any
 
 def register_runtime_context_tools(
@@ -16,9 +17,9 @@ def register_runtime_context_tools(
         }
     )
     def session_journal_read(
-        root: str,
         session_id: str,
         last_n: int | None = None,
+        root: str = "",
     ) -> list[dict[str, str]]:
         """Read the session journal — a rolling log of significant decisions and outcomes.
 
@@ -27,7 +28,7 @@ def register_runtime_context_tools(
         Args:
             last_n: Only return the last N entries. None returns all.
         """
-        return hub.sessions.read_journal(Path(root), session_id, last_n=last_n)
+        return hub.sessions.read_journal(resolve_project_root(root), session_id, last_n=last_n)
 
     @server.tool(
         annotations={
@@ -37,11 +38,11 @@ def register_runtime_context_tools(
         }
     )
     def session_journal_log(
-        root: str,
         session_id: str,
         action_kind: str,
         intent: str,
         outcome: str,
+        root: str = "",
     ) -> dict[str, Any]:
         """Log a significant decision or outcome to the session journal.
 
@@ -54,7 +55,7 @@ def register_runtime_context_tools(
             outcome: What happened (1-2 sentences, max 120 chars).
         """
         return hub.sessions.write_journal_entry(
-            Path(root),
+            resolve_project_root(root),
             session_id,
             action_kind=action_kind,
             intent=intent,
@@ -69,14 +70,14 @@ def register_runtime_context_tools(
         }
     )
     def runtime_preflight(
-        root: str,
         action_kind: str,
         session_id: str | None = None,
         user_explicit_targets: list[str] | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return host/runtime policy guidance before performing an action."""
         return hub.policy.preflight_action(
-            Path(root),
+            resolve_project_root(root),
             action_kind=action_kind,
             session_id=session_id,
             user_explicit_targets=user_explicit_targets,
@@ -93,7 +94,7 @@ def register_runtime_context_tools(
         root: str, session_id: str, patch: dict[str, list[str]]
     ) -> dict[str, Any]:
         """Update structured sections in an existing SESSION.md file."""
-        session = hub.sessions.update_session(Path(root), session_id, patch)
+        session = hub.sessions.update_session(resolve_project_root(root), session_id, patch)
         return {
             "session_id": session.session_id,
             "path": str(session.path),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from .mcp_server_runtime_helpers import resolve_project_root
 from typing import Any
 
 
@@ -21,7 +22,7 @@ def register_project_admin_tools(
     )
     def procedure_index_status(root: str) -> dict[str, Any]:
         """Return current procedure-definition index status for a project."""
-        return hub.procedures.procedure_status(Path(root))
+        return hub.procedures.procedure_status(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -35,7 +36,7 @@ def register_project_admin_tools(
         root: str, query: str | None = None, limit: int = 50
     ) -> dict[str, Any]:
         """Return indexed procedure definitions, optionally filtered by query."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.procedures.find_procedures(root, query=query, limit=limit)
         return runtime.build_artifact_backed_result(
             root,
@@ -58,7 +59,7 @@ def register_project_admin_tools(
     )
     def procedure_capability_link_status(root: str) -> dict[str, Any]:
         """Return current procedure-to-capability link status for a project."""
-        return hub.procedure_links.link_status(Path(root))
+        return hub.procedure_links.link_status(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -68,13 +69,13 @@ def register_project_admin_tools(
         }
     )
     def procedure_capability_links_get(
-        root: str,
         procedure_id: str | None = None,
         unresolved_only: bool = False,
         limit: int = 50,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return indexed procedure-to-capability links, optionally filtered by procedure or unresolved status."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.procedure_links.list_links(
             root,
             procedure_id=procedure_id,
@@ -103,7 +104,7 @@ def register_project_admin_tools(
     )
     def execution_index_status(root: str) -> dict[str, Any]:
         """Return current execution-evidence index status for a project."""
-        return hub.execution.execution_status(Path(root))
+        return hub.execution.execution_status(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -117,7 +118,7 @@ def register_project_admin_tools(
         root: str, session_id: str | None = None, limit: int = 50
     ) -> dict[str, Any]:
         """Return indexed execution runs, optionally filtered by session."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.execution.list_runs(root, session_id=session_id, limit=limit)
         return runtime.build_artifact_backed_result(
             root,
@@ -141,13 +142,13 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def execution_events_get(
-        root: str,
         query: str | None = None,
         session_id: str | None = None,
         limit: int = 50,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return indexed execution events, optionally filtered by query/session."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.execution.list_events(
             root, query=query, session_id=session_id, limit=limit
         )
@@ -173,7 +174,6 @@ def register_project_admin_tools(
         }
     )
     def execution_run_record(
-        root: str,
         run_kind: str,
         source_kind: str,
         session_id: str | None = None,
@@ -185,10 +185,11 @@ def register_project_admin_tools(
         metadata: dict[str, Any] | None = None,
         run_id: str | None = None,
         completed_at: str | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Record or update an execution run for observed work."""
         resolved = hub.execution.record_run(
-            Path(root),
+            resolve_project_root(root),
             run_kind=run_kind,
             source_kind=source_kind,
             session_id=session_id,
@@ -211,7 +212,6 @@ def register_project_admin_tools(
         }
     )
     def execution_event_record(
-        root: str,
         event_kind: str,
         source_kind: str,
         session_id: str | None = None,
@@ -224,10 +224,11 @@ def register_project_admin_tools(
         run_id: str | None = None,
         event_id: str | None = None,
         observed_at: str | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Record one execution event for observed work."""
         resolved = hub.execution.record_event(
-            Path(root),
+            resolve_project_root(root),
             event_kind=event_kind,
             source_kind=source_kind,
             session_id=session_id,
@@ -252,14 +253,14 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def execution_query_last(
-        root: str,
         action_kind: str | None = None,
         capability_name: str | None = None,
         session_id: str | None = None,
         limit: int = 5,
+        root: str = "",
     ) -> dict[str, Any]:
         """Query: 'What actually ran last time?' — returns recent execution events matching filters."""
-        root = Path(root)
+        root = resolve_project_root(root)
         result = hub.execution.query_last_execution(
             root,
             action_kind=action_kind,
@@ -294,7 +295,7 @@ def register_project_admin_tools(
         root: str, session_id: str | None = None
     ) -> dict[str, Any]:
         """Query: 'What happened in this session?' — returns aggregate execution summary with ad-hoc vs procedure-linked breakdown."""
-        return hub.execution.query_execution_summary(Path(root), session_id=session_id)
+        return hub.execution.query_execution_summary(resolve_project_root(root), session_id=session_id)
 
     @server.tool(
         annotations={
@@ -305,12 +306,12 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def dashboard_snapshot(
-        root: str,
         session_id: str | None = None,
         event_limit: int = 12,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return an operator-friendly dashboard snapshot for sessions, conductor state, config, execution, and usage proxies."""
-        root = Path(root)
+        root = resolve_project_root(root)
         payload = runtime.dashboard_snapshot(
             root,
             session_id=session_id,
@@ -364,7 +365,7 @@ def register_project_admin_tools(
     ) -> dict[str, Any]:
         """Query: 'Did execution follow the intended procedure?' — compares procedure-linked runs vs ad-hoc runs."""
         return hub.execution.query_procedure_compliance(
-            Path(root), session_id=session_id, limit=limit
+            resolve_project_root(root), session_id=session_id, limit=limit
         )
 
     @server.tool(
@@ -379,7 +380,7 @@ def register_project_admin_tools(
     ) -> dict[str, Any]:
         """Prune old execution events by age and count. Runs automatically on project_sync_indexes."""
         return hub.execution.prune_old_events(
-            Path(root), max_age_days=max_age_days, max_events=max_events
+            resolve_project_root(root), max_age_days=max_age_days, max_events=max_events
         )
 
     @server.tool(
@@ -391,14 +392,14 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def action_surface_compare(
-        root: str,
         query: str,
         session_id: str | None = None,
         limit: int = 20,
+        root: str = "",
     ) -> dict[str, Any]:
         """Compare what should happen, what can happen, and what did happen for a query."""
         return hub.action_surface.compare(
-            Path(root), query=query, session_id=session_id, limit=limit
+            resolve_project_root(root), query=query, session_id=session_id, limit=limit
         )
 
     @server.tool(
@@ -410,14 +411,14 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def action_surface_assess(
-        root: str,
         query: str,
         session_id: str | None = None,
         limit: int = 20,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return an operator-facing assessment of the action surface for a query."""
         return hub.action_surface.assess(
-            Path(root), query=query, session_id=session_id, limit=limit
+            resolve_project_root(root), query=query, session_id=session_id, limit=limit
         )
 
     @server.tool(
@@ -429,14 +430,14 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def action_surface_status_bundle(
-        root: str,
         queries: list[str],
         session_id: str | None = None,
         limit: int = 20,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return an operator-facing multi-query status bundle over action surfaces."""
         return hub.action_surface.status_bundle(
-            Path(root), queries=queries, session_id=session_id, limit=limit
+            resolve_project_root(root), queries=queries, session_id=session_id, limit=limit
         )
 
     @server.tool(
@@ -448,14 +449,14 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def action_surface_session_bundle(
-        root: str,
         session_id: str,
         limit: int = 20,
         max_queries: int = 12,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return a session-driven operator-facing action-surface status bundle."""
         return hub.action_surface.session_status_bundle(
-            Path(root),
+            resolve_project_root(root),
             session_id=session_id,
             limit=limit,
             max_queries=max_queries,
@@ -470,13 +471,13 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def action_surface_current_session_bundle(
-        root: str,
         limit: int = 20,
         max_queries: int = 12,
+        root: str = "",
     ) -> dict[str, Any]:
         """Return a session-driven operator-facing action-surface bundle for the current managed or sole active session."""
         return hub.action_surface.current_session_bundle(
-            Path(root), limit=limit, max_queries=max_queries
+            resolve_project_root(root), limit=limit, max_queries=max_queries
         )
 
     @server.tool(
@@ -488,7 +489,7 @@ def register_project_admin_tools(
     )
     def workflow_actions_compile(root: str) -> dict[str, Any]:
         """Compile human-readable workflow rules into the runtime workflow artifact."""
-        return hub.workflow.compile_project_rules(Path(root))
+        return hub.workflow.compile_project_rules(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -500,7 +501,7 @@ def register_project_admin_tools(
     )
     def workflow_actions_get(root: str) -> dict[str, Any] | None:
         """Read the compiled runtime workflow artifact for a project if present."""
-        return hub.workflow.read_compiled(Path(root))
+        return hub.workflow.read_compiled(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -516,7 +517,7 @@ def register_project_admin_tools(
         pending: list[dict[str, Any]] = []
         for trigger in triggers:
             pending.extend(
-                hub.workflow.pending_actions_for_trigger(Path(root), trigger)
+                hub.workflow.pending_actions_for_trigger(resolve_project_root(root), trigger)
             )
         return {
             "action_kind": action_kind,
@@ -534,7 +535,7 @@ def register_project_admin_tools(
     )
     def project_status_model_get(root: str) -> dict[str, Any] | None:
         """Read the deterministic project status model if present."""
-        return hub.project_status.read_model(Path(root))
+        return hub.project_status.read_model(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -546,7 +547,7 @@ def register_project_admin_tools(
     )
     def project_status_evaluate(root: str) -> dict[str, Any]:
         """Evaluate the deterministic project status model."""
-        return hub.project_status.evaluate(Path(root))
+        return hub.project_status.evaluate(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -561,7 +562,7 @@ def register_project_admin_tools(
     ) -> dict[str, Any]:
         """Return status details plus a subsystem bundle for one declared project-status area."""
         return hub.project_status.get_area_bundle(
-            Path(root), area_id=area_id, limit=limit
+            resolve_project_root(root), area_id=area_id, limit=limit
         )
 
     @server.tool(
@@ -589,12 +590,12 @@ def register_project_admin_tools(
         meta={"anthropic/searchHint": True},
     )
     def related_project_symbol_bundle(
-        root: str,
         name: str,
         symbol: str,
         path: str | None = None,
         kind: str | None = None,
         limit: int = 50,
+        root: str = "",
     ) -> dict[str, Any]:
         """Build a symbol bundle from a configured related project."""
         related_root = resolve_related_root(root, name)
@@ -632,7 +633,7 @@ def register_project_admin_tools(
         root: str, name: str, concept: str, limit: int = 20
     ) -> dict[str, Any]:
         """Compare a concept between the current project and a configured related project."""
-        root = Path(root)
+        root = resolve_project_root(root)
         related_root = resolve_related_root(root, name)
         hub.code.sync_code_manifest(root, include_tests=False)
         hub.schema.sync_schema(root)

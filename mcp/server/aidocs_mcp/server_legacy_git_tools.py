@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from .mcp_server_runtime_helpers import resolve_project_root
 from typing import Any
 
 
@@ -16,7 +17,7 @@ def register_legacy_git_tools(
 ) -> None:
     def legacy_read_runtime(root: str) -> dict[str, Any]:
         """Inspect legacy NOW/plans state without mutating the project."""
-        return hub.legacy.inspect_legacy(Path(root))
+        return hub.legacy.inspect_legacy(resolve_project_root(root))
 
     @server.tool(
         annotations={
@@ -29,7 +30,7 @@ def register_legacy_git_tools(
         root: str, session_id: str | None = None
     ) -> dict[str, Any]:
         """Build a non-destructive session proposal from legacy NOW/plans state."""
-        return hub.legacy.build_session_proposal(Path(root), session_id=session_id)
+        return hub.legacy.build_session_proposal(resolve_project_root(root), session_id=session_id)
 
     # ═══════════════════════════════════════════════════════════════════════
     # Database Query Tool
@@ -43,9 +44,9 @@ def register_legacy_git_tools(
         }
     )
     def db_query(
-        root: str,
         sql: str,
         connection_string: str | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Execute a read-only SQL query against the project's PostgreSQL database.
 
@@ -69,7 +70,7 @@ def register_legacy_git_tools(
             }
 
         # Resolve connection params
-        root = Path(root)
+        root = resolve_project_root(root)
         host = "localhost"
         port = "5432"
         database = "dentalapp"
@@ -198,9 +199,9 @@ def register_legacy_git_tools(
 
     @server.tool()
     async def git_diag(
-        root: str,
         upstream: str = "upstream/main",
         local: str = "HEAD",
+        root: str = "",
     ) -> dict[str, Any]:
         """Run a minimal git diagnostic inside the live MCP server process.
 
@@ -212,7 +213,7 @@ def register_legacy_git_tools(
         import time
 
         start = time.perf_counter()
-        root = Path(root)
+        root = resolve_project_root(root)
         if not (root / ".git").exists():
             for child in root.iterdir():
                 if child.is_dir() and (child / ".git").exists():
@@ -265,11 +266,11 @@ def register_legacy_git_tools(
     @server.tool()
     @timed_git_async
     async def git_fork_status(
-        root: str,
         upstream: str = "upstream/main",
         local: str = "HEAD",
         include_files: bool = False,
         timeout: int | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Analyze the state of a fork vs upstream: how far behind, how many local changes, conflict risk.
 
@@ -293,7 +294,7 @@ def register_legacy_git_tools(
             times[name] = round(time.perf_counter() - start, 3)
 
         # Find git root — check project_root itself first, then one level down
-        root = Path(root)
+        root = resolve_project_root(root)
         if not (root / ".git").exists():
             for child in root.iterdir():
                 if child.is_dir() and (child / ".git").exists():
@@ -466,11 +467,11 @@ def register_legacy_git_tools(
     @server.tool()
     @timed_git_async
     async def git_upstream_changes(
-        root: str,
         upstream: str = "upstream/main",
         path_filter: str | None = None,
         limit: int = 50,
         timeout: int | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Summarize what changed upstream since the fork diverged.
 
@@ -482,7 +483,7 @@ def register_legacy_git_tools(
         """
         import subprocess
 
-        root = Path(root)
+        root = resolve_project_root(root)
         if not (root / ".git").exists():
             for child in root.iterdir():
                 if child.is_dir() and (child / ".git").exists():
@@ -549,10 +550,10 @@ def register_legacy_git_tools(
     @server.tool()
     @timed_git_async
     async def git_conflict_analysis(
-        root: str,
         file_path: str,
         upstream: str = "upstream/main",
         timeout: int | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Deep analysis of a single file that will likely conflict during merge.
 
@@ -564,7 +565,7 @@ def register_legacy_git_tools(
         """
         import subprocess
 
-        root = Path(root)
+        root = resolve_project_root(root)
         if not (root / ".git").exists():
             for child in root.iterdir():
                 if child.is_dir() and (child / ".git").exists():
@@ -634,11 +635,11 @@ def register_legacy_git_tools(
     @server.tool()
     @timed_git_async
     async def git_merge_plan(
-        root: str,
         upstream: str = "upstream/main",
         local: str = "HEAD",
         limit: int = 50,
         timeout: int | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Generate a merge plan: which files to keep, which to take from upstream, which need manual merge.
 
@@ -655,7 +656,7 @@ def register_legacy_git_tools(
         def mark(name: str) -> None:
             times[name] = round(time.perf_counter() - start, 3)
 
-        root = Path(root)
+        root = resolve_project_root(root)
         if not (root / ".git").exists():
             for child in root.iterdir():
                 if child.is_dir() and (child / ".git").exists():

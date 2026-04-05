@@ -29,21 +29,35 @@ type OverviewPageProps = {
 };
 
 export function OverviewPage({ snapshot, selectedSession, sessionBreakdown }: OverviewPageProps) {
+  const [tokenView, setTokenView] = useState<"session" | "inout">("session");
   const sessionData = sessionBreakdown
     .filter((s) => s.total > 0)
     .map((s) => ({ name: s.session_id.replace(/^\d{4}-\d{2}-\d{2}-/, ""), value: s.total }));
+  const tokenEstimates = snapshot.token_usage.token_estimates ?? { tokens_in: 0, tokens_out: 0, total: 0 };
+  const inOutData = [
+    { name: "Tokens in", value: tokenEstimates.tokens_in },
+    { name: "Tokens out", value: tokenEstimates.tokens_out },
+  ];
+  const chartData = tokenView === "session" ? sessionData : inOutData;
+  const hasData = chartData.some((d) => d.value > 0);
 
   return (
     <section className="page">
       <div className="overview-top">
         <section className="flat-panel overview-token-panel">
-          <div className="section-label">Token Usage by Session</div>
+          <div className="chart-panel-header">
+            <div className="section-label">Token Usage</div>
+            <div className="chart-mode-toggle">
+              <button type="button" className={tokenView === "session" ? "toggle-btn is-active" : "toggle-btn"} onClick={() => setTokenView("session")}>Sessions</button>
+              <button type="button" className={tokenView === "inout" ? "toggle-btn is-active" : "toggle-btn"} onClick={() => setTokenView("inout")}>In/Out</button>
+            </div>
+          </div>
           <div className="chart-container-fill">
-            {sessionData.length > 0 ? (
+            {hasData ? (
               <ResponsiveContainer width="100%" height="100%">
                 <RechartsPie>
-                  <Pie data={sessionData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="35%" outerRadius="70%">
-                    {sessionData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                  <Pie data={chartData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="35%" outerRadius="70%">
+                    {chartData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                   </Pie>
                   <Tooltip content={<ChartTooltip />} />
                   <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: "0.78rem", color: "#b9d0c2" }} />
@@ -218,6 +232,7 @@ export function ExecutionPage({ recentExecution }: ExecutionPageProps) {
 type UsagePageProps = {
   reason: string;
   tokenEstimates: { tokens_in: number; tokens_out: number; total: number };
+  sessionBreakdown: Array<{ session_id: string; tokens_in: number; tokens_out: number; total: number; events: number }>;
   actionRows: Array<DashboardSeriesItem & { width: string }>;
   eventRows: Array<DashboardSeriesItem & { width: string }>;
 };
@@ -233,7 +248,7 @@ function ChartTooltip({ active, payload }: { active?: boolean; payload?: Array<{
   );
 }
 
-export function UsagePage({ reason, tokenEstimates, actionRows, eventRows }: UsagePageProps) {
+export function UsagePage({ reason, tokenEstimates, sessionBreakdown, actionRows, eventRows }: UsagePageProps) {
   const [actionMode, setActionMode] = useState<"bar" | "pie">("bar");
   const [eventMode, setEventMode] = useState<"bar" | "pie">("bar");
 
@@ -241,6 +256,9 @@ export function UsagePage({ reason, tokenEstimates, actionRows, eventRows }: Usa
     { name: "Tokens in", value: tokenEstimates.tokens_in },
     { name: "Tokens out", value: tokenEstimates.tokens_out },
   ];
+  const sessionData = sessionBreakdown
+    .filter((s) => s.total > 0)
+    .map((s) => ({ name: s.session_id.replace(/^\d{4}-\d{2}-\d{2}-/, ""), value: s.total }));
   const actionData = actionRows.map((r) => ({ name: r.label, value: r.count }));
   const eventData = eventRows.map((r) => ({ name: r.label, value: r.count }));
 
@@ -262,20 +280,40 @@ export function UsagePage({ reason, tokenEstimates, actionRows, eventRows }: Usa
           </div>
         </div>
       </div>
-      <section className="flat-panel">
-        <div className="section-label">Token Distribution</div>
-        <div className="chart-container chart-wide">
-          <ResponsiveContainer width="100%" height={180}>
-            <RechartsPie>
-              <Pie data={tokenData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={40} outerRadius={70}>
-                {tokenData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-              </Pie>
-              <Tooltip content={<ChartTooltip />} />
+      <div className="usage-grid usage-grid-2col">
+        <section className="flat-panel">
+          <div className="section-label">In / Out Distribution</div>
+          <div className="chart-container">
+            <ResponsiveContainer width="100%" height={220}>
+              <RechartsPie>
+                <Pie data={tokenData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={40} outerRadius={75}>
+                  {tokenData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                </Pie>
+                <Tooltip content={<ChartTooltip />} />
+                <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: "0.78rem", color: "#b9d0c2" }} />
+              </RechartsPie>
+            </ResponsiveContainer>
+          </div>
+        </section>
+        <section className="flat-panel">
+          <div className="section-label">By Session</div>
+          <div className="chart-container">
+            {sessionData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={220}>
+                <RechartsPie>
+                  <Pie data={sessionData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={40} outerRadius={75}>
+                    {sessionData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip content={<ChartTooltip />} />
                   <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: "0.78rem", color: "#b9d0c2" }} />
-            </RechartsPie>
-          </ResponsiveContainer>
-        </div>
-      </section>
+                </RechartsPie>
+              </ResponsiveContainer>
+            ) : (
+              <div className="empty-panel">No per-session token data yet</div>
+            )}
+          </div>
+        </section>
+      </div>
       <div className="usage-grid usage-grid-2col">
         <section className="flat-panel">
           <div className="chart-panel-header">

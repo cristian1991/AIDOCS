@@ -274,6 +274,7 @@ function App() {
         <UsagePage
           reason={snapshot.token_usage.reason}
           tokenEstimates={snapshot.token_usage.token_estimates ?? { tokens_in: 0, tokens_out: 0, total: 0 }}
+          sessionBreakdown={snapshot.token_usage.session_breakdown ?? []}
           actionRows={actionRows}
           eventRows={eventRows}
         />

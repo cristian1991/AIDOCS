@@ -1512,6 +1512,130 @@ select {
   font-size: 0.95rem;
   max-width: 400px;
 }
+
+.page-conductor-mock {
+  position: relative;
+  height: 100%;
+  overflow: hidden !important;
+}
+
+.conductor-layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+  filter: blur(1.5px);
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.conductor-lanes-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-right: 1px solid var(--line);
+  padding-right: 12px;
+}
+
+.mock-lane {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.mock-lane-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mock-lane-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mock-status-idle { background: var(--text-faint); }
+.mock-status-running { background: var(--accent-bright); box-shadow: 0 0 6px rgba(140, 224, 175, 0.4); }
+.mock-status-blocked { background: #e8a838; }
+.mock-status-done { background: #4a90d9; }
+
+.mock-lane small {
+  color: var(--text-faint);
+  font-size: 0.78rem;
+}
+
+.conductor-chat-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.mock-chat-messages {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+  padding: 4px 0;
+}
+
+.mock-msg {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+}
+
+.mock-msg strong {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.mock-msg-system {
+  background: rgba(51, 132, 65, 0.08);
+  border-left: 2px solid var(--accent);
+}
+.mock-msg-system strong { color: var(--accent-bright); }
+
+.mock-msg-agent {
+  background: rgba(74, 144, 217, 0.08);
+  border-left: 2px solid #4a90d9;
+}
+.mock-msg-agent strong { color: #4a90d9; }
+
+.mock-msg-user {
+  background: rgba(176, 124, 223, 0.08);
+  border-left: 2px solid #b07cdf;
+}
+.mock-msg-user strong { color: #b07cdf; }
+
+.mock-chat-input input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  padding: 8px 12px;
+  color: var(--text-faint);
+}
+
+.conductor-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  place-content: center;
+  z-index: 2;
+  background: rgba(7, 17, 15, 0.3);
+}
 .managed-indicator {
   display: flex;
   align-items: center;

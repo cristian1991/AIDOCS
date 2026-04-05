@@ -165,10 +165,73 @@ export function ConductorPage({
   blockedReasons,
 }: ConductorPageProps) {
   return (
-    <section className="page page-coming-soon">
-      <div className="coming-soon">
-        <h2>SOON<sup>TM</sup></h2>
-        <p>Lane-aware plan conductor with dependency tracking and parallel execution is on its way.</p>
+    <section className="page page-conductor-mock">
+      <div className="conductor-layout">
+        <div className="conductor-lanes-panel">
+          <div className="section-label">Lanes</div>
+          <div className="mock-lane">
+            <div className="mock-lane-header">
+              <span className="mock-lane-status mock-status-idle" />
+              <strong>Frontend Refactor</strong>
+            </div>
+            <small>depends on: —</small>
+          </div>
+          <div className="mock-lane">
+            <div className="mock-lane-header">
+              <span className="mock-lane-status mock-status-running" />
+              <strong>API Integration</strong>
+            </div>
+            <small>depends on: schema</small>
+          </div>
+          <div className="mock-lane">
+            <div className="mock-lane-header">
+              <span className="mock-lane-status mock-status-blocked" />
+              <strong>Database Migration</strong>
+            </div>
+            <small>depends on: api</small>
+          </div>
+          <div className="mock-lane">
+            <div className="mock-lane-header">
+              <span className="mock-lane-status mock-status-done" />
+              <strong>Schema Design</strong>
+            </div>
+            <small>depends on: —</small>
+          </div>
+        </div>
+        <div className="conductor-chat-panel">
+          <div className="section-label">Agent Communication</div>
+          <div className="mock-chat-messages">
+            <div className="mock-msg mock-msg-system">
+              <strong>conductor</strong>
+              <span>Lane "Schema Design" completed. Unblocking "API Integration".</span>
+            </div>
+            <div className="mock-msg mock-msg-agent">
+              <strong>agent-1</strong>
+              <span>Starting API Integration lane. Reading schema artifacts...</span>
+            </div>
+            <div className="mock-msg mock-msg-agent">
+              <strong>agent-2</strong>
+              <span>Frontend Refactor ready. Waiting for conductor dispatch.</span>
+            </div>
+            <div className="mock-msg mock-msg-system">
+              <strong>conductor</strong>
+              <span>Dispatching "Frontend Refactor" to agent-2. Mode: inline.</span>
+            </div>
+            <div className="mock-msg mock-msg-user">
+              <strong>operator</strong>
+              <span>Pause agent-1, prioritize frontend.</span>
+            </div>
+          </div>
+          <div className="mock-chat-input">
+            <input type="text" placeholder="Send command to conductor..." disabled />
+          </div>
+        </div>
+      </div>
+      <div className="conductor-overlay">
+        <div className="coming-soon">
+          <h2>SOON<sup>TM</sup></h2>
+          <p>Lane-aware plan conductor with cross-agent communication and control is on its way.</p>
+        </div>
       </div>
     </section>
   );

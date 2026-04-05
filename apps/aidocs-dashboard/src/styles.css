@@ -80,6 +80,7 @@ textarea:focus-visible {
   border-top: 1px solid var(--line);
   display: grid;
   gap: 4px;
+  text-align: center;
 }
 
 .sidebar-footer strong {

@@ -169,58 +169,60 @@ export function ConductorPage({
       <div className="conductor-layout">
         <div className="conductor-lanes-panel">
           <div className="section-label">Lanes</div>
-          <div className="mock-lane">
-            <div className="mock-lane-header">
-              <span className="mock-lane-status mock-status-idle" />
-              <strong>Frontend Refactor</strong>
-            </div>
-            <small>depends on: —</small>
+          <div className="mock-lane-group">
+            <small className="mock-group-label">Phase 1 — Foundation</small>
+            <div className="mock-lane"><div className="mock-lane-header"><span className="mock-lane-status mock-status-done" /><strong>Schema Design</strong></div><small>completed · agent-1</small></div>
           </div>
-          <div className="mock-lane">
-            <div className="mock-lane-header">
-              <span className="mock-lane-status mock-status-running" />
-              <strong>API Integration</strong>
-            </div>
-            <small>depends on: schema</small>
+          <div className="mock-lane-group mock-group-parallel">
+            <small className="mock-group-label">Phase 2 — Parallel Build {"⚡"}</small>
+            <div className="mock-lane"><div className="mock-lane-header"><span className="mock-lane-status mock-status-running" /><strong>API Integration</strong></div><small>agent-1 · depends: schema</small></div>
+            <div className="mock-lane"><div className="mock-lane-header"><span className="mock-lane-status mock-status-running" /><strong>Frontend Refactor</strong></div><small>agent-2 · independent</small></div>
+            <div className="mock-lane"><div className="mock-lane-header"><span className="mock-lane-status mock-status-running" /><strong>Auth Service</strong></div><small>agent-3 · depends: schema</small></div>
           </div>
-          <div className="mock-lane">
-            <div className="mock-lane-header">
-              <span className="mock-lane-status mock-status-blocked" />
-              <strong>Database Migration</strong>
-            </div>
-            <small>depends on: api</small>
+          <div className="mock-lane-group">
+            <small className="mock-group-label">Phase 3 — Integration</small>
+            <div className="mock-lane"><div className="mock-lane-header"><span className="mock-lane-status mock-status-blocked" /><strong>Database Migration</strong></div><small>blocked by: api, auth</small></div>
+            <div className="mock-lane"><div className="mock-lane-header"><span className="mock-lane-status mock-status-idle" /><strong>UI Integration</strong></div><small>depends: frontend, api</small></div>
           </div>
-          <div className="mock-lane">
-            <div className="mock-lane-header">
-              <span className="mock-lane-status mock-status-done" />
-              <strong>Schema Design</strong>
-            </div>
-            <small>depends on: —</small>
+          <div className="mock-lane-group">
+            <small className="mock-group-label">Phase 4 — Verification</small>
+            <div className="mock-lane"><div className="mock-lane-header"><span className="mock-lane-status mock-status-idle" /><strong>E2E Tests</strong></div><small>depends on: all</small></div>
+            <div className="mock-lane"><div className="mock-lane-header"><span className="mock-lane-status mock-status-idle" /><strong>Security Audit</strong></div><small>depends on: auth, db</small></div>
+          </div>
+        </div>
+        <div className="conductor-tools-panel">
+          <div className="section-label">Tool Activity</div>
+          <div className="mock-tool-feed">
+            <div className="mock-tool-row"><span className="mock-tool-name">code_find</span><span className="mock-tool-action">symbols</span><time>04:58:01Z</time></div>
+            <div className="mock-tool-row"><span className="mock-tool-name">code_get_lines</span><span className="mock-tool-action">read</span><time>04:57:58Z</time></div>
+            <div className="mock-tool-row"><span className="mock-tool-name">code_edit_lines</span><span className="mock-tool-action">write</span><time>04:57:52Z</time></div>
+            <div className="mock-tool-row"><span className="mock-tool-name">code_text_search</span><span className="mock-tool-action">search</span><time>04:57:48Z</time></div>
+            <div className="mock-tool-row"><span className="mock-tool-name">code_investigate</span><span className="mock-tool-action">explore</span><time>04:57:40Z</time></div>
+            <div className="mock-tool-row"><span className="mock-tool-name">code_bundle</span><span className="mock-tool-action">context</span><time>04:57:35Z</time></div>
+            <div className="mock-tool-row"><span className="mock-tool-name">code_trace</span><span className="mock-tool-action">css_class</span><time>04:57:30Z</time></div>
+            <div className="mock-tool-row"><span className="mock-tool-name">session_update</span><span className="mock-tool-action">lifecycle</span><time>04:57:22Z</time></div>
+            <div className="mock-tool-row"><span className="mock-tool-name">code_str_replace</span><span className="mock-tool-action">write</span><time>04:57:15Z</time></div>
+            <div className="mock-tool-row"><span className="mock-tool-name">task_update</span><span className="mock-tool-action">lifecycle</span><time>04:57:10Z</time></div>
+            <div className="mock-tool-row"><span className="mock-tool-name">code_find</span><span className="mock-tool-action">references</span><time>04:57:05Z</time></div>
+            <div className="mock-tool-row"><span className="mock-tool-name">code_get_lines</span><span className="mock-tool-action">read</span><time>04:56:58Z</time></div>
+            <div className="mock-tool-row"><span className="mock-tool-name">schema_query</span><span className="mock-tool-action">entity</span><time>04:56:50Z</time></div>
+            <div className="mock-tool-row"><span className="mock-tool-name">memory_capture</span><span className="mock-tool-action">feedback</span><time>04:56:42Z</time></div>
           </div>
         </div>
         <div className="conductor-chat-panel">
           <div className="section-label">Agent Communication</div>
           <div className="mock-chat-messages">
-            <div className="mock-msg mock-msg-system">
-              <strong>conductor</strong>
-              <span>Lane "Schema Design" completed. Unblocking "API Integration".</span>
-            </div>
-            <div className="mock-msg mock-msg-agent">
-              <strong>agent-1</strong>
-              <span>Starting API Integration lane. Reading schema artifacts...</span>
-            </div>
-            <div className="mock-msg mock-msg-agent">
-              <strong>agent-2</strong>
-              <span>Frontend Refactor ready. Waiting for conductor dispatch.</span>
-            </div>
-            <div className="mock-msg mock-msg-system">
-              <strong>conductor</strong>
-              <span>Dispatching "Frontend Refactor" to agent-2. Mode: inline.</span>
-            </div>
-            <div className="mock-msg mock-msg-user">
-              <strong>operator</strong>
-              <span>Pause agent-1, prioritize frontend.</span>
-            </div>
+            <div className="mock-msg mock-msg-system"><strong>conductor</strong><span>Session started. 6 lanes detected, 1 immediately runnable.</span></div>
+            <div className="mock-msg mock-msg-system"><strong>conductor</strong><span>Dispatching "Schema Design" to agent-1. Mode: inline.</span></div>
+            <div className="mock-msg mock-msg-agent"><strong>agent-1</strong><span>Schema Design complete. 4 entities defined, 12 fields indexed.</span></div>
+            <div className="mock-msg mock-msg-system"><strong>conductor</strong><span>Lane "Schema Design" completed. Unblocking "API Integration".</span></div>
+            <div className="mock-msg mock-msg-agent"><strong>agent-1</strong><span>Starting API Integration lane. Reading schema artifacts...</span></div>
+            <div className="mock-msg mock-msg-agent"><strong>agent-2</strong><span>Frontend Refactor ready. Waiting for conductor dispatch.</span></div>
+            <div className="mock-msg mock-msg-system"><strong>conductor</strong><span>Dispatching "Frontend Refactor" to agent-2. Mode: inline.</span></div>
+            <div className="mock-msg mock-msg-agent"><strong>agent-2</strong><span>Analyzing component tree... 23 files in scope.</span></div>
+            <div className="mock-msg mock-msg-user"><strong>operator</strong><span>Pause agent-1, prioritize frontend.</span></div>
+            <div className="mock-msg mock-msg-system"><strong>conductor</strong><span>Agent-1 paused. Frontend Refactor now priority.</span></div>
+            <div className="mock-msg mock-msg-agent"><strong>agent-2</strong><span>Found 8 components to refactor. Starting with App.tsx...</span></div>
           </div>
           <div className="mock-chat-input">
             <input type="text" placeholder="Send command to conductor..." disabled />

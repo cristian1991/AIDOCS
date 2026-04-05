@@ -1522,8 +1522,8 @@ select {
 
 .conductor-layout {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: 200px 1fr 300px;
+  gap: 0;
   height: 100%;
   min-height: 0;
   filter: blur(1.5px);
@@ -1532,23 +1532,84 @@ select {
 }
 
 .conductor-lanes-panel {
-  grid-column: 1 / 3;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 12px;
+  border-right: 1px solid var(--line);
+  overflow: auto;
 }
 
-.conductor-lanes-panel > .section-label {
-  grid-column: 1 / -1;
+.conductor-tools-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px;
+  min-height: 0;
+}
+
+.mock-tool-feed {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mock-tool-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  padding: 5px 8px;
+  font-size: 0.82rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.mock-tool-name {
+  color: var(--accent-bright);
+  font-family: "Cascadia Code", monospace;
+  font-size: 0.78rem;
+}
+
+.mock-tool-action {
+  color: var(--text-faint);
+  font-size: 0.75rem;
+}
+
+.mock-tool-row time {
+  color: var(--text-faint);
+  font-size: 0.72rem;
+}
+
+.mock-lane-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mock-group-label {
+  color: var(--text-faint);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 0;
+}
+
+.mock-group-parallel {
+  border-left: 2px solid var(--accent-bright);
+  padding-left: 8px;
+}
+
+.mock-group-parallel .mock-group-label {
+  color: var(--accent-bright);
 }
 
 .mock-lane {
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  padding: 10px;
+  padding: 8px 10px;
   display: grid;
-  gap: 4px;
+  gap: 2px;
 }
 
 .mock-lane-header {

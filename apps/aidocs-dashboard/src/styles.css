@@ -444,8 +444,8 @@ select {
 
 .page-overview {
   height: 100%;
-  overflow: hidden;
-  grid-template-rows: 1fr auto;
+  overflow: auto;
+  grid-template-rows: minmax(300px, 1fr) auto;
   grid-auto-rows: auto;
   align-content: stretch;
   align-items: stretch;
@@ -453,8 +453,8 @@ select {
 
 .page-usage {
   height: 100%;
-  overflow: hidden;
-  grid-template-rows: auto 1fr 1fr;
+  overflow: auto;
+  grid-template-rows: auto minmax(240px, 1fr) minmax(260px, 1fr);
   grid-auto-rows: auto;
   align-content: stretch;
   align-items: stretch;

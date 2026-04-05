@@ -442,6 +442,35 @@ select {
   padding-right: 4px;
 }
 
+.page-overview {
+  height: 100%;
+  overflow: hidden;
+  grid-template-rows: minmax(260px, 1fr) auto;
+  align-content: stretch;
+}
+
+.page-usage {
+  height: 100%;
+  overflow: hidden;
+  grid-template-rows: auto 1fr 1fr;
+  align-content: stretch;
+}
+
+.page-usage .usage-grid {
+  min-height: 0;
+}
+
+.page-usage .flat-panel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.page-usage .chart-container {
+  flex: 1;
+  min-height: 0;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -491,7 +520,7 @@ select {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
-  min-height: 280px;
+  min-height: 0;
 }
 
 .overview-token-panel {

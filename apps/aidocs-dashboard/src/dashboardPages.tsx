@@ -42,7 +42,7 @@ export function OverviewPage({ snapshot, selectedSession, sessionBreakdown }: Ov
   const hasData = chartData.some((d) => d.value > 0);
 
   return (
-    <section className="page">
+    <section className="page page-overview">
       <div className="overview-top">
         <section className="flat-panel overview-token-panel">
           <div className="chart-panel-header">
@@ -263,7 +263,7 @@ export function UsagePage({ reason, tokenEstimates, sessionBreakdown, actionRows
   const eventData = eventRows.map((r) => ({ name: r.label, value: r.count }));
 
   return (
-    <section className="page">
+    <section className="page page-usage">
       <div className="usage-header">
         <div className="usage-token-summary">
           <div className="token-stat">

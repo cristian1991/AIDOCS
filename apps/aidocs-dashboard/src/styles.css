@@ -1240,6 +1240,10 @@ select {
   resize: none;
   outline: none;
   z-index: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  border-radius: 0;
+  text-rendering: auto;
 }
 
 .toml-highlight {
@@ -1258,8 +1262,8 @@ select {
   color: var(--text-soft);
 }
 .hl-comment { color: #5c7a6e; font-style: italic; }
-.hl-section { color: var(--accent-bright); font-weight: 700; }
-.hl-key { color: #f2fbf6; font-weight: 600; }
+.hl-section { color: var(--accent-bright); }
+.hl-key { color: #f2fbf6; }
 .hl-eq { color: #5c7a6e; }
 .hl-string { color: #e8a838; }
 .hl-bool { color: #4a90d9; }

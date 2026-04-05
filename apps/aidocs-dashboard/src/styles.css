@@ -1195,20 +1195,48 @@ select {
   caret-color: var(--accent-bright);
 }
 
-.toml-highlight {
+.toml-editor-wrap {
   flex: 1;
   min-height: 0;
-  margin: 0;
+  position: relative;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: #091310;
-  font: 0.9rem/1.55 "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  overflow: hidden;
+}
+
+.toml-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   padding: 14px;
+  font: 0.9rem/1.55 "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0;
+  tab-size: 2;
   white-space: pre-wrap;
   word-wrap: break-word;
+  overflow-wrap: break-word;
   overflow: auto;
-  cursor: text;
+  box-sizing: border-box;
+}
+
+.toml-highlight {
+  pointer-events: none;
   color: var(--text-soft);
+}
+
+.toml-input {
+  color: transparent;
+  caret-color: var(--accent-bright);
+  resize: none;
+  z-index: 1;
+  -webkit-text-fill-color: transparent;
 }
 
 .hl-comment { color: #5c7a6e; font-style: italic; }
@@ -1220,6 +1248,7 @@ select {
 .hl-number { color: #d97a4a; }
 .hl-array { color: #5cb8a8; }
 .hl-value { color: #b9d0c2; }
+
 .document-meta-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

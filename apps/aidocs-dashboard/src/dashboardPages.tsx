@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { PieChart as RechartsPie, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from "recharts";
 import type {
   DashboardConfigEntry,
@@ -47,27 +47,33 @@ function highlightToml(text: string): string {
 }
 
 function TomlEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const [editing, setEditing] = useState(false);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const preRef = useRef<HTMLPreElement>(null);
 
-  if (editing) {
-    return (
-      <textarea
-        className="toml-editor"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={() => setEditing(false)}
-        spellCheck={false}
-        autoFocus
-      />
-    );
-  }
+  const syncScroll = useCallback(() => {
+    if (taRef.current && preRef.current) {
+      preRef.current.scrollTop = taRef.current.scrollTop;
+      preRef.current.scrollLeft = taRef.current.scrollLeft;
+    }
+  }, []);
 
   return (
-    <pre
-      className="toml-highlight"
-      onClick={() => setEditing(true)}
-      dangerouslySetInnerHTML={{ __html: highlightToml(value) + "\n" }}
-    />
+    <div className="toml-editor-wrap">
+      <pre
+        ref={preRef}
+        className="toml-layer toml-highlight"
+        aria-hidden="true"
+        dangerouslySetInnerHTML={{ __html: highlightToml(value) + "\n" }}
+      />
+      <textarea
+        ref={taRef}
+        className="toml-layer toml-input"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onScroll={syncScroll}
+        spellCheck={false}
+      />
+    </div>
   );
 }
 

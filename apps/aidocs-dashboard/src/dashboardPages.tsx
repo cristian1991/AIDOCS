@@ -284,7 +284,7 @@ export function UsagePage({ reason, tokenEstimates, sessionBreakdown, actionRows
         <section className="flat-panel">
           <div className="section-label">In / Out Distribution</div>
           <div className="chart-container">
-            <ResponsiveContainer width="100%" height={220}>
+            <ResponsiveContainer width="100%" height="100%">
               <RechartsPie>
                 <Pie data={tokenData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={40} outerRadius={75}>
                   {tokenData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
@@ -299,7 +299,7 @@ export function UsagePage({ reason, tokenEstimates, sessionBreakdown, actionRows
           <div className="section-label">By Session</div>
           <div className="chart-container">
             {sessionData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={220}>
+              <ResponsiveContainer width="100%" height="100%">
                 <RechartsPie>
                   <Pie data={sessionData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={40} outerRadius={75}>
                     {sessionData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
@@ -325,7 +325,7 @@ export function UsagePage({ reason, tokenEstimates, sessionBreakdown, actionRows
           </div>
           <div className="chart-container">
             {actionMode === "pie" ? (
-              <ResponsiveContainer width="100%" height={260}>
+              <ResponsiveContainer width="100%" height="100%">
                 <RechartsPie>
                   <Pie data={actionData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={85}>
                     {actionData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
@@ -335,7 +335,7 @@ export function UsagePage({ reason, tokenEstimates, sessionBreakdown, actionRows
                 </RechartsPie>
               </ResponsiveContainer>
             ) : (
-              <ResponsiveContainer width="100%" height={260}>
+              <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={actionData} layout="vertical" margin={{ left: 0, right: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(153,211,180,0.08)" />
                   <XAxis type="number" tick={{ fill: "#7c9688", fontSize: 11 }} />
@@ -359,7 +359,7 @@ export function UsagePage({ reason, tokenEstimates, sessionBreakdown, actionRows
           </div>
           <div className="chart-container">
             {eventMode === "pie" ? (
-              <ResponsiveContainer width="100%" height={260}>
+              <ResponsiveContainer width="100%" height="100%">
                 <RechartsPie>
                   <Pie data={eventData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={85}>
                     {eventData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
@@ -369,7 +369,7 @@ export function UsagePage({ reason, tokenEstimates, sessionBreakdown, actionRows
                 </RechartsPie>
               </ResponsiveContainer>
             ) : (
-              <ResponsiveContainer width="100%" height={260}>
+              <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={eventData} layout="vertical" margin={{ left: 0, right: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(153,211,180,0.08)" />
                   <XAxis type="number" tick={{ fill: "#7c9688", fontSize: 11 }} />

@@ -475,7 +475,8 @@ select {
 
 .page-usage .chart-container {
   flex: 1;
-  min-height: 0;
+  min-height: 180px;
+  position: relative;
 }
 
 .dashboard-grid {

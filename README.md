@@ -255,10 +255,12 @@ These are real shipped features, but they are more advanced than the normal quic
 ## Documentation
 
 - [Developer README](README_DEV.md) — deeper architecture, settings, host boundaries, and flaw-finding guide
-- [Install Guide](README_INSTALL.md) — global routing, plugin, hook, and MCP install paths
+- [Install Guide](README_INSTALL.md) — global routing, plugin, hook, MCP, and dashboard install paths
 - [MCP Runtime](mcp/README.md) — runtime model, tool model, host caveats, CLI usage
 - [Host Integration](mcp/HOST_INTEGRATION.md) — Claude/OpenCode contract and routing behavior
 - [Index Language Descriptors](mcp/INDEX_LANGUAGE_DESCRIPTORS.md) — TOML schema for built-in and project-local indexing descriptors
+- [Public Roadmap](PUBLIC_ROADMAP.md) — what's coming in future versions
+- [Contributing](CONTRIBUTING.md) — how to contribute language descriptors, host integrations, and more
 
 ## Releases
 

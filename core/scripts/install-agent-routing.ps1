@@ -402,6 +402,10 @@ if ($currentAidocsPath -ne $projectRoot) {
 Write-Host "AIDOCS source wired to:" $projectRoot
 Write-Host "AIDOCS core assets wired to:" $coreRoot
 Write-Host "Command pack version:" $commandPackVersion
+Write-Host ""
+Write-Host "Dashboard:"
+Write-Host "  Launch: core\scripts\launch-dashboard.cmd"
+Write-Host "  Shortcut: powershell core\scripts\create-desktop-shortcut.ps1"
 
 $requiredCommandFiles = @(
   "aidocs.md",

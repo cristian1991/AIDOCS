@@ -56,12 +56,30 @@ For OpenCode, AIDOCS now prefers `opencode.jsonc` when it already exists and oth
 
 See `mcp/README.md` for details and `mcp/HOST_INTEGRATION.md` for agent integration contracts.
 
+## Dashboard
+
+The AIDOCS Dashboard is a Tauri desktop app for monitoring projects, sessions, token usage, and settings.
+
+```bash
+# Launch (uses built binary or falls back to dev mode)
+core\scripts\launch-dashboard.cmd       # Windows
+bash core/scripts/launch-dashboard.sh   # Linux/macOS
+
+# Create desktop shortcut (Windows)
+powershell core\scripts\create-desktop-shortcut.ps1
+```
+
+The dashboard requires the Tauri app to be built first:
+```bash
+cd apps/aidocs-dashboard
+npm install
+npm run tauri build
+```
+
 ## Notes
 
 - This directory is the canonical AIDOCS tree.
 - Keep project-specific runtime memory inside each target project's own `/.MEMORY/`.
 - OpenCode plugins are loaded automatically from `~/.config/opencode/plugins/` and `.opencode/plugins/`.
-- OpenCode currently uses mirrored `action_tokens` for advisory prompt classification, not full runtime route execution.
-- The installer creates `mcp/server/aidocs_mcp/action_tokens/opencode/` with links or fallback copies to the language YAML files so they are easy to inspect.
 - Claude Code hooks receive JSON on stdin and are installed into `~/.claude/settings.json`.
 - If you update AIDOCS itself, edit this tree first.

@@ -240,11 +240,13 @@ function App() {
   }, [error]);
 
 
-  // Auto-refresh every 30 seconds
+  // Auto-refresh every 30 seconds — skip when editing TOML configs
   useEffect(() => {
-    const interval = window.setInterval(refresh, 30000);
+    const interval = window.setInterval(() => {
+      if (activeNav !== "config_toml") refresh();
+    }, 30000);
     return () => window.clearInterval(interval);
-  }, []);
+  }, [activeNav]);
 
   function renderActivePage() {
     if (!snapshot) {

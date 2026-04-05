@@ -1504,9 +1504,9 @@ select {
 .coming-soon h2 sup {
   font-size: 0.3em;
   letter-spacing: 0;
-  opacity: 0.7;
-  vertical-align: super;
-  margin-left: 4px;
+  color: inherit;
+  vertical-align: top;
+  margin-left: 6px;
   display: inline-block;
   width: 0;
   overflow: visible;

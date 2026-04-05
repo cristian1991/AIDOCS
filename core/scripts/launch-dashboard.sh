@@ -10,8 +10,8 @@ if [[ ! -d "$DASHBOARD_DIR" ]]; then
   exit 1
 fi
 
-if [[ -f "$DASHBOARD_DIR/src-tauri/target/release/aidocs-dashboard" ]]; then
-  "$DASHBOARD_DIR/src-tauri/target/release/aidocs-dashboard" &
+if [[ -f "$DASHBOARD_DIR/src-tauri/target/release/AIDOCS Dashboard" ]]; then
+  "$DASHBOARD_DIR/src-tauri/target/release/AIDOCS Dashboard" &
 else
   echo "Starting in dev mode..."
   cd "$DASHBOARD_DIR"

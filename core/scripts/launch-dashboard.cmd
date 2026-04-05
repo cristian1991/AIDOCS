@@ -10,14 +10,14 @@ if defined AIDOCS_PATH (
   exit /b 1
 )
 
-if not exist "%DASHBOARD_DIR%\src-tauri\target\release\aidocs-dashboard.exe" (
+if not exist "%DASHBOARD_DIR%\src-tauri\target\release\AIDOCS Dashboard.exe" (
   echo Dashboard not built yet. Building...
   cd /d "%DASHBOARD_DIR%"
   call npm run tauri build
 )
 
-if exist "%DASHBOARD_DIR%\src-tauri\target\release\aidocs-dashboard.exe" (
-  start "" "%DASHBOARD_DIR%\src-tauri\target\release\aidocs-dashboard.exe"
+if exist "%DASHBOARD_DIR%\src-tauri\target\release\AIDOCS Dashboard.exe" (
+  start "" "%DASHBOARD_DIR%\src-tauri\target\release\AIDOCS Dashboard.exe"
 ) else (
   echo Starting in dev mode...
   cd /d "%DASHBOARD_DIR%"

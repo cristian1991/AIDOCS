@@ -20,9 +20,12 @@ export const navigation: Array<{ name: string; value: NavKey }> = [
   { name: "Sessions", value: "sessions" },
   { name: "Conductor", value: "conductor" },
   { name: "Execution", value: "execution" },
+  { name: "Usage", value: "usage" },
+];
+
+export const globalNavigation: Array<{ name: string; value: NavKey }> = [
   { name: "Settings", value: "settings" },
   { name: "TOML Configs", value: "config_toml" },
-  { name: "Usage", value: "usage" },
 ];
 
 export function asText(value: unknown): string {

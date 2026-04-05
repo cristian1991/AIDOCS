@@ -1309,10 +1309,18 @@ select {
     min-height: auto;
   }
 
-  .page {
+  .page,
+  .page-overview,
+  .page-usage {
     overflow: visible;
     min-height: auto;
+    height: auto;
     padding-right: 0;
+    grid-template-rows: none;
+  }
+
+  .overview-top {
+    grid-template-columns: 1fr;
   }
 
   .page-config {
@@ -1368,6 +1376,37 @@ select {
   }
 }
 
+
+.nav-list-global {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.page-coming-soon {
+  display: grid;
+  place-items: center;
+  height: 100%;
+}
+
+.coming-soon {
+  text-align: center;
+  display: grid;
+  gap: 8px;
+}
+
+.coming-soon h2 {
+  font-size: 2rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-bright);
+  opacity: 0.6;
+}
+
+.coming-soon p {
+  color: var(--text-faint);
+  font-size: 0.9rem;
+}
 
 .managed-indicator {
   display: flex;

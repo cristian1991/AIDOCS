@@ -163,41 +163,11 @@ export function ConductorPage({
   blockedReasons,
 }: ConductorPageProps) {
   return (
-    <section className="page">
-      <div className="section-label">Conductor</div>
-      <div className="progress-shell" aria-hidden="true">
-        <div className="progress-bar" style={{ width: `${progressPercent}%` }} />
+    <section className="page page-coming-soon">
+      <div className="coming-soon">
+        <h2>Coming Soon</h2>
+        <p>Lane-aware plan conductor with dependency tracking and parallel execution.</p>
       </div>
-      {selectedSession?.conductor && selectedSession.conductor.graph && selectedSession.conductor.runnable ? (
-        <div className="flat-table">
-          <div className="table-head conductor-table-row" aria-hidden="true">
-            <span>Lane</span>
-            <span>State</span>
-            <span>Dependencies</span>
-            <span>Notes</span>
-          </div>
-          {conductorLanes.map((lane) => {
-            const runnable = runnableLaneIds.includes(lane.lane_id);
-            const blocked = blockedReasons[lane.lane_id];
-            return (
-              <div key={lane.lane_id} className={runnable ? "table-row conductor-table-row is-active" : "table-row conductor-table-row"}>
-                <span>{lane.name}</span>
-                <span>{runnable ? "Runnable" : "Waiting"}</span>
-                <span>{lane.depends_on?.length ?? 0} deps</span>
-                <span>{blocked ? blocked.join(", ") : "clear"}</span>
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="empty-panel">
-          {selectedSession?.conductor_error
-            ? selectedSession.conductor_error
-            : selectedSession?.plan_overview.has_lanes
-              ? "Conductor data is currently unavailable for this session."
-              : "This session does not expose conductor lanes."}
-        </div>
-      )}
     </section>
   );
 }

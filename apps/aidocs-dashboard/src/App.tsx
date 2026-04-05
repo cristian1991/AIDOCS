@@ -15,6 +15,7 @@ import {
   UsagePage,
 } from "./dashboardPages";
 import {
+  globalNavigation,
   navigation,
   parseProgressPercent,
   readAidocsVersion,
@@ -338,6 +339,19 @@ function App() {
 
         <nav className="nav-list" aria-label="Dashboard navigation">
           {navigation.map((item) => (
+            <button
+              key={item.value}
+              className={item.value === activeNav ? "nav-item is-active" : "nav-item"}
+              type="button"
+              onClick={() => setActiveNav(item.value)}
+            >
+              {item.name}
+            </button>
+          ))}
+        </nav>
+
+        <nav className="nav-list nav-list-global" aria-label="Global settings">
+          {globalNavigation.map((item) => (
             <button
               key={item.value}
               className={item.value === activeNav ? "nav-item is-active" : "nav-item"}

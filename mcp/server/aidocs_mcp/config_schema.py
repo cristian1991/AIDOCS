@@ -162,7 +162,7 @@ SETTINGS_CATALOG: dict[str, SettingMetadata] = {
     ),
     "global.aidocs_core_version": _setting(
         type="string",
-        default="1.0.0",
+        default="2.0.1",
         description="AIDOCS core version. Global setting that agents must never modify.",
         scope="global",
     ),
@@ -182,7 +182,7 @@ SETTINGS_CATALOG: dict[str, SettingMetadata] = {
     ),
     "conductor.enabled": _setting(
         type="boolean",
-        default=True,
+        default=False,
         description="Enable the plan conductor for lane-aware execution.",
         scope=["user", "project", "session"],
     ),

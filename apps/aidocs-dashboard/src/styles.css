@@ -1506,7 +1506,7 @@ select {
 .coming-soon h2 sup {
   position: absolute;
   top: 0;
-  right: -1.2em;
+  right: -0.6em;
   font-size: 0.3em;
   letter-spacing: 0;
   opacity: 0.7;

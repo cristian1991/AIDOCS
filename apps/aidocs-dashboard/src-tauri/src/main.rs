@@ -181,15 +181,23 @@ fn discover_managed_projects(current_root: &Path) -> Vec<ManagedProjectOption> {
     });
     projects
 }
-
 fn resolve_project_root(project_root: Option<String>) -> Result<PathBuf, String> {
     if let Some(path) = project_root {
-        let candidate = PathBuf::from(path);
+        let candidate = PathBuf::from(&path);
         if candidate.exists() {
             return Ok(candidate);
         }
     }
 
+    // Check AIDOCS_PATH env var
+    if let Some(aidocs_path) = env::var_os("AIDOCS_PATH") {
+        let candidate = PathBuf::from(aidocs_path);
+        if candidate.join(".MEMORY").is_dir() {
+            return Ok(candidate);
+        }
+    }
+
+    // Walk up from cwd
     let mut current = std::env::current_dir().map_err(|err| err.to_string())?;
     loop {
         if current.join(".MEMORY").is_dir() {
@@ -200,6 +208,7 @@ fn resolve_project_root(project_root: Option<String>) -> Result<PathBuf, String>
         }
     }
     Err("Could not resolve the AIDOCS project root for the dashboard.".into())
+}
 }
 
 fn run_json_cli(project_root: &Path, args: &[String]) -> Result<Value, String> {
@@ -219,11 +228,14 @@ fn run_json_cli(project_root: &Path, args: &[String]) -> Result<Value, String> {
 
     let mut errors: Vec<String> = Vec::new();
     for (program, program_args) in command_sets {
-        let output = match Command::new(program)
-            .args(&program_args)
-            .current_dir(project_root)
-            .output()
+        let mut cmd = Command::new(program);
+        cmd.args(&program_args).current_dir(project_root);
+        #[cfg(target_os = "windows")]
         {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        let output = match cmd.output() {
             Ok(output) => output,
             Err(err) => {
                 errors.push(format!("{}: {}", program, err));

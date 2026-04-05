@@ -410,6 +410,17 @@ Write-Host "AIDOCS source wired to:" $projectRoot
 Write-Host "AIDOCS core assets wired to:" $coreRoot
 Write-Host "Command pack version:" $commandPackVersion
 
+# ── Install dashboard binary ──
+$dashboardBuildExe = Join-Path $projectRoot "apps\aidocs-dashboard\src-tauri\target\release\aidocs-dashboard.exe"
+$dashboardInstalledExe = Join-Path $aidocsHome "aidocs-dashboard.exe"
+if (Test-Path $dashboardBuildExe) {
+  Copy-Item -Path $dashboardBuildExe -Destination $dashboardInstalledExe -Force
+  Write-Host "Dashboard binary installed to: $dashboardInstalledExe"
+} elseif (-not (Test-Path $dashboardInstalledExe)) {
+  Write-Host "NOTE: Dashboard binary not found. Build it with: cd apps/aidocs-dashboard && npm run tauri build"
+}
+
+# ── Create desktop shortcut ──
 # ── Create desktop shortcut ──
 $desktopPath = [Environment]::GetFolderPath("Desktop")
 $shortcutPath = Join-Path $desktopPath "AIDOCS.lnk"

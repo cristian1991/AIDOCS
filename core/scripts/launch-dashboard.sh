@@ -3,17 +3,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AIDOCS_PATH="${AIDOCS_PATH:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
-DASHBOARD_DIR="$AIDOCS_PATH/apps/aidocs-dashboard"
+AIDOCS_HOME="${HOME}/.aidocs"
 
-if [[ ! -d "$DASHBOARD_DIR" ]]; then
-  echo "Dashboard not found at $DASHBOARD_DIR"
-  exit 1
-fi
-
-if [[ -f "$DASHBOARD_DIR/src-tauri/target/release/AIDOCS Dashboard" ]]; then
-  "$DASHBOARD_DIR/src-tauri/target/release/AIDOCS Dashboard" &
+if [[ -f "$AIDOCS_HOME/aidocs-dashboard" ]]; then
+  "$AIDOCS_HOME/aidocs-dashboard" &
+elif [[ -f "$AIDOCS_PATH/apps/aidocs-dashboard/src-tauri/target/release/aidocs-dashboard" ]]; then
+  "$AIDOCS_PATH/apps/aidocs-dashboard/src-tauri/target/release/aidocs-dashboard" &
 else
-  echo "Starting in dev mode..."
-  cd "$DASHBOARD_DIR"
-  npm run tauri dev
+  echo "AIDOCS Dashboard not found."
+  echo ""
+  echo "Download the latest release from:"
+  echo "  https://github.com/cristian1991/AIDOCS/releases"
+  exit 1
 fi

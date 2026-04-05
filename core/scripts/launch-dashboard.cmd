@@ -2,24 +2,26 @@
 setlocal
 
 set AIDOCS_PATH=%~dp0..\..
-if defined AIDOCS_PATH (
-  set DASHBOARD_DIR=%AIDOCS_PATH%\apps\aidocs-dashboard
-) else (
-  echo AIDOCS_PATH not set. Run setup.cmd first.
-  pause
-  exit /b 1
+set DASHBOARD_EXE=%AIDOCS_PATH%\apps\aidocs-dashboard\src-tauri\target\release\aidocs-dashboard.exe
+set AIDOCS_HOME=%USERPROFILE%\.aidocs
+set INSTALLED_EXE=%AIDOCS_HOME%\aidocs-dashboard.exe
+
+if exist "%INSTALLED_EXE%" (
+  start "" "%INSTALLED_EXE%"
+  exit /b 0
 )
 
-if not exist "%DASHBOARD_DIR%\src-tauri\target\release\AIDOCS Dashboard.exe" (
-  echo Dashboard not built yet. Building...
-  cd /d "%DASHBOARD_DIR%"
-  call npm run tauri build
+if exist "%DASHBOARD_EXE%" (
+  start "" "%DASHBOARD_EXE%"
+  exit /b 0
 )
 
-if exist "%DASHBOARD_DIR%\src-tauri\target\release\AIDOCS Dashboard.exe" (
-  start "" "%DASHBOARD_DIR%\src-tauri\target\release\AIDOCS Dashboard.exe"
-) else (
-  echo Starting in dev mode...
-  cd /d "%DASHBOARD_DIR%"
-  call npm run tauri dev
-)
+echo AIDOCS Dashboard not found.
+echo.
+echo Expected locations:
+echo   %INSTALLED_EXE%
+echo   %DASHBOARD_EXE%
+echo.
+echo Download the latest release from:
+echo   https://github.com/cristian1991/AIDOCS/releases
+pause

@@ -1,6 +1,6 @@
 # Creates an AIDOCS Dashboard shortcut on the Windows desktop
 $projectRoot = (Get-Item "$PSScriptRoot\..\.." -ErrorAction Stop).FullName
-$dashboardExe = Join-Path $projectRoot "apps\aidocs-dashboard\src-tauri\target\release\AIDOCS Dashboard.exe"
+$dashboardExe = Join-Path $projectRoot "apps\aidocs-dashboard\src-tauri\target\release\aidocs-dashboard.exe"
 $iconSource = Join-Path $projectRoot "apps\aidocs-dashboard\src-tauri\icons\icon.ico"
 $desktopPath = [Environment]::GetFolderPath("Desktop")
 $shortcutPath = Join-Path $desktopPath "AIDOCS Dashboard.lnk"

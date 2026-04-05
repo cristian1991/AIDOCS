@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: https://img.shields.io; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; img-src 'self' asset: data: https://img.shields.io; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {

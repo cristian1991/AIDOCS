@@ -286,7 +286,7 @@ export function UsagePage({ reason, tokenEstimates, sessionBreakdown, actionRows
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%">
               <RechartsPie>
-                <Pie data={tokenData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={40} outerRadius={75}>
+                <Pie data={tokenData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="30%" outerRadius="65%">
                   {tokenData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                 </Pie>
                 <Tooltip content={<ChartTooltip />} />
@@ -301,7 +301,7 @@ export function UsagePage({ reason, tokenEstimates, sessionBreakdown, actionRows
             {sessionData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <RechartsPie>
-                  <Pie data={sessionData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={40} outerRadius={75}>
+                  <Pie data={sessionData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="30%" outerRadius="65%">
                     {sessionData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                   </Pie>
                   <Tooltip content={<ChartTooltip />} />
@@ -327,7 +327,7 @@ export function UsagePage({ reason, tokenEstimates, sessionBreakdown, actionRows
             {actionMode === "pie" ? (
               <ResponsiveContainer width="100%" height="100%">
                 <RechartsPie>
-                  <Pie data={actionData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={85}>
+                  <Pie data={actionData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="30%" outerRadius="65%">
                     {actionData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                   </Pie>
                   <Tooltip content={<ChartTooltip />} />
@@ -361,7 +361,7 @@ export function UsagePage({ reason, tokenEstimates, sessionBreakdown, actionRows
             {eventMode === "pie" ? (
               <ResponsiveContainer width="100%" height="100%">
                 <RechartsPie>
-                  <Pie data={eventData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={85}>
+                  <Pie data={eventData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="30%" outerRadius="65%">
                     {eventData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                   </Pie>
                   <Tooltip content={<ChartTooltip />} />

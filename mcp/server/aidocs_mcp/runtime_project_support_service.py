@@ -115,7 +115,7 @@ class RuntimeProjectSupportService:
                     "url": url,
                     "fetch": False,
                     "push": False,
-                    "role": _origin_role(name, url),
+                    "role": self._origin_role(name, url),
                 },
             )
             if kind == "fetch":

@@ -42,6 +42,9 @@ const tomlMode = {
     if (stream.match(/^[,{}]/)) {
       return "punctuation";
     }
+    if (stream.match(/^\/?aidocs\b/i)) {
+      return "keyword";
+    }
     stream.next();
     return null;
   },
@@ -91,6 +94,7 @@ const tomlHighlighting = HighlightStyle.define([
   { tag: tags.bool, color: "#4a90d9" },
   { tag: tags.number, color: "#d97a4a" },
   { tag: tags.squareBracket, color: "#5cb8a8" },
+  { tag: tags.keyword, color: "#b07cdf" },
 ]);
 
 export function TomlCodeEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {

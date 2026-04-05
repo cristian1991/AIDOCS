@@ -1228,10 +1228,12 @@ select {
   caret-color: var(--accent-bright);
   resize: none;
   z-index: 1;
+  -webkit-text-fill-color: transparent;
 }
 
 .toml-editor-input::selection {
-  background: rgba(140, 224, 175, 0.2);
+  background: rgba(140, 224, 175, 0.15);
+  -webkit-text-fill-color: transparent;
 }
 
 .hl-comment { color: #5c7a6e; font-style: italic; }

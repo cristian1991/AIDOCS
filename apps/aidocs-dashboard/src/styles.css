@@ -1208,7 +1208,10 @@ select {
 .toml-hl-layer,
 .toml-ta-layer {
   position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   margin: 0;
   border: 0;
   background: transparent;
@@ -1216,14 +1219,18 @@ select {
   font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   font-size: 0.9rem;
   line-height: 1.55;
-  letter-spacing: normal;
-  word-spacing: normal;
+  letter-spacing: 0;
+  word-spacing: 0;
   tab-size: 2;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
+  white-space: pre;
+  word-wrap: normal;
+  overflow-wrap: normal;
   overflow: auto;
   box-sizing: border-box;
+  font-kerning: none;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -1243,7 +1250,18 @@ select {
   -webkit-appearance: none;
   appearance: none;
   border-radius: 0;
-  text-rendering: auto;
+}
+
+.toml-cm-editor {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.toml-cm-editor .cm-editor {
+  height: 100%;
 }
 
 .toml-highlight {

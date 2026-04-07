@@ -1,0 +1,2 @@
+name = "rust"
+extensions = [".rs"]

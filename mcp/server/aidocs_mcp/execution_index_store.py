@@ -1,0 +1,964 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+
+class ExecutionIndexStore:
+    """Derived SQLite index for execution runs and event evidence."""
+
+    _LIFECYCLE_TOOLS = {
+        "task_begin",
+        "task_update",
+        "task_complete",
+    }
+    _EDIT_LIKE_TOOLS = {
+        "edit",
+        "write",
+        "bash",
+        "code_edit_lines",
+        "code_batch_edit",
+        "code_create_file",
+        "code_str_replace",
+        "code_batch_str_replace",
+    }
+    _MEANINGFUL_MCP_PREFIXES = (
+        "code_",
+        "schema_",
+        "memory_",
+        "session_",
+    )
+
+    def index_root(self, project_root: Path) -> Path:
+        return project_root / ".MEMORY" / ".index"
+
+    def db_path(self, project_root: Path) -> Path:
+        return self.index_root(project_root) / "aidocs.sqlite3"
+
+    def connect(self, project_root: Path) -> sqlite3.Connection:
+        db_path = self.db_path(project_root)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def init_db(self, project_root: Path) -> None:
+        with self.connect(project_root) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS execution_runs (
+                    run_id TEXT PRIMARY KEY,
+                    run_kind TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    session_id TEXT,
+                    procedure_id TEXT,
+                    capability_name TEXT,
+                    status TEXT NOT NULL,
+                    ad_hoc INTEGER NOT NULL DEFAULT 1,
+                    target_entity TEXT,
+                    metadata_json TEXT,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS execution_events (
+                    event_id TEXT PRIMARY KEY,
+                    run_id TEXT,
+                    event_kind TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    session_id TEXT,
+                    procedure_id TEXT,
+                    capability_name TEXT,
+                    action_kind TEXT,
+                    target_entity TEXT,
+                    status TEXT,
+                    payload_json TEXT,
+                    observed_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES execution_runs(run_id)
+                );
+                """
+            )
+
+    def record_run(
+        self,
+        project_root: Path,
+        run_kind: str,
+        source_kind: str,
+        session_id: str | None = None,
+        procedure_id: str | None = None,
+        capability_name: str | None = None,
+        status: str = "started",
+        ad_hoc: bool = True,
+        target_entity: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        completed_at: str | None = None,
+    ) -> str:
+        self.init_db(project_root)
+        run_id = run_id or f"run-{uuid4()}"
+        started_at = self._timestamp()
+        with self.connect(project_root) as conn:
+            conn.execute(
+                """
+                INSERT INTO execution_runs (
+                    run_id, run_kind, source_kind, session_id, procedure_id, capability_name,
+                    status, ad_hoc, target_entity, metadata_json, started_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    run_kind=excluded.run_kind,
+                    source_kind=excluded.source_kind,
+                    session_id=excluded.session_id,
+                    procedure_id=excluded.procedure_id,
+                    capability_name=excluded.capability_name,
+                    status=excluded.status,
+                    ad_hoc=excluded.ad_hoc,
+                    target_entity=excluded.target_entity,
+                    metadata_json=excluded.metadata_json,
+                    completed_at=COALESCE(excluded.completed_at, execution_runs.completed_at)
+                """,
+                (
+                    run_id,
+                    run_kind,
+                    source_kind,
+                    session_id,
+                    procedure_id,
+                    capability_name,
+                    status,
+                    1 if ad_hoc else 0,
+                    target_entity,
+                    json.dumps(metadata or {}, sort_keys=True, default=str),
+                    started_at,
+                    completed_at,
+                ),
+            )
+        return run_id
+
+    def record_event(
+        self,
+        project_root: Path,
+        event_kind: str,
+        source_kind: str,
+        session_id: str | None = None,
+        procedure_id: str | None = None,
+        capability_name: str | None = None,
+        action_kind: str | None = None,
+        target_entity: str | None = None,
+        status: str | None = None,
+        payload: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        event_id: str | None = None,
+        observed_at: str | None = None,
+    ) -> str:
+        self.init_db(project_root)
+        event_id = event_id or f"event-{uuid4()}"
+        with self.connect(project_root) as conn:
+            conn.execute(
+                """
+                INSERT INTO execution_events (
+                    event_id, run_id, event_kind, source_kind, session_id, procedure_id,
+                    capability_name, action_kind, target_entity, status, payload_json, observed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    run_id,
+                    event_kind,
+                    source_kind,
+                    session_id,
+                    procedure_id,
+                    capability_name,
+                    action_kind,
+                    target_entity,
+                    status,
+                    json.dumps(payload or {}, sort_keys=True, default=str),
+                    observed_at or self._timestamp(),
+                ),
+            )
+        return event_id
+
+    def execution_status(self, project_root: Path) -> dict[str, Any]:
+        self.init_db(project_root)
+        with self.connect(project_root) as conn:
+            run_count = conn.execute("SELECT COUNT(*) FROM execution_runs").fetchone()[
+                0
+            ]
+            event_count = conn.execute(
+                "SELECT COUNT(*) FROM execution_events"
+            ).fetchone()[0]
+            run_kind_rows = conn.execute(
+                "SELECT run_kind, COUNT(*) AS count FROM execution_runs GROUP BY run_kind ORDER BY count DESC, run_kind ASC"
+            ).fetchall()
+            event_kind_rows = conn.execute(
+                "SELECT event_kind, COUNT(*) AS count FROM execution_events GROUP BY event_kind ORDER BY count DESC, event_kind ASC"
+            ).fetchall()
+            source_rows = conn.execute(
+                "SELECT source_kind, COUNT(*) AS count FROM execution_events GROUP BY source_kind ORDER BY count DESC, source_kind ASC"
+            ).fetchall()
+        return {
+            "db_path": str(self.db_path(project_root)),
+            "execution_runs": int(run_count),
+            "execution_events": int(event_count),
+            "run_kinds": {row["run_kind"]: int(row["count"]) for row in run_kind_rows},
+            "event_kinds": {
+                row["event_kind"]: int(row["count"]) for row in event_kind_rows
+            },
+            "by_source": {row["source_kind"]: int(row["count"]) for row in source_rows},
+        }
+
+    def list_runs(
+        self, project_root: Path, session_id: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        self.init_db(project_root)
+        sql = "SELECT run_id, run_kind, source_kind, session_id, procedure_id, capability_name, status, ad_hoc, target_entity, metadata_json, started_at, completed_at FROM execution_runs"
+        params: list[Any] = []
+        if session_id and session_id.strip():
+            sql += " WHERE session_id = ?"
+            params.append(session_id.strip())
+        sql += " ORDER BY started_at DESC, run_id DESC LIMIT ?"
+        params.append(limit)
+        with self.connect(project_root) as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._run_row_to_dict(row) for row in rows]
+
+    def list_events(
+        self,
+        project_root: Path,
+        query: str | None = None,
+        session_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        self.init_db(project_root)
+        sql = (
+            "SELECT event_id, run_id, event_kind, source_kind, session_id, procedure_id, capability_name, action_kind, target_entity, status, payload_json, observed_at "
+            "FROM execution_events"
+        )
+        clauses: list[str] = []
+        params: list[Any] = []
+        if session_id and session_id.strip():
+            clauses.append("session_id = ?")
+            params.append(session_id.strip())
+        if query and query.strip():
+            needle = f"%{query.strip()}%"
+            clauses.append(
+                "(event_kind LIKE ? OR COALESCE(capability_name, '') LIKE ? OR COALESCE(action_kind, '') LIKE ? OR COALESCE(payload_json, '') LIKE ?)"
+            )
+            params.extend([needle, needle, needle, needle])
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY observed_at DESC, event_id DESC LIMIT ?"
+        params.append(limit)
+        with self.connect(project_root) as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._event_row_to_dict(row) for row in rows]
+
+    def session_lifecycle_activity_summary(
+        self,
+        project_root: Path,
+        session_id: str,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        self.init_db(project_root)
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                "SELECT rowid, event_id, run_id, event_kind, source_kind, session_id, procedure_id, capability_name, action_kind, target_entity, status, payload_json, observed_at FROM execution_events WHERE session_id = ? ORDER BY observed_at DESC, rowid DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        events = [self._event_row_to_dict(row) for row in rows]
+        recent_activity: list[dict[str, Any]] = []
+        last_lifecycle_tool: str | None = None
+        last_lifecycle_observed_at: str | None = None
+
+        for event in events:
+            capability_name = str(event.get("capability_name") or "").strip()
+            if (
+                event.get("event_kind") == "tool_call_completed"
+                and capability_name in self._LIFECYCLE_TOOLS
+            ):
+                last_lifecycle_tool = capability_name
+                last_lifecycle_observed_at = (
+                    str(event.get("observed_at") or "").strip() or None
+                )
+                break
+            recent_activity.append(event)
+
+        edit_like_count = sum(
+            1 for event in recent_activity if self._is_edit_like_event(event)
+        )
+        meaningful_work_count = sum(
+            1 for event in recent_activity if self._is_meaningful_work_event(event)
+        )
+
+        needs_task_complete = edit_like_count >= 1
+        needs_task_update = not needs_task_complete and meaningful_work_count >= 3
+
+        return {
+            "session_id": session_id,
+            "last_lifecycle_tool": last_lifecycle_tool,
+            "last_lifecycle_observed_at": last_lifecycle_observed_at,
+            "edit_like_count": edit_like_count,
+            "meaningful_work_count": meaningful_work_count,
+            "needs_task_update": needs_task_update,
+            "needs_task_complete": needs_task_complete,
+            "recent_activity_count": len(recent_activity),
+        }
+
+    def session_journal_coverage_summary(
+        self,
+        project_root: Path,
+        session_id: str,
+        latest_journal_at: datetime | None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        self.init_db(project_root)
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                "SELECT rowid, event_id, run_id, event_kind, source_kind, session_id, procedure_id, capability_name, action_kind, target_entity, status, payload_json, observed_at FROM execution_events WHERE session_id = ? ORDER BY observed_at DESC, rowid DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        events = [self._event_row_to_dict(row) for row in rows]
+
+        meaningful_events: list[dict[str, Any]] = []
+        for event in events:
+            if not self._is_meaningful_work_event(event):
+                continue
+            observed_text = str(event.get("observed_at") or "").strip()
+            if not observed_text:
+                continue
+            try:
+                observed_at = datetime.strptime(observed_text, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if latest_journal_at is not None and observed_at <= latest_journal_at:
+                continue
+            meaningful_events.append(event)
+
+        latest_meaningful_at = None
+        if meaningful_events:
+            latest_meaningful_at = (
+                str(meaningful_events[0].get("observed_at") or "").strip() or None
+            )
+
+        return {
+            "meaningful_event_count_since_journal": len(meaningful_events),
+            "latest_meaningful_event_at": latest_meaningful_at,
+            "logging_debt": bool(meaningful_events),
+        }
+
+    def _is_edit_like_event(self, event: dict[str, Any]) -> bool:
+        capability_name = str(event.get("capability_name") or "").strip().lower()
+        return capability_name in self._EDIT_LIKE_TOOLS
+
+    def _is_meaningful_work_event(self, event: dict[str, Any]) -> bool:
+        capability_name = str(event.get("capability_name") or "").strip().lower()
+        event_kind = str(event.get("event_kind") or "").strip().lower()
+        action_kind = str(event.get("action_kind") or "").strip().lower()
+        if event_kind == "native_tool_use":
+            return capability_name in self._EDIT_LIKE_TOOLS or capability_name not in {
+                "read",
+                "glob",
+                "grep",
+            }
+        if event_kind == "tool_call_completed":
+            if capability_name in self._LIFECYCLE_TOOLS:
+                return False
+            if not capability_name and action_kind in {
+                "edit",
+                "write_memory",
+                "trace",
+                "understand",
+                "inspect",
+                "investigate",
+            }:
+                return True
+            return capability_name.startswith(self._MEANINGFUL_MCP_PREFIXES)
+        return False
+
+    def _run_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "run_id": row["run_id"],
+            "run_kind": row["run_kind"],
+            "source_kind": row["source_kind"],
+            "session_id": row["session_id"],
+            "procedure_id": row["procedure_id"],
+            "capability_name": row["capability_name"],
+            "status": row["status"],
+            "ad_hoc": bool(row["ad_hoc"]),
+            "target_entity": row["target_entity"],
+            "metadata": json.loads(row["metadata_json"])
+            if row["metadata_json"]
+            else {},
+            "started_at": row["started_at"],
+            "completed_at": row["completed_at"],
+        }
+
+    def _event_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "event_id": row["event_id"],
+            "run_id": row["run_id"],
+            "event_kind": row["event_kind"],
+            "source_kind": row["source_kind"],
+            "session_id": row["session_id"],
+            "procedure_id": row["procedure_id"],
+            "capability_name": row["capability_name"],
+            "action_kind": row["action_kind"],
+            "target_entity": row["target_entity"],
+            "status": row["status"],
+            "payload": json.loads(row["payload_json"]) if row["payload_json"] else {},
+            "observed_at": row["observed_at"],
+        }
+
+    def query_last_execution(
+        self,
+        project_root: Path,
+        action_kind: str | None = None,
+        capability_name: str | None = None,
+        session_id: str | None = None,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Query: 'What actually ran last time?' — returns recent execution events matching filters."""
+        self.init_db(project_root)
+        clauses: list[str] = []
+        params: list[Any] = []
+        if action_kind and action_kind.strip():
+            clauses.append("action_kind = ?")
+            params.append(action_kind.strip())
+        if capability_name and capability_name.strip():
+            clauses.append("capability_name = ?")
+            params.append(capability_name.strip())
+        if session_id and session_id.strip():
+            clauses.append("session_id = ?")
+            params.append(session_id.strip())
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        sql = (
+            "SELECT event_id, run_id, event_kind, source_kind, session_id, procedure_id, "
+            "capability_name, action_kind, target_entity, status, payload_json, observed_at "
+            f"FROM execution_events{where} ORDER BY observed_at DESC LIMIT ?"
+        )
+        params.append(limit)
+        with self.connect(project_root) as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._event_row_to_dict(row) for row in rows]
+
+    def query_execution_summary(
+        self,
+        project_root: Path,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Query: 'What happened in this session?' — returns aggregate execution summary."""
+        self.init_db(project_root)
+        where = ""
+        params: list[Any] = []
+        if session_id and session_id.strip():
+            where = " WHERE session_id = ?"
+            params.append(session_id.strip())
+        with self.connect(project_root) as conn:
+            total_events = conn.execute(
+                f"SELECT COUNT(*) FROM execution_events{where}", params
+            ).fetchone()[0]
+            action_kinds = conn.execute(
+                f"SELECT action_kind, COUNT(*) AS count FROM execution_events{where} GROUP BY action_kind ORDER BY count DESC",
+                params,
+            ).fetchall()
+            event_kinds = conn.execute(
+                f"SELECT event_kind, COUNT(*) AS count FROM execution_events{where} GROUP BY event_kind ORDER BY count DESC",
+                params,
+            ).fetchall()
+            tool_names = conn.execute(
+                f"SELECT capability_name, COUNT(*) AS count FROM execution_events{where} {'AND' if where else 'WHERE'} event_kind = 'tool_call_completed' GROUP BY capability_name ORDER BY count DESC",
+                params,
+            ).fetchall()
+            sources = conn.execute(
+                f"SELECT source_kind, COUNT(*) AS count FROM execution_events{where} GROUP BY source_kind ORDER BY count DESC",
+                params,
+            ).fetchall()
+            # Ad-hoc vs procedure-linked
+            adhoc_count = conn.execute(
+                f"SELECT COUNT(*) FROM execution_events{where} {'AND' if where else 'WHERE'} procedure_id IS NULL",
+                params,
+            ).fetchone()[0]
+            procedure_count = conn.execute(
+                f"SELECT COUNT(*) FROM execution_events{where} {'AND' if where else 'WHERE'} procedure_id IS NOT NULL",
+                params,
+            ).fetchone()[0]
+            # Token estimates — filtered by session for charts
+            token_where = f"{where} {'AND' if where else 'WHERE'} payload_json LIKE '%tokens_in_estimate%'"
+            token_rows = conn.execute(
+                f"SELECT action_kind, capability_name, session_id, payload_json FROM execution_events{token_where}",
+                params,
+            ).fetchall()
+            # Session breakdown — always project-wide
+            all_token_rows = token_rows if not where else conn.execute(
+                "SELECT action_kind, capability_name, session_id, payload_json FROM execution_events WHERE payload_json LIKE '%tokens_in_estimate%'",
+            ).fetchall()
+        tokens_in = 0
+        tokens_out = 0
+        tokens_in_calls = 0
+        tokens_out_calls = 0
+        tokens_by_action: dict[str, dict[str, int]] = {}
+        tokens_by_tool: dict[str, dict[str, int]] = {}
+        for row in token_rows:
+            try:
+                payload = __import__("json").loads(row["payload_json"]) if row["payload_json"] else {}
+                tin = int(payload.get("tokens_in_estimate", 0))
+                tout = int(payload.get("tokens_out_estimate", 0))
+                tokens_in += tin
+                tokens_out += tout
+                if tin > 0:
+                    tokens_in_calls += 1
+                if tout > 0:
+                    tokens_out_calls += 1
+                ak = str(row["action_kind"] or "unknown")
+                if ak not in tokens_by_action:
+                    tokens_by_action[ak] = {"tokens_in": 0, "tokens_out": 0, "count": 0}
+                tokens_by_action[ak]["tokens_in"] += tin
+                tokens_by_action[ak]["tokens_out"] += tout
+                tokens_by_action[ak]["count"] += 1
+                tool = row["capability_name"]
+                if tool:
+                    tool = str(tool)
+                    if tool not in tokens_by_tool:
+                        tokens_by_tool[tool] = {"tokens_in": 0, "tokens_out": 0, "count": 0}
+                    tokens_by_tool[tool]["tokens_in"] += tin
+                    tokens_by_tool[tool]["tokens_out"] += tout
+                    tokens_by_tool[tool]["count"] += 1
+            except Exception:
+                pass
+        # Session breakdown — always from project-wide rows
+        tokens_by_session: dict[str, dict[str, int]] = {}
+        for row in all_token_rows:
+            try:
+                payload = __import__("json").loads(row["payload_json"]) if row["payload_json"] else {}
+                tin = int(payload.get("tokens_in_estimate", 0))
+                tout = int(payload.get("tokens_out_estimate", 0))
+                sid = str(row["session_id"] or "unbound")
+                if sid not in tokens_by_session:
+                    tokens_by_session[sid] = {"tokens_in": 0, "tokens_out": 0, "count": 0}
+                tokens_by_session[sid]["tokens_in"] += tin
+                tokens_by_session[sid]["tokens_out"] += tout
+                tokens_by_session[sid]["count"] += 1
+            except Exception:
+                pass
+        return {
+            "session_id": session_id,
+            "total_events": int(total_events),
+            "by_action_kind": {
+                row["action_kind"]: int(row["count"])
+                for row in action_kinds
+                if row["action_kind"]
+            },
+            "by_event_kind": {
+                row["event_kind"]: int(row["count"]) for row in event_kinds
+            },
+            "by_source": {row["source_kind"]: int(row["count"]) for row in sources},
+            "by_tool_name": {
+                row["capability_name"]: int(row["count"])
+                for row in tool_names
+                if row["capability_name"]
+            },
+            "ad_hoc_events": int(adhoc_count),
+            "procedure_linked_events": int(procedure_count),
+            "token_estimates": {
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "tokens_in_calls": tokens_in_calls,
+                "tokens_out_calls": tokens_out_calls,
+                "total": tokens_in + tokens_out,
+            },
+            "tokens_by_action_kind": tokens_by_action,
+            "tokens_by_tool_name": tokens_by_tool,
+            "session_breakdown": [
+                {
+                    "session_id": sid,
+                    "tokens_in": data["tokens_in"],
+                    "tokens_out": data["tokens_out"],
+                    "total": data["tokens_in"] + data["tokens_out"],
+                    "events": data["count"],
+                }
+                for sid, data in sorted(tokens_by_session.items(), key=lambda x: -(x[1]["tokens_in"] + x[1]["tokens_out"]))
+            ],
+        }
+
+    def query_tokens_by_action_kind(
+        self, project_root: Path, session_id: str | None = None,
+    ) -> dict[str, dict[str, int]]:
+        """Return token estimates grouped by action_kind."""
+        self.init_db(project_root)
+        import json as _json
+        where = ""
+        params: list[Any] = []
+        if session_id and session_id.strip():
+            where = " AND session_id = ?"
+            params.append(session_id.strip())
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                f"SELECT action_kind, payload_json FROM execution_events WHERE payload_json LIKE '%tokens_in_estimate%'{where}",
+                params,
+            ).fetchall()
+        result: dict[str, dict[str, int]] = {}
+        for row in rows:
+            ak = str(row["action_kind"] or "unknown")
+            if ak not in result:
+                result[ak] = {"tokens_in": 0, "tokens_out": 0, "count": 0}
+            result[ak]["count"] += 1
+            try:
+                payload = _json.loads(row["payload_json"]) if row["payload_json"] else {}
+                result[ak]["tokens_in"] += int(payload.get("tokens_in_estimate", 0))
+                result[ak]["tokens_out"] += int(payload.get("tokens_out_estimate", 0))
+            except Exception:
+                pass
+        return result
+
+    def query_tokens_by_tool_name(
+        self, project_root: Path,
+    ) -> dict[str, dict[str, int]]:
+        """Return token estimates grouped by capability_name (tool name)."""
+        self.init_db(project_root)
+        import json as _json
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                "SELECT capability_name, payload_json FROM execution_events WHERE payload_json LIKE '%tokens_in_estimate%' AND capability_name IS NOT NULL",
+            ).fetchall()
+        result: dict[str, dict[str, int]] = {}
+        for row in rows:
+            name = str(row["capability_name"])
+            if name not in result:
+                result[name] = {"tokens_in": 0, "tokens_out": 0, "count": 0}
+            result[name]["count"] += 1
+            try:
+                payload = _json.loads(row["payload_json"]) if row["payload_json"] else {}
+                result[name]["tokens_in"] += int(payload.get("tokens_in_estimate", 0))
+                result[name]["tokens_out"] += int(payload.get("tokens_out_estimate", 0))
+            except Exception:
+                pass
+        return result
+
+    def query_token_breakdown_by_session(
+        self, project_root: Path,
+    ) -> list[dict[str, object]]:
+        """Return per-session token estimates for the project."""
+        self.init_db(project_root)
+        import json as _json
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                "SELECT session_id, payload_json FROM execution_events WHERE payload_json LIKE '%tokens_in_estimate%'"
+            ).fetchall()
+        sessions: dict[str, dict[str, int]] = {}
+        for row in rows:
+            sid = str(row["session_id"] or "unbound")
+            if sid not in sessions:
+                sessions[sid] = {"tokens_in": 0, "tokens_out": 0, "events": 0}
+            sessions[sid]["events"] += 1
+            try:
+                payload = _json.loads(row["payload_json"]) if row["payload_json"] else {}
+                sessions[sid]["tokens_in"] += int(payload.get("tokens_in_estimate", 0))
+                sessions[sid]["tokens_out"] += int(payload.get("tokens_out_estimate", 0))
+            except Exception:
+                pass
+        return [
+            {
+                "session_id": sid,
+                "tokens_in": data["tokens_in"],
+                "tokens_out": data["tokens_out"],
+                "total": data["tokens_in"] + data["tokens_out"],
+                "events": data["events"],
+            }
+            for sid, data in sorted(sessions.items(), key=lambda x: -(x[1]["tokens_in"] + x[1]["tokens_out"]))
+        ]
+
+
+    def query_procedure_compliance(
+        self,
+        project_root: Path,
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Query: 'Did execution follow the intended procedure?' — compares runs against procedures."""
+        self.init_db(project_root)
+        where = ""
+        params: list[Any] = []
+        if session_id and session_id.strip():
+            where = " WHERE session_id = ?"
+            params.append(session_id.strip())
+        with self.connect(project_root) as conn:
+            # Runs with procedures
+            procedured = conn.execute(
+                f"SELECT run_id, run_kind, procedure_id, capability_name, status, ad_hoc, started_at, completed_at "
+                f"FROM execution_runs{where} {'AND' if where else 'WHERE'} procedure_id IS NOT NULL "
+                f"ORDER BY started_at DESC LIMIT ?",
+                [*params, limit],
+            ).fetchall()
+            # Ad-hoc runs (no procedure)
+            adhoc = conn.execute(
+                f"SELECT run_id, run_kind, capability_name, status, started_at, completed_at "
+                f"FROM execution_runs{where} {'AND' if where else 'WHERE'} procedure_id IS NULL AND ad_hoc = 1 "
+                f"ORDER BY started_at DESC LIMIT ?",
+                [*params, limit],
+            ).fetchall()
+        return {
+            "session_id": session_id,
+            "procedure_linked_runs": [
+                {
+                    "run_id": row["run_id"],
+                    "run_kind": row["run_kind"],
+                    "procedure_id": row["procedure_id"],
+                    "capability_name": row["capability_name"],
+                    "status": row["status"],
+                    "started_at": row["started_at"],
+                    "completed_at": row["completed_at"],
+                }
+                for row in procedured
+            ],
+            "ad_hoc_runs": [
+                {
+                    "run_id": row["run_id"],
+                    "run_kind": row["run_kind"],
+                    "capability_name": row["capability_name"],
+                    "status": row["status"],
+                    "started_at": row["started_at"],
+                    "completed_at": row["completed_at"],
+                }
+                for row in adhoc
+            ],
+            "compliance_ratio": f"{len(procedured)}/{len(procedured) + len(adhoc)}"
+            if (procedured or adhoc)
+            else "no data",
+        }
+
+    def prune_old_events(
+        self,
+        project_root: Path,
+        max_age_days: int = 30,
+        max_events: int = 10000,
+    ) -> dict[str, int]:
+        """Prune execution events older than max_age_days or exceeding max_events count."""
+        self.init_db(project_root)
+        cutoff = (
+            (
+                datetime.now(timezone.utc)
+                - __import__("datetime").timedelta(days=max_age_days)
+            )
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        with self.connect(project_root) as conn:
+            # Delete by age
+            age_result = conn.execute(
+                "DELETE FROM execution_events WHERE observed_at < ?", (cutoff,)
+            )
+            pruned_by_age = age_result.rowcount
+
+            # Delete excess (keep most recent max_events)
+            total = conn.execute("SELECT COUNT(*) FROM execution_events").fetchone()[0]
+            pruned_by_count = 0
+            if total > max_events:
+                excess = total - max_events
+                conn.execute(
+                    "DELETE FROM execution_events WHERE event_id IN "
+                    "(SELECT event_id FROM execution_events ORDER BY observed_at ASC LIMIT ?)",
+                    (excess,),
+                )
+                pruned_by_count = excess
+
+            # Also prune old runs
+            run_age_result = conn.execute(
+                "DELETE FROM execution_runs WHERE started_at < ? AND run_id NOT IN "
+                "(SELECT DISTINCT run_id FROM execution_events WHERE run_id IS NOT NULL)",
+                (cutoff,),
+            )
+            pruned_runs = run_age_result.rowcount
+
+        return {
+            "pruned_events_by_age": pruned_by_age,
+            "pruned_events_by_count": pruned_by_count,
+            "pruned_orphan_runs": pruned_runs,
+            "max_age_days": max_age_days,
+            "max_events": max_events,
+        }
+
+    def _timestamp(self) -> str:
+        return (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+
+    # ── Management operations ──
+
+    def _ensure_identity_columns(self, project_root: Path) -> None:
+        """Add host_id/agent_id columns if they don't exist (migration)."""
+        with self.connect(project_root) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(execution_events)").fetchall()}
+            if "host_id" not in columns:
+                conn.execute("ALTER TABLE execution_events ADD COLUMN host_id TEXT")
+            if "agent_id" not in columns:
+                conn.execute("ALTER TABLE execution_events ADD COLUMN agent_id TEXT")
+    def clear_token_usage(self, project_root: Path, *, session_id: str | None = None) -> int:
+        """Clear token-related execution runs. Scoped to session if provided."""
+        self.init_db(project_root)
+        with self.connect(project_root) as conn:
+            if session_id:
+                cursor = conn.execute(
+                    "DELETE FROM execution_runs WHERE run_kind = 'mcp_tool_invocation' AND session_id = ?",
+                    (session_id,),
+                )
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM execution_runs WHERE run_kind = 'mcp_tool_invocation'"
+                )
+            return cursor.rowcount
+
+    def clear_tool_calls(self, project_root: Path, *, session_id: str | None = None) -> dict[str, int]:
+        """Clear tool call events. Scoped to session if provided."""
+        self.init_db(project_root)
+        with self.connect(project_root) as conn:
+            if session_id:
+                events_deleted = conn.execute(
+                    "DELETE FROM execution_events WHERE event_kind IN ('tool_call_started', 'tool_call_completed', 'tool_call_failed') AND session_id = ?",
+                    (session_id,),
+                ).rowcount
+                runs_deleted = conn.execute(
+                    "DELETE FROM execution_runs WHERE run_kind = 'mcp_tool_invocation' AND session_id = ?",
+                    (session_id,),
+                ).rowcount
+            else:
+                events_deleted = conn.execute(
+                    "DELETE FROM execution_events WHERE event_kind IN ('tool_call_started', 'tool_call_completed', 'tool_call_failed')"
+                ).rowcount
+                runs_deleted = conn.execute(
+                    "DELETE FROM execution_runs WHERE run_kind = 'mcp_tool_invocation'"
+                ).rowcount
+            return {"events_deleted": events_deleted, "runs_deleted": runs_deleted}
+
+    def clear_all(self, project_root: Path, *, session_id: str | None = None) -> dict[str, int]:
+        """Clear all execution data. Scoped to session if provided."""
+        self.init_db(project_root)
+        with self.connect(project_root) as conn:
+            if session_id:
+                events = conn.execute("DELETE FROM execution_events WHERE session_id = ?", (session_id,)).rowcount
+                runs = conn.execute("DELETE FROM execution_runs WHERE session_id = ?", (session_id,)).rowcount
+            else:
+                events = conn.execute("DELETE FROM execution_events").rowcount
+                runs = conn.execute("DELETE FROM execution_runs").rowcount
+            return {"events_deleted": events, "runs_deleted": runs}
+
+    def prune_old_tool_calls(
+        self, project_root: Path, *, keep_days: int = 7
+    ) -> dict[str, int]:
+        """Delete old tool call events only (NOT token tracking runs). Used by auto-prune."""
+        self.init_db(project_root)
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat()
+        with self.connect(project_root) as conn:
+            events = conn.execute(
+                "DELETE FROM execution_events WHERE observed_at < ? AND event_kind IN ('tool_call_started', 'tool_call_completed', 'tool_call_failed')",
+                (cutoff,),
+            ).rowcount
+            return {"events_deleted": events}
+
+    def prune_old_events(
+        self, project_root: Path, *, keep_days: int = 7
+    ) -> dict[str, int]:
+        """Delete ALL execution events older than keep_days (including token tracking)."""
+        self.init_db(project_root)
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat()
+        with self.connect(project_root) as conn:
+            events = conn.execute(
+                "DELETE FROM execution_events WHERE observed_at < ?", (cutoff,)
+            ).rowcount
+            runs = conn.execute(
+                "DELETE FROM execution_runs WHERE started_at < ?", (cutoff,)
+            ).rowcount
+            return {"events_deleted": events, "runs_deleted": runs}
+
+    def prune_to_max_size(
+        self, project_root: Path, *, max_events: int = 10000
+    ) -> int:
+        """Keep only the most recent max_events tool call events, delete the rest."""
+        self.init_db(project_root)
+        with self.connect(project_root) as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM execution_events WHERE event_kind IN ('tool_call_started', 'tool_call_completed', 'tool_call_failed')"
+            ).fetchone()[0]
+            if total <= max_events:
+                return 0
+            to_delete = total - max_events
+            deleted = conn.execute(
+                "DELETE FROM execution_events WHERE event_id IN (SELECT event_id FROM execution_events WHERE event_kind IN ('tool_call_started', 'tool_call_completed', 'tool_call_failed') ORDER BY observed_at ASC LIMIT ?)",
+                (to_delete,),
+            ).rowcount
+            return deleted
+
+    def auto_prune(self, project_root: Path) -> dict[str, object]:
+        """Auto-prune tool call events only (not token tracking). Called on dashboard load."""
+        from .config import get_setting
+        max_events = int(get_setting(
+            "execution.max_events", project_root=project_root, default=10000
+        ) or 10000)
+        auto_prune_days = int(get_setting(
+            "execution.auto_prune_days", project_root=project_root, default=7
+        ) or 7)
+        pruned_by_size = self.prune_to_max_size(project_root, max_events=max_events)
+        pruned_by_age = self.prune_old_tool_calls(project_root, keep_days=auto_prune_days) if auto_prune_days > 0 else {"events_deleted": 0}
+        return {
+            "pruned_by_size": pruned_by_size,
+            "pruned_by_age": pruned_by_age,
+            "max_events": max_events,
+            "auto_prune_days": auto_prune_days,
+        }
+
+    def event_count(self, project_root: Path) -> dict[str, int]:
+        """Get current event and run counts."""
+        self.init_db(project_root)
+        with self.connect(project_root) as conn:
+            events = conn.execute("SELECT COUNT(*) FROM execution_events").fetchone()[0]
+            runs = conn.execute("SELECT COUNT(*) FROM execution_runs").fetchone()[0]
+            return {"events": events, "runs": runs}
+
+    def usage_by_host(self, project_root: Path) -> list[dict[str, object]]:
+        """Get token/tool usage broken down by host_id."""
+        self.init_db(project_root)
+        self._ensure_identity_columns(project_root)
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                """SELECT
+                    COALESCE(execution_events.host_id, 'unknown') as host,
+                    COUNT(*) as event_count,
+                    SUM(CASE WHEN json_extract(payload_json, '$.tokens_in_estimate') IS NOT NULL
+                        THEN CAST(json_extract(payload_json, '$.tokens_in_estimate') AS INTEGER) ELSE 0 END) as tokens_in,
+                    SUM(CASE WHEN json_extract(metadata_json, '$.tokens_in_estimate') IS NOT NULL
+                        THEN CAST(json_extract(metadata_json, '$.tokens_in_estimate') AS INTEGER) ELSE 0 END) as tokens_in_runs
+                FROM execution_events
+                LEFT JOIN execution_runs ON execution_events.run_id = execution_runs.run_id
+                GROUP BY execution_events.host_id
+                ORDER BY event_count DESC"""
+            ).fetchall()
+            return [
+                {"host_id": row[0], "event_count": row[1], "tokens_in": row[2] + row[3]}
+                for row in rows
+            ]
+
+    def usage_by_agent(self, project_root: Path) -> list[dict[str, object]]:
+        """Get token/tool usage broken down by agent_id."""
+        self.init_db(project_root)
+        self._ensure_identity_columns(project_root)
+        with self.connect(project_root) as conn:
+            rows = conn.execute(
+                """SELECT
+                    COALESCE(agent_id, 'main') as agent,
+                    COUNT(*) as event_count,
+                    SUM(CASE WHEN json_extract(payload_json, '$.tokens_in_estimate') IS NOT NULL
+                        THEN CAST(json_extract(payload_json, '$.tokens_in_estimate') AS INTEGER) ELSE 0 END) as tokens_in
+                FROM execution_events
+                GROUP BY agent_id
+                ORDER BY event_count DESC"""
+            ).fetchall()
+            return [
+                {"agent_id": row[0], "event_count": row[1], "tokens_in": row[2]}
+                for row in rows
+            ]

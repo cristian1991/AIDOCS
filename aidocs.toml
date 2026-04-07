@@ -1,0 +1,84 @@
+# AIDOCS MCP Configuration
+# Edit this file to customize AIDOCS behavior. Changes take effect on MCP server restart.
+
+[journal]
+# Maximum journal entries per session before eviction kicks in
+max_entries = 100
+# How many oldest entries to archive when journal is full
+evict_batch = 20
+# Action kinds too trivial to journal (comma-separated)
+trivial_actions = "task_begin, task_update, project_update"
+# Minimum intent length to be journaled (filters greetings, single words)
+min_intent_length = 10
+
+[index]
+# Directories to never descend into during code indexing (comma-separated)
+# These are in addition to the built-in skip list (.git, node_modules, dist, etc.)
+extra_skip_dirs = ""
+# Directories that hint at being a project module (comma-separated)
+# These are in addition to the built-in hint list (app, cli, core, lib, etc.)
+extra_module_hints = ""
+# Maximum JSON file size in bytes before skipping (0 = no limit)
+max_json_size = 100000
+enabled_languages = "all"
+
+[languages]
+# Which language files to load for prompt classification (comma-separated, no .yaml extension)
+# Examples: "en" (English only, fastest), "en, it" (English + Italian), "all" (every .yaml)
+enabled = "all"
+
+[tools]
+# Default timeout for general MCP tool calls (seconds). Agent can override per-call.
+tool_call_timeout = 10
+# Default timeout for sync/index operations (code_index_sync, project_sync, etc.)
+# Small projects: 10s. Medium: 30s. Large monorepos: 60-120s.
+sync_functions_timeout = 30
+# Default timeout for git operations (fork_status, merge_plan, etc.)
+git_functions_timeout = 30
+# Maximum allowed timeout for any call (prevents runaway)
+max_timeout = 120
+
+[agent]
+# How action directives are delivered: "short" (3-step chains) or "detailed" (full lists)
+host_mode = "enforced"
+# Whether to inject tool directives into user messages (OpenCode only)
+inject_message_directives = true
+# Load /.MEMORY/rules/*.md into agent context on bootstrap.
+# Without this, AIDOCS operates in MCP-tool-only mode — indexed retrieval works
+# but the agent does not follow project workflow, standards, or security directives.
+inject_rules_on_bootstrap = true
+
+[dev]
+# Dev mode: allows agents to edit AIDOCS MCP server source via code_edit_lines.
+# When false (default), code_edit_lines refuses to modify files inside aidocs_mcp/.
+# Config files (aidocs.toml, aidocs-plugin.json) are NEVER editable by agents regardless of this setting.
+dev_mode = true
+allow_config_edit = false
+
+[code_quality]
+# Enforce comment standards from coding-standards.aidocs during agent edits.
+# "strict": agent must follow all comment rules (WHY not WHAT, no vague qualifiers)
+# "advisory": agent gets a reminder but is not blocked
+# "off": no comment enforcement
+comment_enforcement = "advisory"
+
+[presentation]
+# Maximum non-empty lines included when helper skill guidance is injected into host context.
+helper_skill_excerpt_lines = 12
+# Maximum characters included when helper skill guidance is injected into host context.
+helper_skill_excerpt_chars = 1200
+# Maximum workflow actions included in compact workflow summaries.
+workflow_summary_limit = 3
+# Default journal entries returned by session_resume_bundle when no explicit limit is provided.
+resume_journal_last_n = 10
+# Handoff freshness window in hours before handoff is considered stale.
+handoff_stale_after_hours = 24
+# How many hours a handoff step is considered recently changed.
+handoff_recent_hours = 24
+
+[gate]
+enforce = true
+
+[conductor]
+default_mode = "inline"
+enabled = false

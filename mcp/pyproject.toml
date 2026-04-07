@@ -1,0 +1,62 @@
+[project]
+name = "aidocs-mcp"
+version = "2.2.0b1"
+description = "Portable AI coding-agent toolkit — MCP server with indexed code retrieval, session management, and persistent memory"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.11"
+authors = [
+  {name = "CodeNexus", email = "hello@codenexus.cloud"}
+]
+keywords = ["ai", "mcp", "coding-agent", "memory", "session", "code-index", "claude", "opencode"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+  "fastmcp>=2.0.0"
+]
+
+[project.urls]
+Homepage = "https://codenexus.cloud"
+Repository = "https://github.com/cristian1991/AIDOCS"
+Issues = "https://github.com/cristian1991/AIDOCS/issues"
+Documentation = "https://github.com/cristian1991/AIDOCS#readme"
+
+[project.scripts]
+aidocs-mcp = "aidocs_mcp.mcp_server:main"
+aidocs = "aidocs_mcp.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0"
+]
+ast = [
+  "tree-sitter>=0.23.0",
+  "tree-sitter-javascript>=0.23.0",
+  "tree-sitter-typescript>=0.23.0"
+]
+
+[tool.setuptools]
+package-dir = {"" = "server"}
+
+[tool.setuptools.packages.find]
+where = ["server"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: tests that take >5s (deselect with -m 'not slow')",
+]
+# Show 10 slowest tests so we can spot regressions
+addopts = "--tb=short -q --strict-markers --durations=10 --durations-min=2.0"

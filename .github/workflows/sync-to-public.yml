@@ -1,0 +1,38 @@
+name: Sync to Public Repo
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private repo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Strip private files
+        run: |
+          rm -rf mcp/tests/ tests/ mcp/RELEASE_SUMMARY_1_2_0.md mcp/benchmarks/ .github/PRIVATE_VALIDATION_TEMPLATE.md SECURITY_CI_MODEL.md archive/roadmaps/
+          find . -type f \( -name 'ROADMAP*.md' -o -name '*ROADMAP*.md' \) ! -name 'PUBLIC_ROADMAP.md' -delete
+
+      - name: Verify public tree
+        run: |
+          python core/scripts/verify-public-tree.py --repo-root .
+
+      - name: Push to public repo (orphan — no private history)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Create orphan branch so no private commit history reaches public
+          git checkout --orphan public-sync
+          git add -A
+          git commit -m "sync: mirror from private ($(git rev-parse --short main))"
+          git remote add public https://x-access-token:${{ secrets.PUBLIC_REPO_TOKEN }}@github.com/cristian1991/AIDOCS.git
+          git push public public-sync:main --force

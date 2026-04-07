@@ -1,0 +1,41 @@
+# Local/private root memory + routers
+/.MEMORY/
+# Stray .MEMORY dirs created by MCP server when CWD is a subdirectory
+apps/**/.MEMORY/
+mcp/**/.MEMORY/
+/AGENTS.md
+/CLAUDE.md
+/opencode.jsonc
+
+# OpenCode runtime
+.opencode/node_modules/
+.opencode/bun.lock
+.opencode/package.json
+.opencode/plugins/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Derived indexes (rebuildable)
+core/.MEMORY/.index/
+
+# Build artifacts
+mcp/build/
+mcp/dist/
+.mcp.json
+
+# Dashboard generated files
+apps/aidocs-dashboard/node_modules/
+apps/aidocs-dashboard/src-tauri/target/
+
+# Local git worktrees
+.worktrees/
+.playwright-mcp/
+overlay-*.png
+.playwright-mcp/

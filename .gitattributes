@@ -1,0 +1,4 @@
+*.aidocs linguist-language=Markdown
+*.sh text eol=lf
+*.bash text eol=lf
+install.sh text eol=lf

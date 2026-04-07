@@ -1,0 +1,413 @@
+"""Tree-sitter integration for syntax validation and AST-based outline extraction.
+
+Optional dependency — falls back gracefully when tree-sitter is not installed.
+Install: pip install aidocs_mcp[ast]
+"""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Grammar loaders — lazy-loaded on first use
+_GRAMMAR_LOADERS: dict[str, tuple[str, str]] = {
+    ".py": ("tree_sitter_python", "language"),
+    ".js": ("tree_sitter_javascript", "language"),
+    ".mjs": ("tree_sitter_javascript", "language"),
+    ".cjs": ("tree_sitter_javascript", "language"),
+    ".jsx": ("tree_sitter_typescript", "language_tsx"),
+    ".ts": ("tree_sitter_typescript", "language_typescript"),
+    ".tsx": ("tree_sitter_typescript", "language_tsx"),
+    ".cs": ("tree_sitter_c_sharp", "language"),
+    ".go": ("tree_sitter_go", "language"),
+    ".rs": ("tree_sitter_rust", "language"),
+    ".java": ("tree_sitter_java", "language"),
+    ".html": ("tree_sitter_html", "language"),
+    ".css": ("tree_sitter_css", "language"),
+    ".scss": ("tree_sitter_css", "language"),
+    ".dart": ("tree_sitter_dart", "language"),
+}
+
+# Node types that represent outline symbols per language family
+_OUTLINE_NODE_TYPES: dict[str, dict[str, str]] = {
+    "python": {
+        "function_definition": "function",
+        "class_definition": "class",
+        "decorated_definition": "_decorated",
+    },
+    "javascript": {
+        "function_declaration": "function",
+        "class_declaration": "class",
+        "method_definition": "method",
+        "arrow_function": "function",
+        "export_statement": "_export",
+        "lexical_declaration": "_declaration",
+        "variable_declaration": "_declaration",
+    },
+    "typescript": {
+        "function_declaration": "function",
+        "class_declaration": "class",
+        "method_definition": "method",
+        "interface_declaration": "interface",
+        "type_alias_declaration": "type_alias",
+        "enum_declaration": "enum",
+        "arrow_function": "function",
+        "export_statement": "_export",
+        "lexical_declaration": "_declaration",
+        "variable_declaration": "_declaration",
+    },
+    "c_sharp": {
+        "class_declaration": "class",
+        "interface_declaration": "interface",
+        "struct_declaration": "struct",
+        "enum_declaration": "enum",
+        "record_declaration": "record",
+        "method_declaration": "method",
+        "constructor_declaration": "initializer",
+        "property_declaration": "property",
+        "field_declaration": "field",
+    },
+    "go": {
+        "function_declaration": "function",
+        "method_declaration": "method",
+        "type_declaration": "type_alias",
+        "type_spec": "_type_spec",
+    },
+    "rust": {
+        "function_item": "function",
+        "struct_item": "struct",
+        "enum_item": "enum",
+        "trait_item": "interface",
+        "impl_item": "_impl",
+        "type_item": "type_alias",
+    },
+    "java": {
+        "class_declaration": "class",
+        "interface_declaration": "interface",
+        "enum_declaration": "enum",
+        "method_declaration": "method",
+        "constructor_declaration": "initializer",
+        "field_declaration": "field",
+        "record_declaration": "record",
+    },
+    "dart": {
+        "class_definition": "class",
+        "enum_declaration": "enum",
+        "function_signature": "function",
+        "method_signature": "method",
+        "constructor_signature": "initializer",
+    },
+}
+
+# Map file extensions to language families for outline extraction
+_EXTENSION_TO_FAMILY: dict[str, str] = {
+    ".py": "python",
+    ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript",
+    ".jsx": "typescript", ".ts": "typescript", ".tsx": "typescript",
+    ".cs": "c_sharp",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".dart": "dart",
+}
+
+
+def _available() -> bool:
+    """Check if tree-sitter is installed."""
+    try:
+        from tree_sitter import Parser  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+_parser_cache: dict[str, Any] = {}
+
+
+def _get_parser(suffix: str) -> Any | None:
+    """Get or create a tree-sitter parser for the given file extension."""
+    if suffix in _parser_cache:
+        return _parser_cache[suffix]
+    loader = _GRAMMAR_LOADERS.get(suffix)
+    if not loader:
+        return None
+    module_name, func_name = loader
+    try:
+        import importlib
+        from tree_sitter import Language, Parser
+        mod = importlib.import_module(module_name)
+        lang_fn = getattr(mod, func_name)
+        parser = Parser(Language(lang_fn()))
+        _parser_cache[suffix] = parser
+        return parser
+    except (ImportError, AttributeError, Exception) as exc:
+        logger.debug("tree-sitter parser not available for %s: %s", suffix, exc)
+        _parser_cache[suffix] = None
+        return None
+
+
+def check_syntax(path: Path, text: str) -> str | None:
+    """Validate syntax using tree-sitter. Returns error message or None if valid."""
+    if not _available():
+        return None
+    parser = _get_parser(path.suffix.lower())
+    if parser is None:
+        return None
+    tree = parser.parse(text.encode("utf-8"))
+    if not tree.root_node.has_error:
+        return None
+    # Find the first ERROR node for a useful message
+    error_node = _find_first_error(tree.root_node)
+    if error_node:
+        line = error_node.start_point[0] + 1
+        col = error_node.start_point[1] + 1
+        snippet = text.splitlines()[error_node.start_point[0]][max(0, col - 20):col + 20] if error_node.start_point[0] < len(text.splitlines()) else ""
+        return f"Syntax error at line {line}, col {col}: unexpected `{snippet.strip()}`"
+    return "Syntax error detected in edited file"
+
+
+def _find_first_error(node: Any) -> Any | None:
+    """Recursively find the first ERROR or MISSING node in the tree."""
+    if node.type == "ERROR" or node.is_missing:
+        return node
+    for child in node.children:
+        found = _find_first_error(child)
+        if found:
+            return found
+    return None
+
+
+def extract_outline(
+    path: Path, text: str
+) -> list[tuple[str, str, int, str | None, bool]]:
+    """Extract code outline using tree-sitter AST.
+
+    Returns list of (symbol, kind, line_number, container, is_partial).
+    Falls back to empty list if tree-sitter unavailable.
+    """
+    if not _available():
+        return []
+    suffix = path.suffix.lower()
+    parser = _get_parser(suffix)
+    if parser is None:
+        return []
+    family = _EXTENSION_TO_FAMILY.get(suffix)
+    if not family:
+        return []
+    node_types = _OUTLINE_NODE_TYPES.get(family, {})
+    if not node_types:
+        return []
+
+    tree = parser.parse(text.encode("utf-8"))
+    outlines: list[tuple[str, str, int, str | None, bool]] = []
+    _walk_outline(tree.root_node, node_types, family, outlines, container=None)
+    return outlines
+
+
+def _get_name(node: Any, family: str) -> str | None:
+    """Extract the name from an AST node."""
+    # Prefer plain 'identifier' over 'type_identifier' (type_identifier is often a return type in Dart/Go)
+    for child in node.children:
+        if child.type in ("identifier", "name", "property_identifier"):
+            return child.text.decode("utf-8")
+    # Fallback to type_identifier for class/struct/enum names
+    for child in node.children:
+        if child.type == "type_identifier":
+            return child.text.decode("utf-8")
+    # Python decorated_definition — get the inner function/class name
+    if node.type == "decorated_definition":
+        for child in node.children:
+            if child.type in ("function_definition", "class_definition"):
+                return _get_name(child, family)
+    # JS/TS variable declarations — const Foo = ...
+    if node.type in ("lexical_declaration", "variable_declaration"):
+        for child in node.children:
+            if child.type == "variable_declarator":
+                return _get_name(child, family)
+    # JS/TS export — export function/class/const
+    if node.type == "export_statement":
+        for child in node.children:
+            if child.type not in ("export", "default", "comment"):
+                name = _get_name(child, family)
+                if name:
+                    return name
+    return None
+
+
+def _walk_outline(
+    node: Any,
+    node_types: dict[str, str],
+    family: str,
+    outlines: list[tuple[str, str, int, str | None, bool]],
+    container: str | None,
+) -> None:
+    """Walk the AST and extract outline symbols."""
+    kind = node_types.get(node.type)
+
+    if kind:
+        name = _get_name(node, family)
+        line = node.start_point[0] + 1
+
+        if kind == "_decorated":
+            # Python: unwrap decorated_definition
+            for child in node.children:
+                if child.type in ("function_definition", "class_definition"):
+                    inner_kind = "function" if child.type == "function_definition" else "class"
+                    inner_name = _get_name(child, family)
+                    if inner_name:
+                        outlines.append((inner_name, inner_kind, line, container, False))
+                        if inner_kind == "class":
+                            _walk_children(child, node_types, family, outlines, inner_name)
+            return
+
+        if kind == "_export":
+            # JS/TS: unwrap export statement
+            for child in node.children:
+                if child.type not in ("export", "default", "comment"):
+                    _walk_outline(child, node_types, family, outlines, container)
+            return
+
+        if kind == "_declaration":
+            # JS/TS: const Foo = () => {} or const Foo = class {}
+            if name:
+                # Check if the value is a function/class
+                actual_kind = _infer_declaration_kind(node, family)
+                outlines.append((name, actual_kind, line, container, False))
+            return
+
+        if kind == "_impl":
+            # Rust: impl Foo { ... } — container for methods
+            impl_name = _get_impl_name(node)
+            if impl_name:
+                _walk_children(node, node_types, family, outlines, impl_name)
+            return
+
+        if kind == "_type_spec":
+            # Go: type Foo struct/interface
+            if name:
+                actual_kind = _infer_go_type_kind(node)
+                outlines.append((name, actual_kind, line, container, False))
+            return
+
+        if name:
+            outlines.append((name, kind, line, container, False))
+            # Recurse into class/struct/interface bodies for methods
+            if kind in ("class", "struct", "interface", "record", "enum"):
+                _walk_children(node, node_types, family, outlines, name)
+                return
+
+    # For non-outline nodes, recurse into children
+    _walk_children(node, node_types, family, outlines, container)
+
+
+def _walk_children(
+    node: Any,
+    node_types: dict[str, str],
+    family: str,
+    outlines: list[tuple[str, str, int, str | None, bool]],
+    container: str | None,
+) -> None:
+    """Recurse into child nodes."""
+    for child in node.children:
+        # Skip method/function bodies to avoid nested function noise
+        if child.type == "block" and node.type in ("function_definition", "method_definition", "function_declaration", "method_declaration"):
+            continue
+        _walk_outline(child, node_types, family, outlines, container)
+
+
+def _infer_declaration_kind(node: Any, family: str) -> str:
+    """Infer kind from a JS/TS variable declaration (const Foo = ...)."""
+    for child in node.children:
+        if child.type == "variable_declarator":
+            for val in child.children:
+                if val.type == "arrow_function":
+                    return "function"
+                if val.type in ("function", "function_expression"):
+                    return "function"
+                if val.type in ("class", "class_expression"):
+                    return "class"
+                if val.type == "call_expression":
+                    # React.memo(), forwardRef(), etc.
+                    return "component"
+    return "function"
+
+
+def _get_impl_name(node: Any) -> str | None:
+    """Get the type name from a Rust impl block."""
+    for child in node.children:
+        if child.type == "type_identifier":
+            return child.text.decode("utf-8")
+    return None
+
+
+def _infer_go_type_kind(node: Any) -> str:
+    """Infer Go type kind (struct, interface, etc.)."""
+    for child in node.children:
+        if child.type == "struct_type":
+            return "struct"
+        if child.type == "interface_type":
+            return "interface"
+    return "type_alias"
+
+
+def extract_edges(path: Path, text: str) -> list[tuple[str, str]]:
+    """Extract import edges using tree-sitter AST.
+
+    Returns list of (target, kind) tuples.
+    """
+    if not _available():
+        return []
+    suffix = path.suffix.lower()
+    parser = _get_parser(suffix)
+    if parser is None:
+        return []
+    family = _EXTENSION_TO_FAMILY.get(suffix)
+    if not family:
+        return []
+
+    tree = parser.parse(text.encode("utf-8"))
+    edges: list[tuple[str, str]] = []
+
+    for node in _iter_nodes(tree.root_node):
+        if family == "python" and node.type == "import_statement":
+            for child in node.children:
+                if child.type == "dotted_name":
+                    edges.append((child.text.decode("utf-8"), "import"))
+        elif family == "python" and node.type == "import_from_statement":
+            for child in node.children:
+                if child.type in ("dotted_name", "relative_import"):
+                    edges.append((child.text.decode("utf-8"), "import"))
+                    break
+        elif family in ("javascript", "typescript") and node.type == "import_statement":
+            for child in node.children:
+                if child.type == "string":
+                    target = child.text.decode("utf-8").strip("'\"")
+                    edges.append((target, "import"))
+        elif family == "c_sharp" and node.type == "using_directive":
+            for child in node.children:
+                if child.type in ("identifier", "qualified_name"):
+                    edges.append((child.text.decode("utf-8"), "using"))
+        elif family == "go" and node.type == "import_spec":
+            for child in node.children:
+                if child.type == "interpreted_string_literal":
+                    target = child.text.decode("utf-8").strip('"')
+                    edges.append((target, "import"))
+        elif family == "rust" and node.type == "use_declaration":
+            for child in node.children:
+                if child.type in ("scoped_identifier", "identifier", "use_wildcard"):
+                    edges.append((child.text.decode("utf-8"), "use"))
+        elif family == "java" and node.type == "import_declaration":
+            for child in node.children:
+                if child.type == "scoped_identifier":
+                    edges.append((child.text.decode("utf-8"), "import"))
+
+    return edges
+
+
+def _iter_nodes(node: Any) -> Any:
+    """Iterate all nodes in the tree."""
+    yield node
+    for child in node.children:
+        yield from _iter_nodes(child)

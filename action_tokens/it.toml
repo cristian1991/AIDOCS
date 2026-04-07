@@ -1,0 +1,16 @@
+# AIDOCS Action Tokens — Italian
+
+project_update = ["aggiorna progetto", "sincronizza progetto", "aggiorna aidocs", "ricarica aidocs"]
+archive = ["archivia", "archivio", "note di rilascio", "changelog"]
+write_memory = ["ricorda", "salva questa regola", "memorizza", "aggiungi alla memoria", "salva in memoria", "tieni a mente", "ricordati"]
+git_commit_and_push = ["commit e push", "fare commit e push"]
+git_status_check = ["controlla git status", "verifica git status"]
+github_workflow_check = ["controlla github actions", "controlla github workflow", "controlla github workflow status", "controlla workflow status", "controlla actions status", "controlla ci status"]
+deploy_health_check = ["controlla deploy status", "controlla deployment status", "controlla deployment health", "controlla deploy health", "controlla vps status", "controlla vps deploy status"]
+git_push = ["push"]
+git_commit = ["commit"]
+code_bundle = ["recupera contesto", "ottieni contesto", "bundle codice", "codice sessione", "mostra codice"]
+read_error = ["errore", "stack trace", "traceback", "eccezione", "crash", "fallito", "fallita", "non funziona", "si rompe", "si blocca"]
+edit = ["correggi", "modifica", "cambia", "aggiorna", "implementa", "rifactorizza", "rinomina", "aggiungi", "rimuovi", "crea", "elimina", "sposta", "sistema", "sistema questo", "metti a posto"]
+trace = ["traccia", "dove viene", "perche viene", "trova utilizzo", "trova riferimenti", "come funziona", "chi chiama", "cosa usa", "da dove viene", "dove si usa"]
+understand = ["capire", "spiega", "spiegami", "ispeziona", "analizza", "approfondisci", "indaga", "fammi vedere", "mostrami", "cos'e", "cosa e", "che cos'e", "dimmi"]

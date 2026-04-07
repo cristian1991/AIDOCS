@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AIDOCS Workflow Inspection</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b1020;
+        --panel: #121933;
+        --panel-2: #182246;
+        --border: #2a3767;
+        --text: #edf2ff;
+        --muted: #9fb0df;
+        --shared: #78d7ff;
+        --claude: #ffb36b;
+        --opencode: #9dffab;
+        --accent: #7d8dff;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 14px/1.5 Inter, Segoe UI, Arial, sans-serif;
+        background: linear-gradient(180deg, #0b1020 0%, #0d1430 100%);
+        color: var(--text);
+      }
+      a { color: #b7c6ff; }
+      code { font-family: Consolas, Monaco, monospace; font-size: 0.95em; }
+      .wrap {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+      .hero, .panel {
+        background: rgba(18, 25, 51, 0.92);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+      }
+      .hero {
+        padding: 24px;
+        margin-bottom: 20px;
+      }
+      .hero h1 {
+        margin: 0 0 8px;
+        font-size: 32px;
+      }
+      .hero p {
+        margin: 0;
+        color: var(--muted);
+        max-width: 1000px;
+      }
+      .hero-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 16px;
+      }
+      .hero-links a {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 12px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        text-decoration: none;
+        background: rgba(255,255,255,0.03);
+      }
+      .controls {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: 1fr;
+        padding: 18px;
+        margin-bottom: 20px;
+      }
+      .stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .stat {
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        min-width: 140px;
+      }
+      .stat strong {
+        display: block;
+        font-size: 18px;
+      }
+      .filter-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+      }
+      .filter-row input {
+        min-width: 280px;
+        padding: 10px 12px;
+        color: var(--text);
+        background: #0b132c;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+      }
+      .chip-group {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .chip {
+        cursor: pointer;
+        border: 1px solid var(--border);
+        background: #101733;
+        color: var(--text);
+        padding: 8px 12px;
+        border-radius: 999px;
+      }
+      .chip.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+      .sections {
+        display: grid;
+        gap: 20px;
+      }
+      .section {
+        padding: 18px;
+      }
+      .section h2 {
+        margin: 0 0 10px;
+        font-size: 24px;
+      }
+      .section-meta {
+        color: var(--muted);
+        margin-bottom: 14px;
+      }
+      .flows {
+        display: grid;
+        gap: 12px;
+      }
+      details.flow {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        overflow: hidden;
+        background: rgba(255,255,255,0.02);
+      }
+      details.flow[open] {
+        background: rgba(255,255,255,0.04);
+      }
+      .flow summary {
+        list-style: none;
+        cursor: pointer;
+        padding: 14px 16px;
+      }
+      .flow summary::-webkit-details-marker { display: none; }
+      .flow-head {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 6px;
+      }
+      .lane {
+        display: inline-flex;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .lane.shared { color: #06131a; background: var(--shared); }
+      .lane.claude { color: #2d1700; background: var(--claude); }
+      .lane.opencode { color: #09220d; background: var(--opencode); }
+      .entrypoint {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .trigger {
+        font-size: 16px;
+        font-weight: 700;
+      }
+      .flow-body {
+        display: grid;
+        gap: 14px;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        padding: 0 16px 16px;
+      }
+      .kv {
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #0e1632;
+      }
+      .kv h3 {
+        margin: 0 0 8px;
+        font-size: 13px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .kv p { margin: 0; }
+      .kv ul {
+        margin: 0;
+        padding-left: 18px;
+      }
+      .kv li + li { margin-top: 4px; }
+      .empty {
+        color: var(--muted);
+        font-style: italic;
+      }
+      .hidden { display: none !important; }
+      @media (max-width: 800px) {
+        .wrap { padding: 16px; }
+        .hero h1 { font-size: 26px; }
+        .filter-row { flex-direction: column; align-items: stretch; }
+        .filter-row input { min-width: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <section class="hero">
+        <h1>AIDOCS Workflow Inspection</h1>
+        <p>
+          Actual current workflow, traced from install scripts, runtime entrypoints, host hooks, and plugin code.
+          This page is meant to be read like a debugger map: trigger, function, decision, branch, write, result.
+        </p>
+        <div class="hero-links">
+          <a href="flows.json">Flow source</a>
+          <a href="sources.md">Evidence ledger</a>
+          <a href="gaps.md">Observed gaps</a>
+          <a href="../specs/2026-04-03-aidocs-workflow-inspection-design.md">Design spec</a>
+        </div>
+      </section>
+
+      <section class="panel controls">
+        <div class="stats" id="stats"></div>
+        <div class="filter-row">
+          <div class="chip-group" id="lane-filters">
+            <button class="chip active" data-lane="all">All lanes</button>
+            <button class="chip" data-lane="shared">Shared</button>
+            <button class="chip" data-lane="claude">Claude</button>
+            <button class="chip" data-lane="opencode">OpenCode</button>
+          </div>
+          <input id="search" type="search" placeholder="Filter by trigger, entrypoint, branch, file, or result" />
+        </div>
+      </section>
+
+      <div class="sections" id="sections"></div>
+    </div>
+
+    <script id="flow-data" type="application/json">{"sections": [{"id": "setup", "title": "0. AIDOCS setup", "flows": [{"id": "setup.install.windows.cmd-wrapper", "lane": "shared", "trigger": "Operator runs core\\scripts\\install-agent-routing.cmd", "layer": "installer", "entrypoint": "core/scripts/install-agent-routing.cmd", "inputs": ["optional RootPath argument"], "reads": ["%~dp0 to locate install-agent-routing.ps1"], "decision": "PowerShell installer exits successfully or returns errorlevel 1+", "branches": ["delegate to install-agent-routing.ps1", "print 'Install failed.' and exit 1"], "writes": [], "result": "Windows setup path is a thin trampoline into the PowerShell installer.", "evidence": ["core/scripts/install-agent-routing.cmd:1-15"]}, {"id": "setup.install.windows.powershell", "lane": "shared", "trigger": "PowerShell installer starts after cmd wrapper or direct invocation", "layer": "installer", "entrypoint": "core/scripts/install-agent-routing.ps1", "inputs": ["RootPath or inferred repo root", "USERPROFILE", "existing ~/.config/opencode and ~/.claude state"], "reads": [".MEMORY/.aidocs/index.aidocs at repo root", ".MEMORY/.aidocs/command-pack.version", "core/plugins/aidocs.js", "aidocs-plugin.json if present", "action_tokens/*.yaml", "action_hooks/*.toml if present", "core/.commands/*.md", "existing ~/.config/opencode/opencode.json[c]", "existing ~/.claude/settings.json"], "decision": "Resolve repo/core roots, choose opencode.jsonc vs opencode.json, choose python executable, remove prior AIDOCS Claude hook groups before writing new ones.", "branches": ["fail if repo root cannot be resolved", "fail if .MEMORY/.aidocs/index.aidocs is missing", "copy OpenCode plugin + config", "write OpenCode MCP config under ~/.config/opencode/opencode.json[c]", "rewrite Claude SessionStart/UserPromptSubmit/PreToolUse hook groups in ~/.claude/settings.json", "copy shared command pack into ~/.config/opencode/commands and ~/.claude/commands", "persist AIDOCS_PATH as a user environment variable"], "writes": ["~/.config/opencode/AGENTS.md", "~/.config/opencode/plugins/aidocs.js", "~/.config/opencode/plugins/aidocs-plugin.json when source exists", "~/.config/opencode/plugins/action_tokens/*.yaml", "repo action_tokens/opencode/*.yaml as links or copies", "~/.config/opencode/action_hooks/*.toml when source exists", "~/.config/opencode/opencode.json or opencode.jsonc", "~/.claude/CLAUDE.md", "~/.claude/settings.json", "~/.config/opencode/commands/*.md", "~/.claude/commands/*.md", "User AIDOCS_PATH environment variable"], "result": "Global OpenCode and Claude host wiring is refreshed and pointed at the current AIDOCS tree.", "evidence": ["core/scripts/install-agent-routing.ps1:12-49", "core/scripts/install-agent-routing.ps1:60-79", "core/scripts/install-agent-routing.ps1:188-347", "core/scripts/install-agent-routing.ps1:351-438"]}, {"id": "setup.install.unix-shell", "lane": "shared", "trigger": "Operator runs bash core/scripts/install-agent-routing.sh", "layer": "installer", "entrypoint": "core/scripts/install-agent-routing.sh", "inputs": ["optional root path argument", "$HOME", "existing ~/.config/opencode and ~/.claude state"], "reads": [".MEMORY/.aidocs/index.aidocs at repo root", ".MEMORY/.aidocs/command-pack.version", "core/plugins/aidocs.js", "aidocs-plugin.json if present", "action_tokens/*.yaml", "action_hooks/*.toml if present", "core/.commands/*.md", "existing ~/.config/opencode/opencode.json[c]", "existing ~/.claude/settings.json", "shell profile ~/.zshrc, ~/.bashrc, or ~/.profile"], "decision": "Resolve repo/core roots, choose opencode.jsonc vs opencode.json, choose python binary, remove prior AIDOCS Claude hook groups before writing new ones, choose shell profile for AIDOCS_PATH export.", "branches": ["fail if repo root cannot be resolved", "fail if .MEMORY/.aidocs/index.aidocs is missing", "copy OpenCode plugin + config", "write OpenCode MCP config under ~/.config/opencode/opencode.json[c]", "rewrite Claude SessionStart/UserPromptSubmit/PreToolUse hook groups in ~/.claude/settings.json", "copy shared command pack into ~/.config/opencode/commands and ~/.claude/commands", "append export AIDOCS_PATH=... to first available shell profile or print a manual warning"], "writes": ["$HOME/.config/opencode/AGENTS.md", "$HOME/.config/opencode/plugins/aidocs.js", "$HOME/.config/opencode/plugins/aidocs-plugin.json when source exists", "$HOME/.config/opencode/plugins/action_tokens/*.yaml", "repo action_tokens/opencode/*.yaml as links or copies", "$HOME/.config/opencode/action_hooks/*.toml when source exists", "$HOME/.config/opencode/opencode.json or opencode.jsonc", "$HOME/.claude/CLAUDE.md", "$HOME/.claude/settings.json", "$HOME/.config/opencode/commands/*.md", "$HOME/.claude/commands/*.md", "export AIDOCS_PATH=... appended to shell profile when one exists"], "result": "Unix install performs the same global host wiring as Windows, plus shell-profile export management for AIDOCS_PATH.", "evidence": ["core/scripts/install-agent-routing.sh:12-40", "core/scripts/install-agent-routing.sh:48-61", "core/scripts/install-agent-routing.sh:65-221", "core/scripts/install-agent-routing.sh:223-412"]}, {"id": "setup.optional-mcp-manual-install", "lane": "shared", "trigger": "Operator chooses to install the optional MCP runtime manually", "layer": "host", "entrypoint": "manual shell command: cd mcp && pip install -e .", "inputs": ["Python environment", "repo mcp/ package"], "reads": ["mcp/pyproject.toml", "README_INSTALL.md", "mcp/README.md"], "decision": "standard install vs dev extras vs ast extras is chosen by the operator", "branches": ["pip install -e .", "pip install -e .[dev]", "pip install -e .[ast]"], "writes": ["Python environment package installation for aidocs_mcp"], "result": "MCP runtime becomes available to hosts, but this step is manual rather than installer-driven.", "evidence": ["README_INSTALL.md:44-57", "mcp/README.md:17-24", "mcp/README.md:137-144"]}]}, {"id": "project-mcp-setup", "title": "1. AIDOCS MCP setup in project", "flows": [{"id": "project.setup.project-init", "lane": "shared", "trigger": "Host or operator calls RuntimeService.project_init(project_root)", "layer": "mcp_runtime", "entrypoint": "RuntimeService.project_init", "inputs": ["project_root", "init_git flag", "create_remote flag"], "reads": ["AIDOCS memory template tree", "repo-level *.aidocs bundle files", "repo-level AGENTS.md and CLAUDE.md templates", "existing project filesystem state"], "decision": "Use template tree if available, otherwise create fallback .MEMORY structure; initialize git only when requested and project is not already inside a git repo.", "branches": ["copy missing .MEMORY template tree", "fallback-create .MEMORY/.aidocs, sessions, rules, domains, system, config, archive/sessions", "copy missing bundle .aidocs files and personalities", "create workflow-rules.md and workflow-actions.md when absent", "copy or create AGENTS.md and CLAUDE.md when absent", "initialize git and first commit only if init_git=true and no repo exists", "attempt remote creation only if create_remote=true after git init"], "writes": ["project /.MEMORY/** scaffold", "project /.MEMORY/.aidocs/index.aidocs", "project /.MEMORY/INDEX.md", "project /.MEMORY/rules/workflow-rules.md", "project /.MEMORY/rules/workflow-actions.md", "project AGENTS.md and/or CLAUDE.md", "optional .gitignore and initial git commit", "project .mcp.json via ensure_claude_mcp_config at the end"], "result": "Project gains the AIDOCS filesystem scaffold and a Claude MCP config entry, but managed mode is not activated yet.", "evidence": ["mcp/server/aidocs_mcp/runtime_service.py:2372-2583"]}, {"id": "project.setup.ensure-mcp-json", "lane": "shared", "trigger": "RuntimeService.ensure_claude_mcp_config(project_root) is called during project init or bootstrap", "layer": "mcp_runtime", "entrypoint": "RuntimeService.ensure_claude_mcp_config", "inputs": ["project_root", "AIDOCS_PATH env var when present", "current python executable"], "reads": ["project .mcp.json if present", "repo or env-derived mcp/server path"], "decision": "If .mcp.json already contains an aidocs entry with the expected PYTHONPATH, no change is made; otherwise create or update the aidocs mcpServers entry.", "branches": ["return no_change when aidocs entry already matches", "create .mcp.json with mcpServers.aidocs entry", "update existing .mcp.json with corrected aidocs entry"], "writes": ["project .mcp.json"], "result": "Claude-compatible stdio MCP wiring is made present or corrected inside the project.", "evidence": ["mcp/server/aidocs_mcp/runtime_service.py:1560-1627"]}, {"id": "project.setup.bootstrap-preflight", "lane": "shared", "trigger": "Host or operator calls RuntimeService.project_bootstrap_or_resume(project_root)", "layer": "mcp_runtime", "entrypoint": "RuntimeService.project_bootstrap_or_resume", "inputs": ["project_root", "optional session_id", "include_code_bundle flag", "include_tests flag"], "reads": ["project AGENTS.md or CLAUDE.md presence", "project .MEMORY directory presence", "project structure gaps", "legacy runtime state", "available sessions"], "decision": "If the project is not initialized, return setup_required immediately; if structure gaps exist, repair them with project_init(init_git=false); always ensure .mcp.json and sync bootstrap indexes before session selection; stop for legacy migration when legacy state exists and there are no sessions.", "branches": ["return setup_required when project lacks .MEMORY plus AGENTS/CLAUDE marker", "repair structure gaps with project_init(init_git=false, create_remote=false)", "ensure .mcp.json idempotently", "sync memory/code/schema/workflow/capability/procedure indexes", "return migration_required when legacy artifacts exist and no sessions are present", "continue into session_start when project is initialized"], "writes": ["repaired project AIDOCS files when gaps exist", "project .mcp.json when absent or stale", "derived index artifacts under project state"], "result": "Project-local MCP setup is normalized before runtime startup proceeds, but managed mode still remains unset at this stage.", "evidence": ["mcp/server/aidocs_mcp/runtime_service.py:3829-3894", "mcp/server/aidocs_mcp/runtime_service.py:3429-3460"]}, {"id": "project.setup.managed-mode-not-yet-active", "lane": "shared", "trigger": "project_init or project_bootstrap_or_resume completes without a later managed-mode set call", "layer": "filesystem_state", "entrypoint": "ManagedModeService.get_mode / set_mode contract boundary", "inputs": ["project_root"], "reads": [".MEMORY/config/aidocs-managed.json when present"], "decision": "Managed mode only becomes active when ManagedModeService.set_mode(...) is explicitly called with a session_id; project setup paths do not call set_mode themselves.", "branches": ["no aidocs-managed.json -> get_mode returns active=false", "later explicit set_mode(session_id) -> file is created and active becomes true"], "writes": [], "result": "A project can be fully initialized and MCP-wired while still being unmanaged until the runtime explicitly binds a session and writes aidocs-managed.json.", "evidence": ["mcp/server/aidocs_mcp/runtime_service.py:2573-2583", "mcp/server/aidocs_mcp/runtime_service.py:3829-3894", "mcp/server/aidocs_mcp/managed_mode_service.py:11-44"]}]}, {"id": "runtime-start", "title": "2. AIDOCS runtime start in project", "flows": [{"id": "runtime-start.command-aidocs", "lane": "shared", "trigger": "User runs /aidocs in a host that has the command pack installed", "layer": "host", "entrypoint": "core/.commands/aidocs.md", "inputs": ["$ARGUMENTS optional project root override", "current working directory", "aidocs MCP server availability"], "reads": ["core/.commands/aidocs.md"], "decision": "If MCP server is available, use MCP first and call the orchestrator entry flow; otherwise follow the fallback bootstrap path.", "branches": ["MCP available -> call aidocs_orchestrate for the resolved project root", "MCP unavailable -> fallback bootstrap path driven by global routing files"], "writes": [], "result": "/aidocs is the single user-facing startup command and its primary execution path is the MCP orchestrator.", "evidence": ["core/.commands/aidocs.md:17-30", "core/.commands/aidocs.md:46-64"]}, {"id": "runtime-start.mcp-tool-wrapper", "lane": "shared", "trigger": "Host invokes the MCP tool aidocs_orchestrate or project_bootstrap_or_resume", "layer": "mcp_runtime", "entrypoint": "mcp/server/aidocs_mcp/mcp_server.py tool wrappers", "inputs": ["project_root", "user_request", "action_kind", "session_id", "explicit_targets", "include_code_bundle/include_tests flags"], "reads": ["MCP tool parameters only; wrapper forwards directly into RuntimeService"], "decision": "Wrapper does not branch beyond parameter forwarding; all startup decisions happen in RuntimeService.", "branches": ["aidocs_orchestrate -> RuntimeService.aidocs_orchestrate(...)", "project_bootstrap_or_resume -> RuntimeService.project_bootstrap_or_resume(...)", "session_start -> RuntimeService.session_start(...)"], "writes": [], "result": "The MCP layer is a thin forwarding surface for the real runtime-start logic.", "evidence": ["mcp/server/aidocs_mcp/mcp_server.py:955-1029", "mcp/server/aidocs_mcp/mcp_server.py:1042-1059"]}, {"id": "runtime-start.bootstrap-not-ready-branch", "lane": "shared", "trigger": "RuntimeService.aidocs_orchestrate(project_root, user_request, ...) starts", "layer": "mcp_runtime", "entrypoint": "RuntimeService.aidocs_orchestrate", "inputs": ["project_root", "user_request", "action_kind", "session_id", "explicit_targets"], "reads": ["policy preflight result", "project_bootstrap_or_resume result"], "decision": "If bootstrap.ready is false, the orchestrator stops before managed mode is set and returns readiness/operator output plus the next_step.", "branches": ["setup_required or migration_required or session_selection_required -> build readiness_summary/operator_report and return early", "bootstrap ready -> continue into session binding and managed-mode activation"], "writes": ["artifact-backed orchestration result file when compact result is built"], "result": "Startup can terminate early with an explicit next step and without activating managed mode.", "evidence": ["mcp/server/aidocs_mcp/runtime_service.py:3992-4046"]}, {"id": "runtime-start.session-selection-branch", "lane": "shared", "trigger": "project_bootstrap_or_resume calls session_start without an explicit session_id", "layer": "mcp_runtime", "entrypoint": "RuntimeService.session_start", "inputs": ["project_root", "optional session_id", "sync_indexes flag", "include_code_bundle flag"], "reads": ["memory/code indexes when sync_indexes=true", "available sessions via hub.sessions.list_sessions(project_root)"], "decision": "If there is exactly one active session, auto-select it; otherwise return requires_session_selection=true with the available session summaries.", "branches": ["exactly one active session -> read session/context/handoff/skills/compliance and return selected_session payload", "zero or multiple active sessions -> return no_unique_active_session and require user selection"], "writes": ["session code index when sync_indexes=true and a session is selected"], "result": "Runtime start either binds a unique active session automatically or stops for session choice.", "evidence": ["mcp/server/aidocs_mcp/runtime_service.py:2585-2721"]}, {"id": "runtime-start.managed-mode-activation", "lane": "shared", "trigger": "aidocs_orchestrate receives a bootstrap result with ready=true", "layer": "mcp_runtime", "entrypoint": "RuntimeService.aidocs_orchestrate -> ManagedModeService.set_mode", "inputs": ["selected session id from bootstrap.session.selected_session.session_id", "user_request", "action_kind", "explicit_targets", "include_code_bundle flag"], "reads": ["selected session id", "skill trigger state", "current managed mode file if present", "indexed file status for explicit targets when provided"], "decision": "Once bootstrap is ready, always write managed mode for the selected session, then choose retrieval mode based on explicit_targets and include_code_bundle.", "branches": ["set .MEMORY/config/aidocs-managed.json active=true for selected session", "explicit targets + include_code_bundle -> retrieval.mode=explicit_targets with file bundles or missing markers", "explicit targets + no code bundle -> retrieval.mode=explicit_targets_deferred", "no explicit targets + include_code_bundle -> retrieval.mode=session_bundle", "no explicit targets + no code bundle -> retrieval.mode=session_bundle_deferred"], "writes": [".MEMORY/config/aidocs-managed.json", "resolved-config.json via config resolver", "artifact-backed orchestration result file"], "result": "Successful /aidocs startup binds managed mode to a concrete session and returns operator/report payload plus retrieval mode metadata.", "evidence": ["mcp/server/aidocs_mcp/runtime_service.py:4048-4165", "mcp/server/aidocs_mcp/managed_mode_service.py:30-44"]}]}, {"id": "what-happens-when", "title": "3. What happens when", "flows": [{"id": "shared.host-state-snapshot", "lane": "shared", "trigger": "A host asks runtime for current AIDOCS host state", "layer": "mcp_runtime", "entrypoint": "RuntimeService.host_state", "inputs": ["project_root", "optional session_id", "optional prompt_text"], "reads": ["managed_mode.get_mode(project_root)", "session_start_state(project_root, session_id)", "cached or persisted host skill state", "classify_prompt_action(prompt_text) when prompt_text is present", "skill_trigger_state(...) when a managed session is resolved"], "decision": "Resolve a session id from explicit session_id or managed mode; if prompt_text is present, classify it and compute prompt-specific skill/runtime guidance; build recommended MCP flow based on managed mode, session readiness, and action kind.", "branches": ["managed session active -> recommended_mcp_flow includes plan_conductor_status", "session not bound but session_start_state says resume needed -> recommended_mcp_flow includes session_start", "edit/write_memory/task lifecycle actions -> recommended_mcp_flow includes task_begin", "understand/trace/edit/code_bundle -> recommended_mcp_flow includes aidocs_orchestrate"], "writes": ["persisted host skill state when cached state is missing for a resolved session"], "result": "Hosts receive a normalized runtime-owned snapshot with session_state, prompt_state, lifecycle_state, interaction text, skill state, and recommended MCP flow.", "evidence": ["mcp/server/aidocs_mcp/runtime_service.py:2045-2244"]}, {"id": "shared.runtime-route-prompt", "lane": "shared", "trigger": "A host asks runtime how to route a normal prompt", "layer": "mcp_runtime", "entrypoint": "RuntimeService.aidocs_route_prompt", "inputs": ["project_root", "user_request", "action_kind", "explicit_targets"], "reads": ["managed_mode.get_mode(project_root)", "policy preflight_action(...)", "skill_trigger_state(...) when a session is bound"], "decision": "If managed mode is inactive, return a lightweight route that points back to /aidocs; otherwise compute preflight/skill state, task lifecycle requirements, allowed direct inspection, and blocked_reason.", "branches": ["managed_mode=false -> recommended_mcp_flow=['/aidocs'] and no block reason", "managed_mode=true + preflight.allowed=false -> blocked_reason set", "explicit_targets + inspect/read_file/read_error -> allowed_direct_inspection=true", "edit or write_memory -> requires_task_lifecycle=true"], "writes": [], "result": "Route result tells the host whether the prompt is unmanaged, blocked, directly inspectable, or should continue through runtime-first flow.", "evidence": ["mcp/server/aidocs_mcp/runtime_service.py:4167-4255"]}, {"id": "claude.event-dispatch", "lane": "claude", "trigger": "Claude hook receives a hook payload", "layer": "plugin_hook", "entrypoint": "ClaudeHookHandler.handle", "inputs": ["hook_event_name", "cwd", "prompt", "tool_name", "tool_input"], "reads": ["payload hook_event_name", "cwd-derived project root", "project .MEMORY/ and AGENTS.md/CLAUDE.md presence for normal project resolution"], "decision": "Special-case /aidocs before normal project-root validation; route SessionStart by cwd only; for other events require an initialized AIDOCS project root and record a hook intercept event before dispatch.", "branches": ["UserPromptSubmit with /aidocs prefix -> _handle_aidocs_command(...) and return", "SessionStart -> _handle_session_start(...)", "UserPromptSubmit on initialized AIDOCS project -> _handle_user_prompt_submit(...)", "PreToolUse on initialized AIDOCS project -> _handle_pre_tool_use(...)", "missing project root or missing AIDOCS structure -> return None"], "writes": ["execution event record with action_kind='hook_intercept' when a project root is resolved"], "result": "Claude chooses a specific hook handler based on event type, but only normal project events go through initialized-project resolution.", "evidence": ["mcp/server/aidocs_mcp/claude_hook.py:32-69", "mcp/server/aidocs_mcp/claude_hook.py:620-699"]}, {"id": "claude.session-start-event", "lane": "claude", "trigger": "Claude fires SessionStart for a working directory", "layer": "plugin_hook", "entrypoint": "ClaudeHookHandler._handle_session_start", "inputs": ["project_root from cwd"], "reads": ["RuntimeService.host_state(project_root)", "host_state.session_state.state", "host_state.skill_state.session_snapshot.active_skills"], "decision": "Map session_state.state into a startup advisory message: not_initialized, not_bootstrapped, no_session, multiple_sessions, stale_indexes, or ready.", "branches": ["not_initialized -> tell user to run /aidocs to initialize and bootstrap", "not_bootstrapped -> tell user to run /aidocs to repair bootstrap state", "no_session -> tell user to use /aidocs and create a session", "multiple_sessions -> tell user to choose a session before normal work", "stale_indexes -> tell user to run /aidocs to refresh bootstrap/index state", "ready -> tell user to continue inside the bound session and conductor/plan flow"], "writes": [], "result": "Claude SessionStart injects startup-only guidance but does not itself change project state.", "evidence": ["mcp/server/aidocs_mcp/claude_hook.py:101-175"]}, {"id": "claude.normal-prompt-routing", "lane": "claude", "trigger": "Claude fires UserPromptSubmit for a normal prompt on an initialized AIDOCS project", "layer": "plugin_hook", "entrypoint": "ClaudeHookHandler._handle_user_prompt_submit", "inputs": ["prompt text", "project_root"], "reads": ["prompt text length and keywords", "RuntimeService.host_state(project_root, prompt_text=prompt)", "host_state.prompt_state.action_kind", "RuntimeService.aidocs_route_prompt(project_root, prompt, action_kind)"], "decision": "Very short conversational prompts are ignored; otherwise runtime host_state and route_prompt are used to decide whether to block, inject lightweight context, or do nothing.", "branches": ["empty prompt -> return None", "short conversational prompt without task keywords -> return None", "route.managed_mode=false -> block with 'Run /aidocs first'", "route.blocked_reason set -> block with blocked reason", "otherwise build lightweight prompt context, record prompt_classified event, and inject additionalContext"], "writes": ["execution event record with event_kind='prompt_classified' when context is injected"], "result": "Claude normal prompt handling is runtime-routed before tool use, and can hard-block unmanaged or policy-blocked prompts.", "evidence": ["mcp/server/aidocs_mcp/claude_hook.py:180-255", "mcp/server/aidocs_mcp/claude_hook.py:702-978", "mcp/server/aidocs_mcp/runtime_service.py:4167-4286"]}, {"id": "claude.pre-tool-guardrails", "lane": "claude", "trigger": "Claude fires PreToolUse while managed mode is active", "layer": "plugin_hook", "entrypoint": "ClaudeHookHandler._handle_pre_tool_use", "inputs": ["tool_name", "tool_input", "project_root"], "reads": ["managed mode state", "tool_name and tool_input", "infrastructure protection config", "query gate state for read tools"], "decision": "Skip when managed mode is inactive or the tool is an infrastructure/system tool; otherwise check infrastructure protection first, indexed-read gate second, then optionally add MCP and comment-quality nudges.", "branches": ["managed inactive -> return None", "system tool (compact/todowrite/etc.) -> return None", "protected config or infrastructure write -> block", "read path not granted by query gate -> block", "raw tool on source file -> return MCP alternative nudge", "edit/write -> add comment-quality reminder when configured"], "writes": [], "result": "Claude PreToolUse can block protected writes and ungranted raw reads, otherwise it injects advisory raw-tool nudges.", "evidence": ["mcp/server/aidocs_mcp/claude_hook.py:267-360", "mcp/server/aidocs_mcp/claude_hook.py:441-618"]}, {"id": "opencode.runtime-state-resolution", "lane": "opencode", "trigger": "OpenCode plugin needs startup/prompt state for a project", "layer": "plugin_hook", "entrypoint": "runAidocsHostState -> resolveFilesystemAidocsState -> resolveAidocsState", "inputs": ["projectRoot", "optional sessionID", "optional promptText"], "reads": ["AIDOCS_PATH or global AGENTS.md to locate runtime source root", "Python runtime to spawn RuntimeService.host_state(...)", "host-state cache and failure cache", "filesystem fallback: .MEMORY/.aidocs, .MEMORY/INDEX.md, aidocs-managed.json, session summaries, index status"], "decision": "Try runtime host_state first; if runtime host-state spawn fails or returns incomplete session state, fall back to filesystem-derived startup state.", "branches": ["fresh cached runtime host state -> reuse cached payload", "recent runtime failure cached -> return null runtime payload and skip retry temporarily", "runtime host_state succeeds -> use payload session_state fields", "runtime host_state unavailable or incomplete -> derive initialized/bootstrapped/managed/startupState from filesystem"], "writes": ["in-memory plugin host-state cache and failure cache"], "result": "OpenCode prefers runtime host state, but it can degrade to local filesystem heuristics when runtime spawning fails.", "evidence": ["core/plugins/aidocs.js:202-339", "core/plugins/aidocs.js:668-704"]}, {"id": "opencode.chat-message-context", "lane": "opencode", "trigger": "OpenCode fires chat.message for the current user turn", "layer": "plugin_hook", "entrypoint": "AIDOCSPlugin()['chat.message']", "inputs": ["sessionID", "message parts"], "reads": ["prompt text extracted from output.parts", "resolveAidocsState(projectRoot, promptText)", "active command metadata for the session", "resolvePromptHostState(projectRoot, state, promptText)", "buildPromptContext(state, promptText, activeCommand, activeCommandMeta, promptHostState)", "startup_context_once plugin config"], "decision": "If the user typed /aidocs as plain text, force the aidocs execution prompt immediately; otherwise build prompt context from startup state, managed state, command metadata, runtime prompt host state, and imported skill state.", "branches": ["plain-text /aidocs not caught as a command -> mark active command, load aidocs command metadata, set execution prompt in sessionPromptContext, return early", "context built -> store final context in sessionPromptContext", "startup_context_once + ready session -> append session-start blocks once per session", "managed state -> classify prompt locally and store action_kind in sessionClassification", "no context -> clear stored session prompt context and classification"], "writes": ["sessionPromptContext map", "sessionClassification map", "activeCommandBySession and activeCommandMetaBySession maps when plain-text /aidocs is detected", "startupInjectedSessions set"], "result": "OpenCode prompt handling is primarily plugin-context injection driven, with local classification only after managed mode is active.", "evidence": ["core/plugins/aidocs.js:851-1004", "core/plugins/aidocs.js:1133-1181"]}, {"id": "opencode-command-and-message-transform", "lane": "opencode", "trigger": "OpenCode transforms system prompt, message list, or command execution for the current turn", "layer": "plugin_hook", "entrypoint": "experimental.chat.system.transform / experimental.chat.messages.transform / command.execute.before", "inputs": ["sessionID", "output.system", "output.messages", "command name"], "reads": ["sessionPromptContext map", "activeCommandBySession", "activeCommandMetaBySession", "sessionClassification map", "plugin config inject_message_directives flag", "PLAN.md when a short continuation message is detected"], "decision": "System transform pushes stored context; message transform rewrites /aidocs plain text, may inject next plan step for short continuation prompts, and appends action-specific tool directives only when classification is present and directive injection is enabled.", "branches": ["system transform with stored context -> push context into output.system", "command.execute.before for /aidocs -> replace output.parts with buildAidocsExecutionPrompt() and remember active command metadata", "messages.transform on plain-text /aidocs -> replace last user message with aidocs execution prompt", "messages.transform on short continuation + managed session + PLAN.md with unchecked steps -> append plan-continuation note", "messages.transform with classified action in directive-enabled set -> append <tool-directive> block"], "writes": ["activeCommandBySession map", "activeCommandMetaBySession map", "transformed output.system or last user message parts"], "result": "OpenCode runtime guidance is injected through transformed system and user-message content rather than route-time blocking/classification.", "evidence": ["core/plugins/aidocs.js:1183-1297"]}, {"id": "opencode.tool-guards-and-followthrough", "lane": "opencode", "trigger": "OpenCode fires tool.execute.before, tool.execute.after, or shell.env", "layer": "plugin_hook", "entrypoint": "AIDOCSPlugin()['tool.execute.before'|'tool.execute.after'|'shell.env']", "inputs": ["tool name", "tool args", "sessionID"], "reads": ["GUARDED_TOOLS membership", "resolveAidocsState(projectRoot)", "active command metadata for /aidocs bypass", "query gate state for current managed session", "candidate read path and project-relative gate path"], "decision": "Before-tool hook only guards a fixed tool set; initialized-but-unmanaged projects are blocked for guarded tools except /aidocs; read is additionally gated against query-gate exact paths inside the project. After-tool hook records native tool use for managed sessions and appends a task_complete reminder for edit/write. shell.env exports AIDOCS_* flags only when initialized.", "branches": ["unguarded tool -> return immediately", "project not initialized -> no guardrail applied", "current command is /aidocs -> bypass guardrail", "initialized but unmanaged -> throw 'Run /aidocs first' for guarded tools", "guarded tool is not read -> allow once managed", "read outside project root or no gate file -> allow", "read inside project root with allow_read or granted exact path -> allow", "read inside project root without grant -> throw indexed-read gate error", "after-tool on managed session -> record native_tool_use event", "after-tool on edit/write -> append task_complete reminder", "shell.env on initialized project -> export AIDOCS_INITIALIZED, AIDOCS_MANAGED_MODE, and optional AIDOCS_SESSION_ID"], "writes": ["execution event record for native tool use", "sessionPromptContext reminder text", "output.env AIDOCS_* variables"], "result": "OpenCode enforces unmanaged gating and indexed-read gating at tool time, then records native tool use and reminds about lifecycle follow-through after edits.", "evidence": ["core/plugins/aidocs.js:1299-1380"]}]}], "step_schema": {"id": "string", "lane": "shared|claude|opencode", "trigger": "string", "layer": "installer|host|plugin_hook|mcp_runtime|filesystem_state", "entrypoint": "string", "inputs": [], "reads": [], "decision": "string", "branches": [], "writes": [], "result": "string", "evidence": []}}</script>
+    <script>
+      const data = JSON.parse(document.getElementById("flow-data").textContent);
+      const sectionsEl = document.getElementById("sections");
+      const statsEl = document.getElementById("stats");
+      const searchEl = document.getElementById("search");
+      const laneButtons = Array.from(document.querySelectorAll("#lane-filters .chip"));
+
+      let activeLane = "all";
+      let searchTerm = "";
+
+      function laneLabelClass(lane) {
+        return `lane ${lane}`;
+      }
+
+      function cardList(items) {
+        if (!items || !items.length) {
+          return '<div class="empty">None</div>';
+        }
+        return `<ul>${items.map((item) => `<li>${escapeHtml(String(item))}</li>`).join("")}</ul>`;
+      }
+
+      function escapeHtml(value) {
+        return value
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      function flowMatches(flow) {
+        if (activeLane !== "all" && flow.lane !== activeLane) {
+          return false;
+        }
+        if (!searchTerm) {
+          return true;
+        }
+        const haystack = [
+          flow.id,
+          flow.trigger,
+          flow.layer,
+          flow.entrypoint,
+          flow.decision,
+          flow.result,
+          ...(flow.inputs || []),
+          ...(flow.reads || []),
+          ...(flow.branches || []),
+          ...(flow.writes || []),
+          ...(flow.evidence || []),
+        ].join("\n").toLowerCase();
+        return haystack.includes(searchTerm);
+      }
+
+      function renderStats(allFlows) {
+        const counts = {
+          total: allFlows.length,
+          shared: allFlows.filter((flow) => flow.lane === "shared").length,
+          claude: allFlows.filter((flow) => flow.lane === "claude").length,
+          opencode: allFlows.filter((flow) => flow.lane === "opencode").length,
+        };
+
+        statsEl.innerHTML = `
+          <div class="stat"><strong>${counts.total}</strong><span>Total traced flows</span></div>
+          <div class="stat"><strong>${counts.shared}</strong><span>Shared flows</span></div>
+          <div class="stat"><strong>${counts.claude}</strong><span>Claude flows</span></div>
+          <div class="stat"><strong>${counts.opencode}</strong><span>OpenCode flows</span></div>
+        `;
+      }
+
+      function render() {
+        const allFlows = data.sections.flatMap((section) => section.flows || []);
+        renderStats(allFlows);
+
+        sectionsEl.innerHTML = data.sections.map((section) => {
+          const flows = (section.flows || []).filter(flowMatches);
+          return `
+            <section class="panel section" id="${escapeHtml(section.id)}">
+              <h2>${escapeHtml(section.title)}</h2>
+              <div class="section-meta">${flows.length} matching flow${flows.length === 1 ? "" : "s"} in this section.</div>
+              <div class="flows">
+                ${flows.length ? flows.map((flow) => `
+                  <details class="flow">
+                    <summary>
+                      <div class="flow-head">
+                        <span class="${laneLabelClass(flow.lane)}">${escapeHtml(flow.lane)}</span>
+                        <span class="entrypoint"><code>${escapeHtml(flow.entrypoint)}</code></span>
+                      </div>
+                      <div class="trigger">${escapeHtml(flow.trigger)}</div>
+                    </summary>
+                    <div class="flow-body">
+                      <div class="kv"><h3>ID</h3><p><code>${escapeHtml(flow.id)}</code></p></div>
+                      <div class="kv"><h3>Layer</h3><p>${escapeHtml(flow.layer)}</p></div>
+                      <div class="kv"><h3>Decision</h3><p>${escapeHtml(flow.decision)}</p></div>
+                      <div class="kv"><h3>Result</h3><p>${escapeHtml(flow.result)}</p></div>
+                      <div class="kv"><h3>Inputs</h3>${cardList(flow.inputs)}</div>
+                      <div class="kv"><h3>Reads</h3>${cardList(flow.reads)}</div>
+                      <div class="kv"><h3>Branches</h3>${cardList(flow.branches)}</div>
+                      <div class="kv"><h3>Writes</h3>${cardList(flow.writes)}</div>
+                      <div class="kv"><h3>Evidence</h3>${cardList(flow.evidence)}</div>
+                    </div>
+                  </details>
+                `).join("") : '<div class="empty">No flows match the current filter.</div>'}
+              </div>
+            </section>
+          `;
+        }).join("");
+      }
+
+      laneButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          activeLane = button.dataset.lane || "all";
+          laneButtons.forEach((item) => item.classList.toggle("active", item === button));
+          render();
+        });
+      });
+
+      searchEl.addEventListener("input", () => {
+        searchTerm = searchEl.value.trim().toLowerCase();
+        render();
+      });
+
+      render();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,67 @@
+name = "razor"
+suffixes = [".cshtml"]
+embedded_semantics = ["html", "csharp", "css_inline", "js_inline", "tag_helpers", "translation_keys", "model_bindings"]
+module_hints = ["Pages", "Shared"]
+
+# Default role for all razor files (overridden by role_patterns)
+role_hint = "page-view"
+
+# ── Role from glob patterns ──
+role_patterns = [
+  { glob = "**/_Layout.cshtml", role = "layout" },
+  { glob = "**/_ViewStart.cshtml", role = "configuration" },
+  { glob = "**/_ViewImports.cshtml", role = "configuration" },
+  { glob = "**/Shared/**/*.cshtml", role = "shared-view" },
+]
+
+# ── Role from file name prefix ──
+role_name_prefixes = [
+  { prefix = "_", role = "partial-view" },
+]
+
+# ── Line patterns ──
+# Named matchers (human-readable) are preferred over raw regex.
+# Use { pattern = "..." } only for complex cases that don't fit a template.
+line_patterns = [
+  # Razor directives
+  { match = "razor_directive", directive = "@page", kind = "page_route" },
+  { match = "razor_directive", directive = "@model", kind = "model_binding" },
+  { match = "razor_directive", directive = "@section", kind = "section" },
+  { match = "assignment", property = "Layout", kind = "layout_ref" },
+  { match = "razor_code_block", directives = "@functions,@code", kind = "code_block" },
+
+  # Razor inject — complex regex, keep raw
+  { pattern = "^\\s*@inject\\s+[A-Za-z_][A-Za-z0-9_<>,\\.\\s]*?\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*$", kind = "inject" },
+
+  # Inline JS function declarations
+  { match = "js_function_declaration", kind = "js_function" },
+
+  # Partial and component references
+  { match = "tag_attribute", tag = "partial", attribute = "name", kind = "partial_ref" },
+  { match = "function_call", function = "PartialAsync", kind = "partial_ref" },
+  { match = "function_call", function = "Component.InvokeAsync", kind = "component_ref" },
+  { match = "function_call", function = "RenderSection", kind = "render_section" },
+
+  # Tag helper attributes
+  { match = "attribute", names = "asp-page-handler,asp-action,asp-page", kind = "form_handler" },
+  { match = "attribute", name = "asp-for", kind = "asp_for_binding" },
+
+  # Translation keys
+  { match = "function_call", function = "Lang.T", kind = "translation_key" },
+
+  # Permission checks — complex regex, keep raw
+  { pattern = "@if\\s*\\(\\s*Model\\.([A-Za-z_]*(?:Can|Has|Is|Allow|Enable|Show|Permission)[A-Za-z_]*)", kind = "permission_check" },
+  { pattern = "@if\\s*\\(\\s*(?:User|Context\\.User)\\.IsInRole\\(\\s*\"([^\"]+)\"", kind = "permission_check" },
+  { pattern = "@if\\s*\\(\\s*ViewData\\[\"([A-Za-z_]*(?:Can|Has|Is)[A-Za-z_]*)\"", kind = "permission_check" },
+
+  # Data attributes
+  { match = "data_attribute", kind = "data_attribute" },
+
+  # API calls
+  { match = "function_call", function = "fetch", args_starts_with = "/api/", kind = "api_call" },
+  { match = "jquery_ajax", args_starts_with = "/api/", kind = "api_call" },
+]
+
+# ── Layer inference tokens ──
+[layer_tokens]
+ui = ["page", "view", "shared", "partial", "layout"]

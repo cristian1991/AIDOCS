@@ -1,0 +1,85 @@
+name = "javascript"
+extensions = [".js"]
+extractor_family = "javascript_ast"
+module_hints = ["components", "features", "hooks", "services", "workers", "middleware", "api", "server", "runtime", "scripts"]
+
+# Entry-point files
+entry_points = ["index.js", "server.js", "app.js"]
+
+# ── Role from glob patterns ──
+role_patterns = [
+  { glob = "**/hooks/**/*.js", role = "hook-module" },
+  { glob = "**/components/**/index.js", role = "barrel-module" },
+  { glob = "**/components/**/*.js", role = "component" },
+  { glob = "**/features/**/index.js", role = "barrel-module" },
+  { glob = "**/services/**/*.js", role = "service" },
+  { glob = "**/api/**/*.js", role = "route-handler" },
+  { glob = "server/*.js", role = "server-module" },
+  { glob = "**/server/**/*.js", role = "server-module" },
+  { glob = "runtime/*.js", role = "server-module" },
+  { glob = "**/runtime/**/*.js", role = "server-module" },
+  { glob = "**/middleware*.js", role = "middleware" },
+  { glob = "**/workers/**/*.js", role = "worker" },
+  { glob = "**/scripts/**/*.js", role = "script" },
+  { glob = "**/lib/**/*.js", role = "utility-module" },
+  { glob = "**/utils/**/*.js", role = "utility-module" },
+  { glob = "**/helpers/**/*.js", role = "utility-module" },
+  { glob = "**/prisma/**/*.js", role = "data-access" },
+  { glob = "**/db/**/*.js", role = "data-access" },
+  { glob = "**/database/**/*.js", role = "data-access" },
+  { glob = "**/assets/**/*.js", role = "asset-script" },
+  { glob = "**/pwaassets/**/*.js", role = "asset-script" },
+  { glob = "**/static/**/*.js", role = "asset-script" },
+  { glob = "**/wwwroot/**/js/**/*.js", role = "asset-script" },
+  { glob = "**/framework-generators/**/*.js", role = "framework-generator" },
+  { glob = "**/core/**/*.js", role = "core-module" },
+]
+
+# ── Role from exact file name ──
+role_exact_names = [
+  { name = "bootstrap", role = "script" },
+  { name = "generate", role = "script" },
+  { name = "setup", role = "script" },
+  { name = "setup-app", role = "script" },
+  { name = "verify-test-suite", role = "script" },
+  { name = "types", role = "utility-module" },
+  { name = "type", role = "utility-module" },
+  { name = "storage", role = "utility-module" },
+  { name = "registry", role = "utility-module" },
+  { name = "constants", role = "utility-module" },
+  { name = "page-key", role = "utility-module" },
+  { name = "evidence", role = "utility-module" },
+  { name = "vite", role = "config-module" },
+  { name = "vitest", role = "config-module" },
+  { name = "jest", role = "config-module" },
+  { name = "tsconfig", role = "config-module" },
+  { name = "happydom", role = "config-module" },
+  { name = "sidebars", role = "config-module" },
+]
+
+# ── Role from file name suffix patterns ──
+role_suffix_patterns = [
+  { suffix = ".config.js", role = "config-module" },
+  { suffix = ".config.mjs", role = "config-module" },
+  { suffix = ".config.cjs", role = "config-module" },
+]
+
+# ── Role from path token presence ──
+role_path_tokens = [
+  { token = "schemas", role = "config-module" },
+  { token = "schema", role = "config-module" },
+]
+
+line_patterns = [
+  { match = "function_call", function = "fetch", args_starts_with = "/api/", kind = "api_call" },
+  { match = "route_navigation", kind = "route_ref" },
+  { match = "function_call", function = "t", kind = "translation_key" },
+]
+
+# ── Layer inference tokens ──
+[layer_tokens]
+data = ["model", "schema", "store"]
+api = ["api", "route", "endpoint", "server"]
+logic = ["service", "handler", "middleware", "worker"]
+ui = ["component", "page", "view", "form", "dialog", "screen"]
+

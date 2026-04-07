@@ -1,0 +1,126 @@
+name: Test Install Flow
+
+on:
+  workflow_dispatch:  # Manual trigger — run when you want to test
+  push:
+    paths:
+      - 'mcp/server/aidocs_mcp/cli.py'
+      - 'mcp/pyproject.toml'
+      - '.github/workflows/test-install.yml'
+
+jobs:
+  test-install-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install aidocs-mcp from source
+        run: |
+          cd mcp
+          pip install -e .
+
+      - name: Test aidocs version
+        run: aidocs version
+
+      - name: Test aidocs doctor (before setup)
+        run: aidocs doctor || true
+
+      - name: Test aidocs setup on fresh project
+        run: |
+          mkdir C:\test-project
+          aidocs setup C:\test-project --auto
+
+      - name: Verify .mcp.json created
+        run: |
+          if (!(Test-Path "C:\test-project\.mcp.json")) { throw ".mcp.json not found" }
+          Get-Content C:\test-project\.mcp.json
+
+      - name: Verify .MEMORY created
+        run: |
+          if (!(Test-Path "C:\test-project\.MEMORY")) { throw ".MEMORY not found" }
+
+      - name: Verify hooks configured
+        run: |
+          $settings = "$env:USERPROFILE\.claude\settings.json"
+          if (Test-Path $settings) { Get-Content $settings } else { Write-Host "No settings.json (expected on CI)" }
+
+      - name: Test aidocs doctor (after setup)
+        run: |
+          cd C:\test-project
+          aidocs doctor || true
+
+      - name: Test MCP server starts
+        run: python -c "from aidocs_mcp.mcp_server import create_server; print('MCP OK')"
+
+  test-install-ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install aidocs-mcp from source
+        run: |
+          cd mcp
+          pip install -e .
+
+      - name: Test aidocs setup on fresh project
+        run: |
+          mkdir /tmp/test-project
+          aidocs setup /tmp/test-project --auto
+
+      - name: Verify files created
+        run: |
+          test -f /tmp/test-project/.mcp.json || (echo ".mcp.json missing" && exit 1)
+          test -d /tmp/test-project/.MEMORY || (echo ".MEMORY missing" && exit 1)
+          cat /tmp/test-project/.mcp.json
+
+      - name: Test aidocs doctor
+        run: |
+          cd /tmp/test-project
+          aidocs doctor || true
+
+      - name: Test MCP server starts
+        run: python -c "from aidocs_mcp.mcp_server import create_server; print('MCP OK')"
+
+  test-install-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install aidocs-mcp from source
+        run: |
+          cd mcp
+          pip install -e .
+
+      - name: Test aidocs setup on fresh project
+        run: |
+          mkdir /tmp/test-project
+          aidocs setup /tmp/test-project --auto
+
+      - name: Verify files created
+        run: |
+          test -f /tmp/test-project/.mcp.json || (echo ".mcp.json missing" && exit 1)
+          test -d /tmp/test-project/.MEMORY || (echo ".MEMORY missing" && exit 1)
+          cat /tmp/test-project/.mcp.json
+
+      - name: Test aidocs doctor
+        run: |
+          cd /tmp/test-project
+          aidocs doctor || true
+
+      - name: Test MCP server starts
+        run: python -c "from aidocs_mcp.mcp_server import create_server; print('MCP OK')"

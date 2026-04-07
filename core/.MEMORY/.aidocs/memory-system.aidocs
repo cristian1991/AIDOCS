@@ -1,0 +1,115 @@
+# .aidocs/memory-system.aidocs - Global Memory Protocol
+
+Purpose
+- Keep reusable project knowledge in files, not transient chat context.
+
+Core anchors
+- Session-start entry point is `/.MEMORY/.aidocs/index.aidocs`.
+- Runtime memory is fully encapsulated in project-root `/.MEMORY/`.
+- `/.MEMORY/INDEX.md` is the durable-memory router.
+- `/.MEMORY/CHANGELOG.md` holds completed-work history.
+- The selected session router lives in `/.MEMORY/sessions/<session-id>/SESSION.md`.
+- Session-local runtime context lives in files linked from the selected `SESSION.md` (for example `context.md`, `plans/`, `agents/`, `artifacts/`).
+- Entry files (`AGENTS.md`, `CLAUDE.md`) are routers only; they must point to the session-start router, the durable-memory router, and session inspection/selection.
+- External tool-specific bootstrap files must redirect into project-local `/.MEMORY/`; they are not durable memory stores.
+
+Routing model
+- `index.aidocs` routes startup/setup reads.
+- `INDEX.md` routes durable-memory reads.
+- Session folders hold per-agent or per-task runtime state.
+- `memory-system.aidocs` defines memory mechanics only; do not duplicate durable-memory navigation here.
+
+File conventions
+- `rules/*`: normative rules only.
+- `system/*`: current-state system facts, invariants, procedures.
+- `config/*`: agent/plugin configuration.
+- `domains/*`: topic-specific constraints, caveats, and decisions.
+- `daily/*`: dated session logs.
+- `archive/*`: archived logs and explicitly archived session folders.
+- `sessions/<session-id>/SESSION.md`: per-session runtime router and status.
+- `sessions/<session-id>/context.md`: factual session-local context only.
+- `sessions/<session-id>/plans/*`: active implementation plans for that session.
+- `sessions/<session-id>/agents/*`: spawned-agent working artifacts for that session only.
+- `sessions/<session-id>/artifacts/*`: task-specific generated outputs, logs, and reports.
+- `related-projects/FIXES_BY_OTHER_AGENTS.md`: cross-project issue and fix handoff log.
+- `config/personality.md`: active personality selection.
+
+Entry and re-entry flow
+- On session start, fresh project entry, or resume-after-compaction:
+  1. read `/.MEMORY/.aidocs/index.aidocs`
+  2. read `/.MEMORY/.aidocs/global-instructions.aidocs`, `/.MEMORY/.aidocs/coding-standards.aidocs`, and `/.MEMORY/.aidocs/memory-system.aidocs`
+  3. read `/.MEMORY/INDEX.md`
+  4. inspect active session files under `/.MEMORY/sessions/*/SESSION.md`
+  5. if exactly one clearly suitable session exists, read it; otherwise issue STOP and ask whether to resume or create a session
+  6. open only relevant linked files
+- Use targeted daily snippets only when needed.
+- Router files list specific entry files only; do not force-load large doc sets by default.
+- Do not use bare memory directory targets when `INDEX.md` or a selected `SESSION.md` is intended.
+- `/.MEMORY/.aidocs/*` is startup/setup authority, selected `SESSION.md` is runtime mission/state authority, and `INDEX.md` is the durable-memory router.
+
+Session model
+- Each active task stream gets its own session folder under `/.MEMORY/sessions/`.
+- Use session ids shaped like `YYYY-MM-DD-<topic>`; append `-02`, `-03`, etc. when needed.
+- `SESSION.md` should contain at minimum: Title, Status, Owner, Goal, Scope, Key Memory Links, Local Session Links, State, Upcoming, Blockers, Last Updated.
+- `SESSION.md` should contain at minimum: Title, Status, Owner, Goal, Scope, Key Memory Links, Local Session Links, Active Claims, State, Upcoming, Blockers, Last Updated.
+- `SESSION.md` is a router/status file, not a place for long examples, scratch notes, or reasoning logs.
+- `context.md` holds factual session-local context only: relevant file references, narrowed findings, concrete snippets/examples, commands, and constraints for the active task.
+- Do not store temporary reasoning, hypotheses, or chain-of-thought style notes in session files.
+- Valid status values are `active`, `paused`, `blocked`, and `done`.
+- Sessions persist by default even after task completion; setting a session to `done` does not archive or delete it.
+- `Active Claims` are advisory only, not locking. Multiple agent sessions may appear in the same domain session.
+- Claims should be treated as stale after a timeout and should not block session use automatically.
+- If multiple plausible active sessions exist, issue STOP and ask which one to use.
+- If no suitable session exists, issue STOP and ask whether to create a new one.
+- Do not execute task work without a selected session.
+
+Planning and artifacts
+- Active implementation plans live in `/.MEMORY/sessions/<session-id>/plans/`.
+- Never write plans to temp locations, random paths, or tool-generated plan paths.
+- Plan files use `/.MEMORY/sessions/<session-id>/plans/<descriptive-name>.md`.
+- Plans should be complete and should state clearly defined production-ready end goals.
+- Reference active plan files from the selected `SESSION.md` while they are in progress.
+- Completed plan files stay with the session and archive when the session is explicitly deleted/archived.
+- Spawned-agent plans and investigations live in `/.MEMORY/sessions/<session-id>/agents/`.
+- Use logical kebab-case topics; append `-02`, `-03`, etc. for same-day same-topic multiples.
+- Session-specific reports, logs, and generated outputs live in `/.MEMORY/sessions/<session-id>/artifacts/`.
+
+Write flow
+- Before executing a new task: analyse -> select or create a session -> update `SESSION.md` -> read any additionally needed canonical files -> execute.
+- `SESSION.md` must be current before code changes, file edits, or task-execution tool calls.
+- Update `context.md` when factual task-local context, examples, commands, or file references need to be retained for the active session.
+- On material state changes during execution, update the selected `SESSION.md` again.
+- Keep `SESSION.md` as an active queue, not a single next step.
+- For multi-step tasks, keep at least 3 upcoming items when available.
+- Investigating/research-only agents must not perform final task-closure writes.
+- The editing agent closes task memory: update the session result/state, append today's daily outcome, and promote durable findings when needed.
+- If user states a durable fact/rule/lesson/preference, persist it immediately to the correct canonical file and log daily.
+- Respect user priority markers `!`..`!!!!!`; `!!!` and above require immediate canonical write, and `!!!!`/`!!!!!` should also be reflected in the selected `SESSION.md`.
+- When writing memory, use the minimum tokens needed without losing constraints, qualifiers, or priorities.
+- If a local fix is caused by another related project, append a handoff item to `/.MEMORY/related-projects/FIXES_BY_OTHER_AGENTS.md` with `Date | Related Project | Issue | Fix Applied Here | Upstream Follow-up Needed`.
+- If project root `FIXES_BY_OTHER_AGENTS.md` exists, mirror the same entry there for compatibility.
+
+Archive flow
+- `/archive` creates/updates `/.MEMORY/CHANGELOG.md`.
+- `/archive` promotes durable signal from active daily logs.
+- `/archive` merges completed items from completed session files and selected daily logs into `/.MEMORY/CHANGELOG.md`.
+- Merge/edit existing entries; do not append duplicates.
+- Use `Supersedes:` when replacing prior guidance.
+- Move processed logs to `/.MEMORY/archive/`.
+- `/archive` does not move session-local plans.
+- `/archive` does not archive or delete session folders.
+- Session folders remain in `/.MEMORY/sessions/` until the user manually archives or removes them.
+
+Initialization
+- Initialize memory from the shipped `/.MEMORY/**` scaffold at the runtime/public AIDOCS root.
+- Ensure `/.MEMORY/sessions/` and `/.MEMORY/archive/sessions/` exist.
+- Use `/.MEMORY/.aidocs/templates/**` only as fallback for still-missing canonical files.
+
+Guardrails
+- Multi-repo/monorepo rule: use the active target project's `/.MEMORY/` for all reads/writes unless explicitly asked otherwise.
+- Detailed command workflows belong only in the installed global command files.
+- Never store secrets or sensitive data.
+- Do not promote speculation or one-off noise.
+- If memory conflicts with code/docs, record the conflict and propose resolution.
+
+<!-- AIDOCS-MANAGED-ABOVE: write project-specific instructions below this line -->

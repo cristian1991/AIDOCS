@@ -1,0 +1,86 @@
+[interaction.startup]
+not_initialized = "This project is not initialized for AIDOCS. Run `/aidocs` first to initialize and bootstrap it before normal work."
+not_bootstrapped = "AIDOCS project structure is incomplete or not fully bootstrapped. Run `/aidocs` first to repair bootstrap state before normal work."
+no_session = "AIDOCS is initialized, but no session exists yet. Run `/aidocs` first so the session can be created before normal work."
+multiple_sessions = "Multiple plausible AIDOCS sessions exist. Ask the user which session to connect to before normal work, then use `/aidocs` to bind managed mode."
+stale_indexes = "AIDOCS startup detected stale indexes. Run `/aidocs` first to refresh bootstrap and index state before normal work."
+unmanaged = "This is an AIDOCS-ready project, but AIDOCS-managed mode is inactive. If the user is not invoking `/aidocs`, do not begin project work and do not use core repo tools. Tell the user to run `/aidocs` first."
+missing_structure = "This project has no AIDOCS structure. Call the `project_init` MCP tool with the project root path to create .MEMORY/, AGENTS.md/CLAUDE.md, and AIDOCS templates. After initialization, call `project_bootstrap_or_resume` to activate managed mode."
+
+[interaction.managed]
+active = "AIDOCS-managed mode is active for this project."
+active_short = "AIDOCS managed. Action: `{action_kind}`."
+bound_session = "Bound session: `{bound_session_id}`."
+session = "Session: `{bound_session_id}`."
+stay_in_session = "Stay in the bound AIDOCS session and continue its current conductor/plan flow; do not switch to generic worktree or standalone execution setup."
+use_mcp_first = "MANDATORY: Use AIDOCS MCP tools FIRST. Fall back to raw Read/Grep only if MCP returns empty. Using dedicated indexed tools reduces tool calls by 5x and speeds up work — designed for lazy devs."
+use_mcp_first_short = "Use AIDOCS MCP tools first — 5x fewer tool calls than raw tools."
+imported_skills = "Imported skills: {skills}."
+imported_skill_modes = "Imported skill modes: {modes}."
+runtime_owned_capabilities = "Runtime-owned workflow capabilities: {capabilities}."
+helper_guidance_header = "Active AIDOCS helper skill guidance:"
+workflow_actions = "Compiled workflow actions: {workflow_summary}."
+skills_active_for_prompt = "Imported skills active for this prompt: {skills}"
+workflow_authority_for_prompt = "Workflow authority is runtime-owned for this prompt: {capabilities}"
+
+[interaction.lifecycle]
+task_complete = "Lifecycle follow-through: meaningful edit work happened since the last lifecycle tool call; use `aidocs_task_complete` if the task is done."
+task_update = "Lifecycle follow-through: meaningful work has accumulated since the last lifecycle tool call; use `aidocs_task_update` to record progress."
+
+[interaction.entry]
+execution_prompt = "Execute the `/aidocs` entry flow now for the current project. Use the `aidocs` MCP server first when available. Call the MCP orchestrator entry flow for this project. If setup is required, initialize AIDOCS first and then continue bootstrap. If multiple plausible sessions exist, STOP and ask the user which session to bind. Keep the default user-facing output terse and prefer the top-level `report` field when present. Report: setup required or not, index sync status, selected session or session-selection requirement, managed-mode state and bound session, and the first retrieval bundle only when useful. Do not broad-read the repo before AIDOCS bootstrap and session selection complete unless the user explicitly points at a file or error first."
+
+[interaction.errors]
+indexed_read_gate = "Indexed-query prerequisite not satisfied. Use indexed retrieval tools first (for example: code_investigate, code_find, code_trace, code_bundle, schema_query, code_get_service_api)."
+protected_config_edit = "BLOCKED: {file_name} is a protected AIDOCS config file. Edit it manually."
+infrastructure_edit_blocked = "BLOCKED: Cannot edit AIDOCS infrastructure ({label}). Set dev_mode=true in aidocs.toml to enable."
+shell_protected_target = "BLOCKED: Shell command targets protected AIDOCS infrastructure ({label})."
+
+[interaction.runtime]
+no_session_plan = "No session plan is available. Summarize the remaining roadmap and session-local open work, then ask the user what to work on next."
+plan_progress = "Plan is {progress} complete. Next step: {next_step}. {suffix}"
+plan_complete = "Plan is fully complete. All steps are checked off."
+no_plan_or_roadmap = "No session plan, roadmap, or session-local open work is available. Ask the user for next steps or create a plan or roadmap first."
+task_complete_next_steps = "- Work completed; choose the next roadmap/plan slice or close the session."
+
+[interaction.action_directives]
+edit = "`task_begin` → `aidocs_code_get_lines` (read) → `aidocs_code_edit_lines` or `aidocs_code_batch_edit` (write) → `task_complete`. Do NOT mix edit methods. Before editing: `aidocs_code_get_method_signature` / `aidocs_code_get_constructor_params` to confirm exact signatures (saves reading entire files). For multi-file edits use `code_batch_edit` (atomic, up to 20 edits). CSS: `aidocs_code_trace(class, mode=\"css_class\")`. DB: `aidocs_schema_query(entity, mode=\"entity\")`. Duplicates: `code_find(mode=\"duplicates\")`. Dead code: `code_find_dead_code(path)`."
+trace = "`aidocs_code_find(query, mode=\"references\")` → `aidocs_code_trace(query, mode=\"field_flow\"|\"css_class\"|\"api_to_ui\")`. For full service interface: `code_get_service_api(service_name)`. DB: `aidocs_schema_query(\"Source→Target\", mode=\"trace_path\")`."
+understand = "`aidocs_code_find(query, mode=\"symbols\")` → `aidocs_code_get_symbol_snippet(path, symbol)`. Precision tools (use these instead of reading files): `code_get_method_signature` (exact params/return type), `code_get_constructor_params` (what a class needs), `code_get_enum_values` (valid states), `code_get_service_api` (full class interface in one call), `code_get_entity_properties` (data model fields). Broad: `code_bundle(concept, mode=\"subsystem\")`. DB: `schema_query(name, mode=\"entity\")`."
+read_error = "`aidocs_code_find(symbol, mode=\"symbols\")` → `aidocs_code_find(symbol, mode=\"references\")` → `aidocs_code_get_symbol_snippet`. For method shape: `code_get_method_signature`. DB: `aidocs_schema_query(entity, mode=\"entity\")`."
+investigate = "`code_investigate(concept)` for guided navigation — tells you what was found and which tools to call next. Or: `code_bundle(concept, mode=\"subsystem\")` for architecture overview. Then narrow with `code_find(mode=\"mutations\"|\"validation\"|\"policy\")`."
+inspect = "`code_get_service_api(name)` for class interface, `code_get_dependencies(path)` for imports, `code_get_modules` for project structure. Read files only after narrowing with indexed tools."
+project_update = "Run the AIDOCS setup script: on Windows `powershell core/scripts/install-agent-routing.ps1`, on Unix `bash core/scripts/install-agent-routing.sh`. This updates hooks, commands, MCP config, and global wiring. Then `project_sync_indexes(root)` to refresh indexes."
+
+[interaction.gate_messages]
+raw_tool_blocked = "AIDOCS managed mode is active — raw `{tool}` is blocked. {replacement}"
+agent_disabled = "Agent delegation is disabled. Use AIDOCS indexed tools directly — code_investigate, code_find, code_trace can answer most questions in 5-10 calls."
+read_gate_blocked = "Indexed-read gate: \"{path}\" has not been discovered. Use code_investigate, code_find, code_trace, or code_bundle first, or pass known_exact_path=true if you know the exact path."
+edit_gate_blocked = "Edit gate: \"{path}\" has not been read/discovered. Read the file with code_get_lines first."
+sensitive_file_blocked = "Access to sensitive file blocked: {path}"
+infrastructure_config_blocked = "Write access to AIDOCS config file blocked: {path}"
+infrastructure_source_blocked = "Write access to AIDOCS infrastructure blocked (dev_mode required): {path}"
+infrastructure_read_blocked = "Read access to AIDOCS config file blocked: {path}"
+memory_write_blocked = "Write to workflow/security rules requires user intent. These files affect how AIDOCS orchestrates code execution: {path}"
+comment_quality = "Comments must explain WHY not WHAT. No vague qualifiers (just, simply, basically). No restating code."
+mcp_nudge_prefix = "WARNING: You are using a raw tool. AIDOCS MCP tools should be used first. Try these instead:"
+
+[interaction.mcp_server]
+instructions = "AIDOCS is your primary workflow for all code tasks. ALWAYS use AIDOCS MCP tools (code_investigate, code_find, code_trace, code_bundle) before reading files with code_get_lines. Never use raw grep or glob when AIDOCS indexed tools can answer your question. Follow TDD: write failing tests before production code. Do not create git commits unless explicitly asked. Keep all task output in /.MEMORY/sessions/<session-id>/ under the active session. Use the session journal for significant decisions and outcomes. When in doubt, call aidocs_orchestrate or aidocs_handle_prompt to route through AIDOCS."
+
+[interaction.raw_tool_replacements]
+read = "Use `code_get_lines`, `code_get_symbol_snippet`, or `code_bundle` instead."
+grep = "Use `code_text_search` for literal text, `code_find` for symbols, `code_trace` for relationships."
+glob = "Use `code_search` or `code_find(mode=\"partial_group\")` instead."
+edit = "Use `code_str_replace` for small edits or `code_edit_lines` for large block replacements."
+write = "Use `code_create_file` instead."
+
+[interaction.mcp_alternative_nudges]
+grep_symbols = "`aidocs_code_find(query, mode=\"symbols\")` — search indexed outlines by name/kind/role."
+grep_references = "`aidocs_code_find(query, mode=\"references\")` — find all usages of a symbol."
+grep_css = "`aidocs_code_trace(query, mode=\"css_class\")` — find CSS rules matching class names."
+read_bundle = "`aidocs_code_bundle(path, mode=\"file\")` to understand structure, then `aidocs_code_get_symbol_snippet` for exact code."
+read_symbol = "Use `aidocs_code_find(query, mode=\"symbols\")` first if the exact symbol is not known, then `aidocs_code_get_symbol_snippet` for the exact symbol."
+glob_search = "`aidocs_code_search` for indexed file search by keywords."
+
+# Tool descriptions are in action_hooks/tool_descriptions.toml

@@ -1,0 +1,1416 @@
+"""Line-based file operations with strong guardrails.
+
+Three operations:
+    get_lines  - Read specific lines from any file (fast, no index needed)
+    edit_lines - Replace a line range with new content, with optional content verification
+    batch_edit - Apply multiple edits atomically across one or more files
+
+All operations are line-based (1-indexed) and file-type agnostic.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+try:
+    import tomllib  # Python 3.11+
+except ImportError:
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ImportError:
+        tomllib = None  # type: ignore[assignment]
+
+from .config_schema import (
+    ConfigEditMode,
+    SETTINGS_CATALOG,
+    is_setting_agent_editable,
+    validate_setting_value,
+)
+
+
+@dataclass(slots=True)
+class LineRange:
+    """A range of lines from a file."""
+
+    path: str
+    start_line: int
+    end_line: int
+    lines: list[str]
+    total_lines: int
+
+    @property
+    def content(self) -> str:
+        return "\n".join(self.lines)
+
+    @property
+    def line_count(self) -> int:
+        return len(self.lines)
+
+
+@dataclass(slots=True)
+class EditResult:
+    """Result of a line edit operation."""
+
+    success: bool
+    path: str
+    start_line: int
+    end_line: int
+    old_content: str
+    new_content: str
+    lines_removed: int
+    lines_added: int
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class BatchEditResult:
+    """Result of a batch edit operation."""
+
+    success: bool
+    total_edits: int
+    applied: int
+    failed: int
+    results: list[EditResult]
+    error: str | None = None
+
+
+# ── Safety limits ──
+
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_LINE_COUNT = 200  # Max lines per get_lines call
+MAX_BATCH_EDITS = 20  # Max edits per batch_edit call
+
+# Files that should never be edited by agents
+SENSITIVE_PATTERNS = (".env", "credentials", "secrets", ".key", ".pem", ".pfx")
+
+# System/OS directories that are never valid project roots
+BLOCKED_ROOTS = {
+    "c:/windows",
+    "c:/program files",
+    "c:/program files (x86)",
+    "c:/programdata",
+    "c:/users/public",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/etc",
+    "/var",
+    "/boot",
+    "/sys",
+    "/proc",
+    "/lib",
+    "/lib64",
+    "/opt",
+    "/root",
+}
+
+# The MCP server's own source — agents cannot edit the tool they're running on
+_SELF_DIR: str = str(Path(__file__).resolve().parent).replace("\\", "/").lower()
+
+# Markers that indicate a directory is a valid project root
+PROJECT_MARKERS = (
+    ".git",
+    ".MEMORY",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "package.json",
+    "pyproject.toml",
+    "Cargo.toml",
+    "go.mod",
+    "pom.xml",
+    ".csproj",
+    ".sln",
+)
+
+
+def _validate_project_root(project_root: Path, *, write: bool = False) -> None:
+    """Ensure project_root is a legitimate project directory, not a system path.
+
+    Args:
+        write: If True, also block self-editing of the MCP server directory.
+               Reads are always allowed on the MCP server (agents need to inspect code).
+    """
+    resolved = project_root.resolve()
+    lower_str = str(resolved).replace("\\", "/").lower()
+
+    # Block system directories (always, read or write)
+    for blocked in BLOCKED_ROOTS:
+        if lower_str == blocked or lower_str.startswith(blocked + "/"):
+            raise ValueError(
+                f"Refusing to operate on system directory: {resolved}. "
+                f"File operations are restricted to project directories."
+            )
+
+    # Must be an existing directory
+    if not resolved.is_dir():
+        raise ValueError(f"Project root does not exist: {resolved}")
+
+    # Must have at least one project marker (git, package.json, .csproj, etc.)
+    has_marker = any(
+        (resolved / marker).exists() or any(resolved.glob(f"**/{marker}"))
+        if marker.startswith(".") and not (resolved / marker).exists()
+        else False
+        for marker in PROJECT_MARKERS[:4]  # Only check fast markers (first 4)
+    )
+    # Fallback: check if any file with common project extensions exists
+    if not has_marker:
+        has_marker = any((resolved / marker).exists() for marker in PROJECT_MARKERS)
+    if not has_marker:
+        raise ValueError(
+            f"Directory does not appear to be a project root: {resolved}. "
+            f"No project markers found ({', '.join(PROJECT_MARKERS[:5])}, ...)."
+        )
+
+
+def _resolve_path(
+    project_root: Path,
+    relative_path: str,
+    *,
+    write: bool = False,
+    config_edit_mode: ConfigEditMode | None = None,
+) -> Path:
+    """Resolve and validate a file path within the project root.
+
+    Args:
+        write: If True, also block paths inside the MCP server directory.
+    """
+    # Reject absolute paths — only relative paths allowed
+    if os.path.isabs(relative_path):
+        raise ValueError(
+            f"Absolute paths are not allowed: {relative_path}. "
+            f"Use a path relative to the project root."
+        )
+
+    # Normalize separators
+    clean = relative_path.replace("\\", "/").lstrip("/")
+
+    # Security: prevent path traversal
+    if ".." in clean.split("/"):
+        raise ValueError(f"Path traversal not allowed: {relative_path}")
+
+    abs_path = (project_root / clean).resolve()
+
+    # Security: ensure resolved path is within project root
+    try:
+        abs_path.relative_to(project_root.resolve())
+    except ValueError:
+        raise ValueError(f"Path escapes project root: {relative_path}")
+
+    # Security: prevent WRITING to MCP server source unless dev_mode is on (reads always allowed)
+    if write:
+        abs_lower = str(abs_path).replace("\\", "/").lower()
+        if abs_path.name.lower() == "aidocs-plugin.json":
+            raise ValueError(
+                f"Config files are never editable by agents: {relative_path}. "
+                f"Edit manually or via the installer."
+            )
+        if abs_path.name.lower() == "aidocs.toml":
+            canonical_project_config = (
+                project_root.resolve() / "aidocs.toml"
+            ).resolve()
+            if abs_path != canonical_project_config:
+                raise ValueError(
+                    f"Only the project-root aidocs.toml may be agent-edited: {relative_path}."
+                )
+            if config_edit_mode != "explicit_user_permitted":
+                raise ValueError(
+                    "aidocs.toml edits require config_edit_mode='explicit_user_permitted'."
+                )
+            from .config import ConfigResolver
+            _dev_mode = bool(
+                ConfigResolver().effective_config(project_root=project_root)
+                .get("dev", {}).get("dev_mode", False)
+            )
+            if not _dev_mode:
+                raise ValueError(
+                    f"Refusing to edit AIDOCS config: {relative_path}. "
+                    f"Set dev_mode=true in aidocs.toml to enable."
+                )
+
+        # Self-edit protection: block writes to MCP server source
+        if abs_lower.startswith(_SELF_DIR + "/") or abs_lower == _SELF_DIR:
+            from .config import ConfigResolver as _CfgResolver
+            _dev_mode_self = bool(
+                _CfgResolver().effective_config(project_root=project_root)
+                .get("dev", {}).get("dev_mode", False)
+            )
+            if not _dev_mode_self:
+                raise ValueError(
+                    f"AIDOCS self-edit blocked: {relative_path}. "
+                    f"Set dev_mode=true in aidocs.toml to allow editing MCP server source."
+                )
+
+    return abs_path
+
+
+def _check_sensitive(path: str) -> None:
+    """Block edits to sensitive files (credentials, keys, env)."""
+    lower = path.lower()
+    for pattern in SENSITIVE_PATTERNS:
+        if pattern in lower:
+            raise ValueError(
+                f"Refusing to operate on potentially sensitive file: {path}. "
+                f"Matched pattern: {pattern}"
+            )
+
+
+def _check_syntax(abs_path: Path, text: str) -> str | None:
+    """Validate syntax of edited file. Uses tree-sitter when available, falls back to stdlib."""
+    # Try tree-sitter first — covers all languages
+    try:
+        from .tree_sitter_service import check_syntax as ts_check
+        result = ts_check(abs_path, text)
+        if result is not None:
+            return f"Edit would produce invalid code — {result}"
+    except ImportError:
+        pass
+
+    # Stdlib fallbacks for formats tree-sitter doesn't cover or when not installed
+    suffix = abs_path.suffix.lower()
+
+    if suffix == ".py":
+        import ast as _ast
+        try:
+            _ast.parse(text)
+        except SyntaxError as e:
+            return f"Edit would produce invalid Python — SyntaxError at line {e.lineno or '?'}: {e.msg or 'unknown'}"
+
+    elif suffix == ".json":
+        import json as _json
+        try:
+            _json.loads(text)
+        except _json.JSONDecodeError as e:
+            return f"Edit would produce invalid JSON — {e.msg} at line {e.lineno}, col {e.colno}"
+
+    elif suffix == ".toml":
+        try:
+            import tomllib
+        except ImportError:
+            try:
+                import tomli as tomllib  # type: ignore[no-redef]
+            except ImportError:
+                return None
+        try:
+            tomllib.loads(text)
+        except Exception as e:
+            return f"Edit would produce invalid TOML — {e}"
+
+    elif suffix in (".yaml", ".yml"):
+        try:
+            import yaml
+            yaml.safe_load(text)
+        except ImportError:
+            return None
+        except yaml.YAMLError as e:
+            return f"Edit would produce invalid YAML — {e}"
+
+    elif suffix in (".xml", ".html", ".csproj", ".resx", ".config"):
+        import xml.etree.ElementTree as _ET
+        try:
+            _ET.fromstring(text)
+        except _ET.ParseError as e:
+            return f"Edit would produce invalid XML — {e}"
+
+    return None
+
+
+def _read_file_lines(abs_path: Path) -> list[str]:
+    """Read a file and return its lines (no trailing newline stripping)."""
+    if not abs_path.is_file():
+        raise FileNotFoundError(f"File not found: {abs_path}")
+
+    size = abs_path.stat().st_size
+    if size > MAX_FILE_SIZE:
+        raise ValueError(
+            f"File too large ({size:,} bytes, max {MAX_FILE_SIZE:,}): {abs_path.name}"
+        )
+
+    text = abs_path.read_text(encoding="utf-8", errors="replace")
+    return text.splitlines()
+
+
+def _file_ends_with_newline(abs_path: Path) -> bool:
+    """Return whether the file currently ends with a newline byte."""
+    data = abs_path.read_bytes()
+    return data.endswith(b"\n") if data else False
+
+
+def _write_lines(abs_path: Path, lines: list[str], *, final_newline: bool) -> None:
+    text = "\n".join(lines)
+    if final_newline and lines:
+        text += "\n"
+    abs_path.write_text(text, encoding="utf-8")
+
+
+def _canonical_relative_path(project_root: Path, abs_path: Path) -> str:
+    return abs_path.relative_to(project_root.resolve()).as_posix()
+
+
+def _render_lines(lines: list[str], *, final_newline: bool) -> str:
+    text = "\n".join(lines)
+    if final_newline and lines:
+        return text + "\n"
+    return text
+
+
+def _flatten_config_paths(value: object, prefix: str) -> set[str]:
+    if isinstance(value, dict):
+        paths: set[str] = set()
+        for key, nested in value.items():
+            nested_prefix = f"{prefix}.{key}" if prefix else str(key)
+            paths.update(_flatten_config_paths(nested, nested_prefix))
+        return paths
+    return {prefix} if prefix else set()
+
+
+def _diff_config_paths(before: object, after: object, prefix: str = "") -> set[str]:
+    if isinstance(before, dict) and isinstance(after, dict):
+        paths: set[str] = set()
+        for key in sorted(set(before) | set(after)):
+            next_prefix = f"{prefix}.{key}" if prefix else str(key)
+            paths.update(
+                _diff_config_paths(before.get(key), after.get(key), next_prefix)
+            )
+        return paths
+    if isinstance(before, dict) or isinstance(after, dict):
+        return _flatten_config_paths(before, prefix) | _flatten_config_paths(
+            after, prefix
+        )
+    return {prefix} if before != after and prefix else set()
+
+
+def _load_toml_text(text: str, *, path: str) -> dict[str, object]:
+    if tomllib is None:
+        raise ValueError("TOML parsing is unavailable in this runtime.")
+    try:
+        loaded = tomllib.loads(text or "") if text.strip() else {}
+    except Exception as exc:
+        raise ValueError(f"Invalid TOML for {path}: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ValueError(
+            f"Invalid TOML root for {path}: expected a table at the document root."
+        )
+    return loaded
+
+
+def _validate_config_edit(
+    abs_path: Path,
+    *,
+    current_text: str,
+    updated_text: str,
+    config_edit_mode: ConfigEditMode | None,
+) -> None:
+    if abs_path.name.lower() != "aidocs.toml":
+        return
+
+    current_config = _load_toml_text(current_text, path=str(abs_path))
+    updated_config = _load_toml_text(updated_text, path=str(abs_path))
+
+    for setting_path in sorted(_diff_config_paths(current_config, updated_config)):
+        # Check if this path is being removed (exists in current, not in updated) — always allow removals
+        current_val = current_config
+        for part in setting_path.split("."):
+            current_val = current_val.get(part) if isinstance(current_val, dict) else None
+        updated_val = updated_config
+        for part in setting_path.split("."):
+            updated_val = updated_val.get(part) if isinstance(updated_val, dict) else None
+        if current_val is not None and updated_val is None:
+            continue  # Removing an old/unknown key is always safe
+
+        metadata = SETTINGS_CATALOG.get(setting_path)
+        if metadata is None:
+            # Skip intermediate paths that have catalog entries below them.
+            if any(key.startswith(setting_path + ".") for key in SETTINGS_CATALOG):
+                continue
+            raise ValueError(f"Config setting is not agent-editable: {setting_path}.")
+        if metadata["security_sensitive"]:
+            raise ValueError(
+                f"Security-sensitive config cannot be agent-edited: {setting_path}."
+            )
+        if not is_setting_agent_editable(
+            setting_path, scope="project", edit_mode=config_edit_mode
+        ):
+            raise ValueError(
+                f"Config setting requires controlled edit permission: {setting_path}."
+            )
+        current_value: object = updated_config
+        for part in setting_path.split("."):
+            if not isinstance(current_value, dict) or part not in current_value:
+                raise ValueError(
+                    f"Config setting is not agent-editable: {setting_path}."
+                )
+            current_value = current_value[part]
+        validate_setting_value(setting_path, current_value)
+
+
+# ── Public API ──
+
+
+def get_lines(
+    project_root: Path,
+    path: str,
+    start_line: int = 1,
+    count: int = 50,
+    *,
+    show_line_numbers: bool = True,
+) -> dict[str, object]:
+    """Read specific lines from any file.
+
+    Args:
+        project_root: Project root directory.
+        path: Relative path to the file.
+        start_line: First line to read (1-indexed). Clamped to valid range.
+        count: Number of lines to read. Clamped to MAX_LINE_COUNT.
+        show_line_numbers: If True, prefix each line with its line number.
+
+    Returns:
+        {
+            "path": str,
+            "start": int,
+            "end": int,
+            "total": int,
+            "content": str,          # The requested lines (with optional line numbers)
+            "lines": [str],          # Raw lines without numbers
+            "has_more": bool,        # True if file has more lines after end_line
+            "truncated": bool,       # True if count was clamped
+        }
+    """
+    _validate_project_root(project_root)
+    abs_path = _resolve_path(project_root, path)
+    all_lines = _read_file_lines(abs_path)
+    total = len(all_lines)
+
+    # Clamp inputs
+    start = max(1, min(start_line, total))
+    requested_count = count
+    count = max(1, min(count, MAX_LINE_COUNT))
+    truncated = count < requested_count
+
+    end = min(start + count - 1, total)
+
+    # Extract lines (convert from 1-indexed to 0-indexed)
+    selected = all_lines[start - 1 : end]
+
+    if show_line_numbers:
+        width = len(str(end))
+        numbered = [f"{start + i:>{width}}  {line}" for i, line in enumerate(selected)]
+        content = "\n".join(numbered)
+    else:
+        content = "\n".join(selected)
+
+    result: dict[str, object] = {
+        "path": path,
+        "start": start,
+        "end": end,
+        "total": total,
+        "content": content,
+    }
+    if end < total:
+        result["has_more"] = True
+    if truncated:
+        result["truncated"] = True
+    return result
+
+
+def create_file(
+    project_root: Path,
+    path: str,
+    content: str,
+    *,
+    config_edit_mode: ConfigEditMode | None = None,
+) -> dict[str, object]:
+    """Create a new file with exact content.
+
+    This is intentionally separate from edit_lines so callers can express
+    first-write intent directly without insert-mode gymnastics.
+    """
+    try:
+        _validate_project_root(project_root, write=True)
+        abs_path = _resolve_path(
+            project_root, path, write=True, config_edit_mode=config_edit_mode
+        )
+        _check_sensitive(path)
+    except ValueError as exc:
+        return {
+            "success": False,
+            "path": path,
+            "created": False,
+            
+            "error": str(exc),
+        }
+
+    if abs_path.exists():
+        return {
+            "success": False,
+            "path": path,
+            "created": False,
+            
+            "error": f"File already exists: {path}",
+        }
+
+    try:
+        _validate_config_edit(
+            abs_path,
+            current_text="",
+            updated_text=content,
+            config_edit_mode=config_edit_mode,
+        )
+    except ValueError as exc:
+        return {
+            "success": False,
+            "path": path,
+            "created": False,
+            
+            "error": str(exc),
+        }
+
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    abs_path.write_text(content, encoding="utf-8")
+    canonical_path = _canonical_relative_path(project_root, abs_path)
+
+    # Warn if creating planning docs in root instead of .MEMORY/
+    root_planning_warning = None
+    if "/" not in canonical_path and canonical_path.lower().endswith(".md"):
+        name_lower = canonical_path.lower()
+        if name_lower not in {"claude.md", "agents.md", "readme.md", ".gitignore"}:
+            root_planning_warning = "Consider placing planning docs in .MEMORY/roadmaps/ or .MEMORY/specs/ instead of project root."
+
+    result: dict[str, object] = {
+        "success": True,
+        "path": canonical_path,
+        "created": True,
+        "lines": len(content.splitlines()),
+    }
+    if root_planning_warning:
+        result["warning"] = root_planning_warning
+    return result
+
+
+def edit_lines(
+    project_root: Path,
+    path: str,
+    start_line: int,
+    end_line: int,
+    new_content: str,
+    *,
+    expect: str | None = None,
+    dry_run: bool = False,
+    mode: str = "auto",
+    config_edit_mode: ConfigEditMode | None = None,
+) -> dict[str, object]:
+    """Replace a range of lines with new content.
+
+    Safety features:
+        - Returns old content so caller can verify what was replaced
+        - Optional `expect` parameter: if provided, edit is rejected unless
+          the current content of the line range matches exactly
+        - `dry_run` mode: returns what would change without writing
+
+    Args:
+        project_root: Project root directory.
+        path: Relative path to the file.
+        start_line: First line to replace (1-indexed, inclusive).
+        end_line: Last line to replace (1-indexed, inclusive). Use same as start_line to replace a single line.
+                  Use start_line - 1 (i.e., end_line < start_line) to INSERT before start_line without removing any lines.
+        new_content: Replacement text. Can be multi-line (split on \\n).
+        expect: If provided, the current content of lines start..end must match this exactly (trimmed).
+                If it doesn't match, the edit is rejected with a diff.
+        dry_run: If True, return what would change without writing the file.
+        mode: `auto`, `insert`, or `replace`.
+
+    Returns:
+        {
+            "success": bool,
+            "path": str,
+            "start_line": int,
+            "end_line": int,
+            "old_content": str,      # What was there before (empty for inserts)
+            "new_content": str,      # What was written
+            "lines_removed": int,
+            "lines_added": int,
+            "dry_run": bool,
+            "error": str | None,     # Set if expect mismatch or other error
+        }
+    """
+    try:
+        _validate_project_root(project_root, write=True)
+    except ValueError as exc:
+        return _edit_error(path, start_line, end_line, str(exc))
+    try:
+        abs_path = _resolve_path(
+            project_root, path, write=True, config_edit_mode=config_edit_mode
+        )
+    except ValueError as exc:
+        return _edit_error(path, start_line, end_line, str(exc))
+    canonical_path = _canonical_relative_path(project_root, abs_path)
+    try:
+        _check_sensitive(path)
+    except ValueError as exc:
+        return _edit_error(path, start_line, end_line, str(exc))
+    original_final_newline = _file_ends_with_newline(abs_path)
+    all_lines = _read_file_lines(abs_path)
+    total = len(all_lines)
+
+    # Validate line range
+    if start_line < 1:
+        return _edit_error(path, start_line, end_line, "start_line must be >= 1")
+    if start_line > total + 1:
+        return _edit_error(
+            path,
+            start_line,
+            end_line,
+            f"start_line {start_line} exceeds file length ({total} lines)",
+        )
+
+    mode_value = mode.strip().lower()
+    if mode_value not in {"auto", "insert", "replace"}:
+        return _edit_error(path, start_line, end_line, f"Unknown mode: {mode}")
+
+    # Handle insert mode (end_line < start_line means "insert before start_line")
+    is_insert = mode_value == "insert" or (
+        mode_value == "auto" and end_line < start_line
+    )
+    if mode_value == "replace" and end_line < start_line:
+        return _edit_error(
+            path, start_line, end_line, "replace mode requires end_line >= start_line"
+        )
+    if is_insert:
+        old_lines: list[str] = []
+        insert_at = start_line - 1  # 0-indexed position to insert before
+    else:
+        # Clamp end_line to file length
+        end_line = min(end_line, total)
+        old_lines = all_lines[start_line - 1 : end_line]
+        insert_at = start_line - 1
+
+    old_content = "\n".join(old_lines)
+    new_lines = new_content.split("\n") if new_content.strip() else []
+
+    # Expect check (safety gate)
+    if expect is not None:
+        expected_trimmed = expect.strip()
+        actual_trimmed = old_content.strip()
+        if expected_trimmed != actual_trimmed:
+            return {
+                "success": False,
+                "path": path,
+                "start_line": start_line,
+                "end_line": end_line,
+                "old_content": old_content,
+                "new_content": new_content,
+                "lines_removed": 0,
+                "lines_added": 0,
+                "dry_run": dry_run,
+                "error": f"Content mismatch — expected:\n{expected_trimmed}\n\nactual:\n{actual_trimmed}",
+            }
+
+    if is_insert:
+        result_lines = all_lines[:insert_at] + new_lines + all_lines[insert_at:]
+    else:
+        result_lines = all_lines[: start_line - 1] + new_lines + all_lines[end_line:]
+
+    touches_file_end = (is_insert and insert_at == total) or (
+        not is_insert and end_line >= total
+    )
+    final_newline = original_final_newline
+    if touches_file_end and new_content.endswith("\n"):
+        final_newline = True
+
+    try:
+        _validate_config_edit(
+            abs_path,
+            current_text=_render_lines(all_lines, final_newline=original_final_newline),
+            updated_text=_render_lines(result_lines, final_newline=final_newline),
+            config_edit_mode=config_edit_mode,
+        )
+    except ValueError as exc:
+        return _edit_error(path, start_line, end_line, str(exc))
+
+    # Syntax validation — reject edits that break the file
+    # For JSX/TSX, tree-sitter is too strict (false positives on valid JSX patterns),
+    # so downgrade to a warning instead of blocking
+    updated_text = _render_lines(result_lines, final_newline=final_newline)
+    syntax_err = _check_syntax(abs_path, updated_text)
+    syntax_warning = None
+    if syntax_err:
+        if abs_path.suffix.lower() in (".tsx", ".jsx"):
+            syntax_warning = syntax_err  # warn but don't block
+        else:
+            return _edit_error(path, start_line, end_line, syntax_err)
+
+    if dry_run:
+        return {
+            "success": True,
+            "path": canonical_path,
+            
+            "start_line": start_line,
+            "end_line": end_line,
+            "old_content": old_content,
+            "new_content": new_content,
+            "lines_removed": len(old_lines),
+            "lines_added": len(new_lines),
+            "dry_run": True,
+        }
+
+    # Record edit history for rollback (diff only, not full file)
+    try:
+        from .edit_history import EditHistoryStore
+        EditHistoryStore().record_edit(
+            project_root, canonical_path, "edit_lines",
+            old_content=old_content, new_content=new_content,
+            start_line=start_line, end_line=end_line,
+        )
+    except Exception:
+        pass
+
+    # Write back
+    _write_lines(abs_path, result_lines, final_newline=final_newline)
+
+    result: dict[str, object] = {
+        "success": True,
+        "path": canonical_path,
+        "start": start_line,
+        "end": end_line,
+        "removed": len(old_lines),
+        "added": len(new_lines),
+    }
+    if syntax_warning:
+        result["warning"] = syntax_warning
+    return result
+
+
+def batch_edit(
+    project_root: Path,
+    edits: list[dict[str, object]],
+    *,
+    dry_run: bool = False,
+    atomic: bool = True,
+    config_edit_mode: ConfigEditMode | None = None,
+) -> dict[str, object]:
+    """Apply multiple line edits atomically.
+
+    If `atomic` is True (default), ALL edits are validated first (including expect checks).
+    If any edit would fail, NONE are applied. This prevents partial corruption.
+
+    Each edit in the list has the same fields as edit_lines:
+        { "path": str, "start_line": int, "end_line": int, "new_content": str, "expect": str | None, "mode": str | None }
+
+    Args:
+        project_root: Project root directory.
+        edits: List of edit operations.
+        dry_run: If True, validate and return results without writing.
+        atomic: If True, all-or-nothing — reject entire batch if any edit fails validation.
+
+    Returns:
+        {
+            "success": bool,
+            "total": int,
+            "applied": int,
+            "failed": int,
+            "results": [EditResult],
+            "error": str | None,
+        }
+    """
+    try:
+        _validate_project_root(project_root, write=True)
+    except ValueError as exc:
+        return {
+            "success": False,
+            "total": len(edits),
+            "applied": 0,
+            "failed": len(edits),
+            "results": [],
+            "error": str(exc),
+        }
+
+    if len(edits) > MAX_BATCH_EDITS:
+        return {
+            "success": False,
+            "total": len(edits),
+            "applied": 0,
+            "failed": len(edits),
+            "results": [],
+            "error": f"Too many edits ({len(edits)}). Maximum is {MAX_BATCH_EDITS}.",
+        }
+
+    if not edits:
+        return {
+            "success": True,
+            "total": 0,
+            "applied": 0,
+            "failed": 0,
+            "results": [],
+        }
+
+    # Phase 1: Read all files and validate all edits
+    file_cache: dict[str, list[str]] = {}
+    file_paths: dict[str, Path] = {}
+    file_final_newlines: dict[str, bool] = {}
+    validations: list[dict[str, object]] = []
+
+    for edit in edits:
+        path = str(edit.get("path", ""))
+        start = int(edit.get("start_line", 0))
+        end = int(edit.get("end_line", 0))
+        new_content = str(edit.get("new_content", ""))
+        expect = edit.get("expect")
+        expect_str = str(expect) if expect is not None else None
+        mode = str(edit.get("mode", "auto")).strip().lower()
+
+        try:
+            abs_path = _resolve_path(
+                project_root, path, write=True, config_edit_mode=config_edit_mode
+            )
+            _check_sensitive(path)
+            if abs_path.name.lower() == "aidocs.toml":
+                raise ValueError(
+                    "Use edit_lines for aidocs.toml so config policy can be validated safely."
+                )
+            canonical_path = _canonical_relative_path(project_root, abs_path)
+
+            if canonical_path not in file_cache:
+                file_cache[canonical_path] = _read_file_lines(abs_path)
+                file_paths[canonical_path] = abs_path
+                file_final_newlines[canonical_path] = _file_ends_with_newline(abs_path)
+
+            all_lines = file_cache[canonical_path]
+            total = len(all_lines)
+
+            if start < 1 or start > total + 1:
+                validations.append(
+                    _edit_error(
+                        path,
+                        start,
+                        end,
+                        f"Invalid start_line {start} (file has {total} lines)",
+                    )
+                )
+                continue
+
+            if mode not in {"auto", "insert", "replace"}:
+                validations.append(
+                    _edit_error(path, start, end, f"Unknown mode: {mode}")
+                )
+                continue
+            is_insert = mode == "insert" or (mode == "auto" and end < start)
+            if mode == "replace" and end < start:
+                validations.append(
+                    _edit_error(
+                        path, start, end, "replace mode requires end_line >= start_line"
+                    )
+                )
+                continue
+            if is_insert:
+                old_lines: list[str] = []
+            else:
+                clamped_end = min(end, total)
+                old_lines = all_lines[start - 1 : clamped_end]
+
+            old_content = "\n".join(old_lines)
+
+            # Expect check
+            if expect_str is not None:
+                if expect_str.strip() != old_content.strip():
+                    validations.append(
+                        {
+                            "success": False,
+                            "path": path,
+                            "start_line": start,
+                            "end_line": end,
+                            "old_content": old_content,
+                            "new_content": new_content,
+                            "lines_removed": 0,
+                            "lines_added": 0,
+                            "dry_run": dry_run,
+                            "error": f"Content mismatch at {path}:{start}-{end}",
+                        }
+                    )
+                    continue
+
+            validations.append(
+                {
+                    "success": True,
+                    "path": canonical_path,
+                    "start": start,
+                    "end": end,
+                    "removed": len(old_lines),
+                    "added": len(new_content.split("\n"))
+                    if new_content.strip()
+                    else 0,
+                    **({"dry_run": True, "old_content": old_content, "new_content": new_content} if dry_run else {}),
+                }
+            )
+
+        except Exception as exc:
+            validations.append(_edit_error(path, start, end, str(exc)))
+
+    # Check if any failed
+    failures = [v for v in validations if not v["success"]]
+
+    if atomic and failures:
+        return {
+            "success": False,
+            "total": len(edits),
+            "applied": 0,
+            "failed": len(failures),
+            "results": validations,
+            "error": f"{len(failures)} edit(s) failed validation. Atomic mode: no edits applied.",
+        }
+
+    if dry_run:
+        return {
+            "success": len(failures) == 0,
+            "total": len(edits),
+            "applied": len(validations) - len(failures),
+            "failed": len(failures),
+            "results": validations,
+        }
+
+    # Phase 2: Apply edits (process files in reverse line order to preserve line numbers)
+    # Group edits by file
+    edits_by_file: dict[str, list[tuple[int, dict[str, object]]]] = {}
+    for i, (edit, validation) in enumerate(zip(edits, validations)):
+        if not validation["success"]:
+            continue
+        canonical_path = str(validation.get("path") or edit.get("path") or "")
+        if canonical_path not in edits_by_file:
+            edits_by_file[canonical_path] = []
+        edits_by_file[canonical_path].append((i, edit))
+
+    # Apply edits per file, processing from bottom to top to preserve line numbers
+    for canonical_path, file_edits in edits_by_file.items():
+        abs_path = file_paths[canonical_path]
+        all_lines = file_cache[canonical_path]
+        total = len(all_lines)
+        final_newline = file_final_newlines[canonical_path]
+
+        # Sort by start_line descending (bottom-up)
+        file_edits.sort(key=lambda x: -int(x[1].get("start_line", 0)))
+
+        for idx, edit in file_edits:
+            start = int(edit.get("start_line", 0))
+            end = int(edit.get("end_line", 0))
+            new_content = str(edit.get("new_content", ""))
+            new_lines = new_content.split("\n") if new_content.strip() else []
+            mode = str(edit.get("mode", "auto")).strip().lower()
+
+            is_insert = mode == "insert" or (mode == "auto" and end < start)
+            if is_insert:
+                insert_at = start - 1
+                all_lines = all_lines[:insert_at] + new_lines + all_lines[insert_at:]
+                if insert_at == total and new_content.endswith("\n"):
+                    final_newline = True
+            else:
+                clamped_end = min(end, len(all_lines))
+                all_lines = all_lines[: start - 1] + new_lines + all_lines[clamped_end:]
+                if end >= total and new_content.endswith("\n"):
+                    final_newline = True
+
+        # Write the modified file
+        _write_lines(abs_path, all_lines, final_newline=final_newline)
+
+    applied = len(validations) - len(failures)
+    return {
+        "success": len(failures) == 0,
+        "total": len(edits),
+        "applied": applied,
+        "failed": len(failures),
+        "results": validations,
+        **({
+            "error": f"{len(failures)} edit(s) failed."
+        } if failures else {}),
+    }
+
+
+
+def _check_parse(text: str, ext: str) -> str | None:
+    """Return parse error string if text doesn't parse, None if clean."""
+    if ext == ".py":
+        import ast
+        try:
+            ast.parse(text)
+            return None
+        except SyntaxError as exc:
+            return f"Python SyntaxError at line {exc.lineno}: {exc.msg}"
+    if ext in {".js", ".ts", ".jsx", ".tsx"}:
+        # Brace balance check — catches most structural tears
+        opens = text.count("{") + text.count("(") + text.count("[")
+        closes = text.count("}") + text.count(")") + text.count("]")
+        if opens != closes:
+            return f"Unbalanced brackets: {opens} opens vs {closes} closes"
+        return None
+    if ext in {".cs"}:
+        opens = text.count("{")
+        closes = text.count("}")
+        if opens != closes:
+            return f"Unbalanced braces: {opens} {{ vs {closes} }}"
+        return None
+    return None
+
+
+def _edit_error(path: str, start: int, end: int, error: str) -> dict[str, object]:
+    """Create a failed edit result."""
+    return {
+        "success": False,
+        "path": path,
+        "start_line": start,
+        "end_line": end,
+        "error": error,
+    }
+
+
+_STR_REPLACE_MAX_OLD_CHARS = 1500
+MAX_BATCH_STR_REPLACE = 20
+
+
+def str_replace(
+    project_root: Path,
+    path: str,
+    old_str: str,
+    new_str: str,
+    *,
+    replace_all: bool = False,
+    config_edit_mode: ConfigEditMode | None = None,
+) -> dict[str, object]:
+    """Replace a unique string in a file. For small, targeted edits.
+
+    Args:
+        project_root: Project root directory.
+        path: Relative path to the file.
+        old_str: Exact text to find (must be unique unless replace_all=True).
+        new_str: Replacement text.
+        replace_all: Replace every occurrence instead of requiring uniqueness.
+
+    Returns:
+        { "success": bool, "path": str, "lines_changed": int, "replacements": int, "error": str | None }
+    """
+    if len(old_str) > _STR_REPLACE_MAX_OLD_CHARS:
+        return {
+            "success": False,
+            "path": path,
+            "lines_changed": 0,
+            "replacements": 0,
+            "error": (
+                f"old_str is {len(old_str)} chars (limit {_STR_REPLACE_MAX_OLD_CHARS}). "
+                f"Use code_edit_lines with line numbers for large replacements."
+            ),
+        }
+
+    try:
+        _validate_project_root(project_root, write=True)
+    except ValueError as exc:
+        return {"success": False, "path": path, "lines_changed": 0, "replacements": 0, "error": str(exc)}
+    try:
+        abs_path = _resolve_path(project_root, path, write=True, config_edit_mode=config_edit_mode)
+    except ValueError as exc:
+        return {"success": False, "path": path, "lines_changed": 0, "replacements": 0, "error": str(exc)}
+    try:
+        _check_sensitive(path)
+    except ValueError as exc:
+        return {"success": False, "path": path, "lines_changed": 0, "replacements": 0, "error": str(exc)}
+
+    canonical_path = _canonical_relative_path(project_root, abs_path)
+
+    try:
+        content = abs_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"success": False, "path": path, "lines_changed": 0, "replacements": 0, "error": f"File not found: {path}"}
+
+    # Normalize line endings — MCP JSON transport may send \n while file has \r\n
+    has_crlf = "\r\n" in content
+    if has_crlf:
+        content = content.replace("\r\n", "\n")
+    old_str = old_str.replace("\r\n", "\n")
+    new_str = new_str.replace("\r\n", "\n")
+
+    count = content.count(old_str)
+
+    if count == 0:
+        # Try whitespace-normalized match to give a helpful hint
+        import re as _re
+        normalized_pattern = _re.sub(r'\s+', r'\\s+', _re.escape(old_str.strip()))
+        ws_match = _re.search(normalized_pattern, content)
+        hint = ""
+        if ws_match:
+            match_line = content[:ws_match.start()].count("\n") + 1
+            hint = f" Whitespace-normalized match found at line {match_line} — check indentation or trailing spaces."
+        return {
+            "success": False,
+            "path": canonical_path,
+            "error": f"No match found for old_str in {canonical_path}.{hint}",
+        }
+
+    if count > 1 and not replace_all:
+        return {
+            "success": False,
+            "path": canonical_path,
+            "lines_changed": 0,
+            "replacements": 0,
+            "error": f"Found {count} matches for old_str in {canonical_path}. Use replace_all=True or provide more context to make old_str unique.",
+        }
+
+    old_lines = content.splitlines()
+    # Find first match line for preview
+    first_match_line = None
+    for i, line in enumerate(old_lines, 1):
+        if old_str in line:
+            first_match_line = i
+            break
+
+    if replace_all:
+        new_content = content.replace(old_str, new_str)
+        replacements = count
+    else:
+        new_content = content.replace(old_str, new_str, 1)
+        replacements = 1
+
+    new_lines = new_content.splitlines()
+    lines_changed = sum(1 for a, b in zip(old_lines, new_lines) if a != b) + abs(len(new_lines) - len(old_lines))
+
+    # Record edit history for rollback
+    try:
+        from .edit_history import EditHistoryStore
+        EditHistoryStore().record_edit(
+            project_root, canonical_path, "str_replace",
+            old_content=old_str, new_content=new_str,
+            start_line=first_match_line,
+        )
+    except Exception:
+        pass
+
+    # Restore original line endings if file had CRLF
+    if has_crlf:
+        new_content = new_content.replace("\n", "\r\n")
+    abs_path.write_text(new_content, encoding="utf-8")
+
+    result: dict[str, object] = {
+        "success": True,
+        "path": canonical_path,
+        "changed": lines_changed,
+        "replacements": replacements,
+    }
+    if first_match_line:
+        result["first_match_line"] = first_match_line
+    return result
+
+
+def batch_str_replace(
+    project_root: Path,
+    edits: list[dict[str, object]],
+    *,
+    atomic: bool = True,
+    config_edit_mode: ConfigEditMode | None = None,
+) -> dict[str, object]:
+    """Apply multiple string-match replacements atomically across files.
+
+    Each edit: { "path": str, "old_str": str, "new_str": str, "replace_all": bool? }
+
+    Args:
+        project_root: Project root directory.
+        edits: List of string-match edit operations.
+        atomic: All-or-nothing mode (default True).
+
+    Returns:
+        { "success": bool, "total": int, "applied": int, "failed": int, "results": [...], "error": str | None }
+    """
+    try:
+        _validate_project_root(project_root, write=True)
+    except ValueError as exc:
+        return {"success": False, "total": len(edits), "applied": 0, "failed": len(edits), "results": [], "error": str(exc)}
+
+    if len(edits) > MAX_BATCH_STR_REPLACE:
+        return {
+            "success": False,
+            "total": len(edits),
+            "applied": 0,
+            "failed": len(edits),
+            "results": [],
+            "error": f"Too many edits ({len(edits)}). Maximum is {MAX_BATCH_STR_REPLACE}.",
+        }
+
+    # Phase 1: validate all edits and compute replacements
+    file_cache: dict[str, str] = {}
+    file_paths: dict[str, Path] = {}
+    validations: list[dict[str, object]] = []
+
+    for edit_index, edit in enumerate(edits):
+        path = str(edit.get("path", ""))
+        old_str = str(edit.get("old_str", ""))
+        new_str = str(edit.get("new_str", ""))
+        replace_all = bool(edit.get("replace_all", False))
+
+        try:
+            abs_path = _resolve_path(project_root, path, write=True, config_edit_mode=config_edit_mode)
+            _check_sensitive(path)
+            canonical_path = _canonical_relative_path(project_root, abs_path)
+
+            if canonical_path not in file_cache:
+                file_cache[canonical_path] = abs_path.read_text(encoding="utf-8")
+                file_paths[canonical_path] = abs_path
+
+            content = file_cache[canonical_path]
+            count = content.count(old_str)
+
+            if count == 0:
+                preview = old_str[:50] + ("..." if len(old_str) > 50 else "")
+                validations.append({"success": False, "path": canonical_path, "edit_index": edit_index, "error": f"Edit #{edit_index}: no match in {canonical_path} for: {preview}"})
+                continue
+            if count > 1 and not replace_all:
+                preview = old_str[:50] + ("..." if len(old_str) > 50 else "")
+                validations.append({"success": False, "path": canonical_path, "edit_index": edit_index, "error": f"Edit #{edit_index}: {count} matches in {canonical_path} for: {preview}"})
+                continue
+
+            # Apply to cached content so subsequent edits on same file see prior changes
+            if replace_all:
+                file_cache[canonical_path] = content.replace(old_str, new_str)
+            else:
+                file_cache[canonical_path] = content.replace(old_str, new_str, 1)
+
+            validations.append({"success": True, "path": canonical_path})
+
+        except (ValueError, FileNotFoundError) as exc:
+            validations.append({"success": False, "path": path, "error": str(exc)})
+
+    failures = [v for v in validations if not v["success"]]
+
+    if atomic and failures:
+        return {
+            "success": False,
+            "total": len(edits),
+            "applied": 0,
+            "failed": len(failures),
+            "results": validations,
+            "error": f"{len(failures)} edit(s) failed validation. Atomic mode: no edits applied.",
+        }
+
+    # Phase 2: write modified files
+    for canonical_path, content in file_cache.items():
+        abs_path = file_paths[canonical_path]
+        abs_path.write_text(content, encoding="utf-8")
+
+    applied = len(validations) - len(failures)
+    return {
+        "success": len(failures) == 0,
+        "total": len(edits),
+        "applied": applied,
+        "failed": len(failures),
+        "results": validations,
+        **({
+            "error": f"{len(failures)} edit(s) failed."
+        } if failures else {}),
+    }
+
+
+def extract_block(
+    project_root: Path,
+    source_path: str,
+    start_line: int,
+    end_line: int,
+    target_path: str,
+    *,
+    target_position: str = "append",
+    target_line: int | None = None,
+    remove_from_source: bool = True,
+) -> dict[str, object]:
+    """Extract a code block from source and place it in target.
+
+    Args:
+        source_path: File to extract from.
+        start_line: First line of block (1-indexed, inclusive).
+        end_line: Last line of block (inclusive).
+        target_path: File to place block in (created if missing).
+        target_position: 'append' (end of file), 'prepend' (start), or 'at_line' (use target_line).
+        target_line: Insert before this line when target_position='at_line'.
+        remove_from_source: If True, remove the block from source after copying.
+    """
+    try:
+        _validate_project_root(project_root, write=True)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+
+    try:
+        src_abs = _resolve_path(project_root, source_path, write=remove_from_source)
+        _check_sensitive(source_path)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+
+    try:
+        tgt_abs = _resolve_path(project_root, target_path, write=True)
+        _check_sensitive(target_path)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+
+    src_lines = _read_file_lines(src_abs)
+    total = len(src_lines)
+
+    if start_line < 1 or start_line > total:
+        return {"success": False, "error": f"start_line {start_line} out of range (file has {total} lines)"}
+    if end_line < start_line or end_line > total:
+        return {"success": False, "error": f"end_line {end_line} out of range"}
+
+    block = src_lines[start_line - 1 : end_line]
+    block_text = "\n".join(block)
+
+    # Build target content
+    if tgt_abs.is_file():
+        tgt_lines = _read_file_lines(tgt_abs)
+    else:
+        tgt_lines = []
+
+    pos = target_position.strip().lower()
+    if pos == "append":
+        new_tgt_lines = tgt_lines + block
+    elif pos == "prepend":
+        new_tgt_lines = block + tgt_lines
+    elif pos == "at_line" and target_line is not None:
+        insert_at = max(0, min(target_line - 1, len(tgt_lines)))
+        new_tgt_lines = tgt_lines[:insert_at] + block + tgt_lines[insert_at:]
+    else:
+        return {"success": False, "error": f"Invalid target_position: {target_position}"}
+    # Validate both files parse BEFORE writing
+    new_src_lines = src_lines[: start_line - 1] + src_lines[end_line:] if remove_from_source else src_lines
+    new_tgt_text = "\n".join(new_tgt_lines)
+    new_src_text = "\n".join(new_src_lines)
+
+    src_ext = src_abs.suffix.lower()
+    tgt_ext = tgt_abs.suffix.lower()
+
+    src_parse_error = _check_parse(new_src_text, src_ext) if remove_from_source else None
+    tgt_parse_error = _check_parse(new_tgt_text, tgt_ext)
+
+    if src_parse_error:
+        return {
+            "success": False,
+            "error": f"Extraction would break source file syntax: {src_parse_error}",
+            "hint": "The block boundary may be wrong — check start_line/end_line include the complete symbol.",
+        }
+    if tgt_parse_error:
+        return {
+            "success": False,
+            "error": f"Extraction would break target file syntax: {tgt_parse_error}",
+            "hint": "The extracted block may be incomplete or need imports/context in the target.",
+        }
+
+    # Write target
+    tgt_abs.parent.mkdir(parents=True, exist_ok=True)
+    _write_lines(tgt_abs, new_tgt_lines, final_newline=True)
+
+    # Remove from source
+    lines_removed = 0
+    if remove_from_source:
+        _write_lines(src_abs, new_src_lines, final_newline=_file_ends_with_newline(src_abs) if new_src_lines else True)
+        lines_removed = len(block)
+
+    src_canonical = _canonical_relative_path(project_root, src_abs)
+    tgt_canonical = _canonical_relative_path(project_root, tgt_abs)
+
+    return {
+        "success": True,
+        "source": src_canonical,
+        "target": tgt_canonical,
+        "extracted": len(block),
+        "removed": lines_removed,
+        "position": pos,
+    }

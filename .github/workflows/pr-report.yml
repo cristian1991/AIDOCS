@@ -1,0 +1,44 @@
+name: PR Report
+
+on:
+  workflow_run:
+    workflows: ["PR CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  comment-summary:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment with public CI status
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const prs = context.payload.workflow_run.pull_requests || [];
+            if (!prs.length) {
+              core.info('No pull request associated with workflow_run.');
+              return;
+            }
+            const pr = prs[0];
+            const conclusion = context.payload.workflow_run.conclusion || 'unknown';
+            const runUrl = context.payload.workflow_run.html_url;
+            const body = [
+              'AIDOCS public CI completed.',
+              '',
+              `- Conclusion: ${conclusion}`,
+              '- Scope: unprivileged public checks only',
+              '- Private tests were not executed or exposed in this workflow.',
+              '- Maintainer-triggered private validation is still required where applicable.',
+              '',
+              `[View workflow run](${runUrl})`,
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body,
+            });

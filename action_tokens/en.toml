@@ -1,0 +1,199 @@
+# AIDOCS Action Tokens — English
+# User-facing token lists for action classification, intent guard, skill triggers, and memory routing.
+
+# ── Action classification ──
+
+project_update = ["update project", "fix drift", "sync project", "refresh aidocs", "run project update"]
+archive = ["archive", "patch notes", "changelog"]
+write_memory = ["remember", "persist this", "save this rule", "capture this", "add to memory", "save to memory"]
+git_commit_and_push = ["commit and push"]
+git_status_check = ["check git status", "verify git status"]
+github_workflow_check = ["check github actions", "check github workflow", "check github workflow status", "check workflow status", "check actions status", "check ci status"]
+deploy_health_check = ["check deploy status", "check deployment status", "check deployment health", "check deploy health", "check vps status", "check vps deploy status"]
+git_push = ["push"]
+git_pull = ["pull", "fetch", "sync", "update from"]
+git_commit = ["commit"]
+code_bundle = ["get context", "retrieve context", "code bundle", "session bundle", "get code for"]
+read_error = ["error", "stack trace", "traceback", "exception", "crash", "failed"]
+edit = ["edit", "fix", "change", "update", "modify", "replace", "rename", "refactor", "clean", "improve", "add", "remove", "delete", "move", "create", "build a", "implement", "write", "set", "configure", "adjust", "patch", "correct", "convert", "migrate", "restructure", "redesign", "rewrite", "rework", "optimize", "simplify"]
+trace = ["trace", "where does", "why does", "find usage", "find references", "how does", "who calls", "what uses"]
+understand = ["understand", "explain", "inspect", "analyze", "analyse", "look into", "investigate", "show me", "what is", "why", "what's"]
+
+# ── Intent guard tokens ──
+# Used by intent_guard to verify agent actions match user intent.
+
+__intent_guard_write = ["create", "add", "generate", "scaffold", "new", "init", "setup", "build", "implement", "write", "make", "fix", "update"]
+__intent_guard_bash = ["run", "execute", "test", "build", "compile", "install", "start", "stop", "restart", "deploy", "lint", "format", "check", "npm", "dotnet", "pip", "cargo", "make", "docker"]
+__intent_guard_destructive = ["force push", "reset hard", "delete branch", "drop table", "rm -rf", "clean", "purge", "wipe", "destroy", "nuke"]
+__plan_validation_vague_patterns = ["do the thing", "implement stuff", "fix it", "handle it", "work on it", "make it better"]
+
+# ── Domain hints ──
+# Enrich the action classification with domain-specific tool recommendations.
+# These don't change the action_kind — they add `domain_hints` to the result.
+
+[__domain_hint_css]
+tokens = ["css", "style", "layout", "margin", "padding", "color", "font", "border", "flexbox", "grid", "responsive", "breakpoint", "media query", "tailwind", "scss", "sass", "theme", "dark mode", "animation", "transition", "z-index", "overflow", "position", "display", "alignment", "centered", "spacing", "width", "height"]
+tools = "code_trace(class, mode=\"css_class\"), code_investigate(concept), code_find(query, mode=\"frontend_symbols\")"
+
+[__domain_hint_ui]
+tokens = ["button", "modal", "dialog", "form", "input", "dropdown", "menu", "navbar", "sidebar", "header", "footer", "card", "table", "list", "tab", "tooltip", "toast", "notification", "icon", "badge", "avatar", "checkbox", "radio", "toggle", "slider", "progress", "spinner", "skeleton", "popover", "drawer", "accordion", "breadcrumb", "pagination"]
+tools = "code_trace(class, mode=\"css_class\"), code_find(query, mode=\"frontend_symbols\"), code_trace(component, mode=\"component_tree\")"
+
+[__domain_hint_db]
+tokens = ["database", "query", "table", "column", "row", "migration", "schema", "entity", "model", "relation", "foreign key", "index", "sql", "join", "select", "insert", "where", "prisma", "orm", "repository", "seed", "stored procedure"]
+tools = "schema_query(entity, mode=\"entity\"), schema_query(trace, mode=\"trace_path\"), code_find(query, mode=\"data_structures\")"
+
+[__domain_hint_api]
+tokens = ["endpoint", "route", "controller", "request", "response", "status code", "401", "403", "404", "500", "middleware", "authentication", "authorization", "cors", "header", "payload", "body", "rest", "graphql", "websocket", "api"]
+tools = "code_find(query, mode=\"routes\"), code_find(query, mode=\"api_consumers\"), code_trace(endpoint, mode=\"api_to_ui\")"
+
+[__domain_hint_duplication]
+tokens = ["duplicate", "duplicated", "copy paste", "repeated", "redundant", "same code", "similar code", "extract", "deduplicate", "dry", "shared", "common", "reuse"]
+tools = "code_find(query, mode=\"duplicates\"), code_suggest_extractions, code_find_stale_references"
+
+[__domain_hint_refactor]
+tokens = ["extract", "split", "move to", "pull out", "separate", "decompose", "modularize", "decouple", "inline", "consolidate", "merge into", "dead code", "unused", "stale"]
+tools = "code_find_dead_code, code_find_stale_references, code_suggest_extractions, code_refactor_extract"
+
+[__domain_hint_test]
+tokens = ["test", "tests", "spec", "coverage", "assertion", "mock", "fixture", "pytest", "jest", "vitest", "unit test", "integration test", "e2e", "snapshot", "expect"]
+tools = "code_find(query, mode=\"factories\"), code_find(query, mode=\"symbols\", include_tests=true)"
+
+[__domain_hint_perf]
+tokens = ["performance", "slow", "optimize", "cache", "lazy", "debounce", "throttle", "bottleneck", "memory leak", "n+1", "batch", "bulk", "index"]
+tools = "code_find(query, mode=\"hotspots\"), code_find(query, mode=\"query_hotspots\"), code_trace(query, mode=\"field_flow\")"
+
+# ── Memory routing tokens ──
+# Used by memory_capture to infer target file when target_hint is omitted.
+# Each key maps to a .MEMORY/ file path relative to the rules/ or domains/ folder.
+
+[memory_routing.communication]
+target = "rules/communication.md"
+tokens = ["terse", "concise", "verbose", "summary", "tone", "style", "response", "communication", "language", "format", "brevity", "detailed"]
+
+[memory_routing.coding_standards]
+target = "rules/coding-standards.md"
+tokens = ["code", "naming", "pattern", "refactor", "test", "lint", "format", "typing", "import", "convention", "standard", "style guide", "architecture"]
+
+[memory_routing.security]
+target = "rules/security.md"
+tokens = ["security", "auth", "permission", "credential", "secret", "token", "encrypt", "password", "access control", "role", "policy"]
+
+[memory_routing.design]
+target = "rules/design.md"
+tokens = ["ui", "color", "theme", "design", "layout", "css", "tailwind", "font", "icon", "visual", "responsive", "component"]
+
+[memory_routing.workflow]
+target = "rules/workflow-rules.md"
+tokens = ["after", "before", "when", "once", "on completion", "always", "never", "do not", "don't", "should", "must", "commit", "push", "git", "backup", "workflow", "deploy", "ci", "session", "plan", "task", "pipeline", "release"]
+
+# ── Skill triggers ──
+
+[__skill_trigger_brainstorming]
+intent = ["brainstorming", "creative", "creative-task", "ideation", "design", "architecture", "approach", "ambiguous"]
+workflow = ["design", "discovery"]
+
+[__skill_trigger_systematic_debugging]
+intent = ["debugging", "debug", "bug", "regression", "read-error"]
+workflow = ["read-error", "debugging", "investigate"]
+
+[__skill_trigger_writing_plans]
+intent = ["planning", "plan", "roadmap", "spec"]
+workflow = ["planning", "design", "discovery"]
+
+[__skill_trigger_verification_before_completion]
+intent = ["verification", "verify", "completion", "verification-before-completion"]
+workflow = ["verification", "completion", "release"]
+
+[__skill_trigger_deep_retrieval]
+intent = ["deep-retrieval", "retrieval", "signature", "signatures", "constructor", "constructors", "enum", "service-api", "api", "trace"]
+workflow = ["inspect", "investigate", "trace"]
+
+[__skill_trigger_test_driven_validation]
+intent = ["test-driven-validation", "test", "tests", "testing", "validation", "regression"]
+workflow = ["verification", "testing"]
+
+# ── Tool discovery ──
+# Maps user intent keywords to recommended tools.
+# When the user's prompt contains these keywords, the agent should prefer these tools.
+# Format: [__tool_discovery_<name>]  tokens = [...]  tools = [tool1, tool2, ...]
+
+[__tool_discovery_fix_and_debug]
+tokens = ["fix", "repair", "bugged", "broken", "not working", "crash", "fails", "error", "debug", "diagnose", "wrong", "incorrect"]
+tools = ["code_investigate", "code_trace", "code_find", "code_get_lines", "code_edit_lines", "code_str_replace", "code_test_project"]
+
+[__tool_discovery_deslopify]
+tokens = ["clean", "deslop", "deslopify", "refactor", "extract", "deduplicate", "dead code", "unused", "stale", "split", "decompose", "consolidate"]
+tools = ["code_find_dead_code", "code_find_stale_references", "code_suggest_extractions", "code_refactor_extract", "code_find(mode=duplicates)", "code_find(mode=hotspots)"]
+
+[__tool_discovery_understand]
+tokens = ["understand", "explain", "what is", "how does", "show me", "architecture", "overview", "structure", "navigate"]
+tools = ["code_investigate", "code_bundle", "code_find", "code_trace", "code_get_dependencies"]
+
+[__tool_discovery_search]
+tokens = ["find", "search", "where", "locate", "grep", "look for", "which file"]
+tools = ["code_find", "code_search", "code_text_search", "code_investigate"]
+
+[__tool_discovery_edit]
+tokens = ["edit", "change", "modify", "replace", "update", "rename", "add", "insert", "remove", "delete"]
+tools = ["code_edit_lines", "code_str_replace", "code_batch_str_replace", "code_insert_lines", "code_create_file"]
+
+[__tool_discovery_build_and_test]
+tokens = ["build", "compile", "test", "run tests", "check", "lint", "verify", "validate"]
+tools = ["code_build_project", "code_test_project", "code_run_command"]
+
+[__tool_discovery_trace_relationships]
+tokens = ["trace", "flow", "who calls", "what uses", "references", "dependencies", "imports", "field flow", "service usage"]
+tools = ["code_trace", "code_find(mode=references)", "code_get_dependencies"]
+
+[__tool_discovery_git_operations]
+tokens = ["commit", "push", "pull", "branch", "merge", "diff", "status", "log", "stash", "rebase"]
+tools = ["git_diag", "git_fork_status", "git_merge_plan", "code_run_command"]
+
+[__tool_discovery_session_management]
+tokens = ["session", "handoff", "journal", "resume", "switch session", "create session"]
+tools = ["session_list", "session_start", "session_create", "session_read", "session_resume_bundle", "session_handoff_get"]
+
+[__tool_discovery_planning]
+tokens = ["plan", "roadmap", "spec", "design", "conductor", "lane", "dispatch", "phase"]
+tools = ["plan_connect", "plan_create_from_spec", "plan_conductor_status", "planning_docs_list", "execution_loop_next"]
+
+[__tool_discovery_memory]
+tokens = ["remember", "save", "note", "record", "persist", "memory", "rule", "standard", "convention"]
+tools = ["memory_capture", "memory_read", "memory_search"]
+
+[__tool_discovery_schema_and_data]
+tokens = ["database", "schema", "table", "column", "entity", "model", "migration", "sql", "query"]
+tools = ["schema_query", "code_find(mode=data_structures)", "code_trace(mode=field_flow)"]
+
+[__tool_discovery_security]
+tokens = ["security", "permission", "gate", "block", "allow", "rbac", "role", "credential", "secret"]
+tools = ["code_investigate", "config_edit_policy_get", "protect_file"]
+
+[__tool_discovery_monitoring]
+tokens = ["metrics", "usage", "tokens", "monitor", "dashboard", "execution", "history", "clear history"]
+tools = ["metrics_snapshot", "metrics_prometheus", "execution_usage_by_identity", "execution_clear_token_usage", "execution_clear_tool_calls"]
+
+[__tool_discovery_rollback]
+tokens = ["undo", "rollback", "revert", "restore", "previous state", "go back"]
+tools = ["edit_history_list", "edit_rollback"]
+
+[__tool_discovery_conductor]
+tokens = ["conductor", "dispatch", "lane", "agent", "worker", "parallel", "multi-agent", "orchestrate"]
+tools = ["plan_conductor_status", "plan_conductor_graph", "execution_loop_next", "plan_dispatch_next", "plan_dispatch_report"]
+
+[__tool_discovery_index_management]
+tokens = ["index", "reindex", "sync", "refresh", "stale index", "rebuild"]
+tools = ["code_index_sync", "schema_index_sync", "project_sync_indexes", "code_index_status"]
+
+[__tool_discovery_settings]
+tokens = ["setting", "config", "configure", "toggle", "enable", "disable", "dev mode", "gate"]
+tools = ["config_edit_policy_get", "dashboard_snapshot"]
+
+[__tool_discovery_mcp_registry]
+tokens = ["mcp", "registry", "install server", "discover tools", "mcp server"]
+tools = ["mcp_registry_search", "mcp_registry_get"]
+
+[__tool_discovery_skill]
+tokens = ["skill", "capability", "provider", "plugin"]
+tools = ["skill_registry_get", "skill_scan", "skill_provider_status_get"]

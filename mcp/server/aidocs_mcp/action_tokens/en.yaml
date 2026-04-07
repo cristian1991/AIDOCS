@@ -1,0 +1,86 @@
+task_begin:
+  - begin task
+  - start task
+  - new task
+
+task_complete:
+  - complete task
+  - finish task
+  - task done
+  - mark complete
+
+task_update:
+  - update task
+  - task progress
+  - task status
+
+project_update:
+  - update project
+  - fix drift
+  - sync project
+  - refresh aidocs
+  - run project update
+
+archive:
+  - archive
+  - patch notes
+  - changelog
+
+write_memory:
+  - remember
+  - persist this
+  - save this rule
+  - capture this
+  - add to memory
+  - save to memory
+
+code_bundle:
+  - get context
+  - retrieve context
+  - code bundle
+  - session bundle
+  - get code for
+
+read_error:
+  - error
+  - stack trace
+  - traceback
+  - exception
+  - crash
+  - failed
+
+edit:
+  - fix
+  - change
+  - edit
+  - update
+  - implement
+  - refactor
+  - rename
+  - add
+  - remove
+  - create
+  - delete
+  - move
+
+trace:
+  - trace
+  - where does
+  - why does
+  - find usage
+  - find references
+  - how does
+  - who calls
+  - what uses
+
+understand:
+  - understand
+  - explain
+  - inspect
+  - analyze
+  - analyse
+  - look into
+  - investigate
+  - show me
+  - what is
+  - what's

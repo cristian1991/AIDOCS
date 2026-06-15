@@ -1,0 +1,693 @@
+/**
+ * SettingsPage — Phase 5 rebuild (2026-05-02).
+ *
+ * Effective-value-first layout. Each setting renders with its
+ * resolved current value front-and-center plus an origin badge
+ * showing which layer (factory/global/project/session) produced it.
+ * Operators see "what's actually in effect" before they see "where
+ * does it live."
+ *
+ * Built-in features:
+ *   - Search: fuzzy text match on key + description.
+ *   - Filter chips: Modified-only, Security-sensitive, Danger zone,
+ *     per-namespace.
+ *   - Per-row expansion: see all four layer values + origin map for
+ *     dict-typed settings.
+ *   - Danger zone: T0 / dashboard_only entries get a red rail and
+ *     require type-the-key confirmation before save.
+ *   - Hot-reload labels: "Live" or "Restart required" per entry.
+ *   - Save batched: dirty rows accumulate, single save flushes all.
+ *
+ * Backend powering this view: runtime_presentation_service.
+ * dashboard_config_entries (Phase 5a) — emits effective_layer,
+ * origin map, dashboard_only, is_t0 per entry.
+ */
+import { useMemo, useState } from "react";
+import type { DashboardConfigEntry } from "./dashboardApi";
+import { asText, buildSettingTooltip } from "./dashboardUtils";
+import type { SettingsPageProps } from "./dashboardTypes";
+import { SettingInput, INHERIT_VALUE } from "./dashboardSettingsComponents";
+import { BashPolicyPanel } from "./BashPolicyPanel";
+
+type FilterId = "modified" | "security" | "danger" | string;
+type Layer = "factory" | "global" | "project" | "session";
+
+const LAYER_LABEL: Record<Layer, string> = {
+  factory: "factory",
+  global: "global",
+  project: "project",
+  session: "session",
+};
+
+const LAYER_RANK: Record<Layer, number> = {
+  factory: 0,
+  global: 1,
+  project: 2,
+  session: 3,
+};
+
+function originLayer(entry: DashboardConfigEntry): Layer | null {
+  if (entry.effective_layer) return entry.effective_layer as Layer;
+  // Fallback: walk origin map and pick highest-priority.
+  let best: Layer | null = null;
+  for (const v of Object.values(entry.origin || {})) {
+    const layer = v as Layer;
+    if (best === null || LAYER_RANK[layer] > LAYER_RANK[best]) best = layer;
+  }
+  return best;
+}
+
+function isDangerEntry(entry: DashboardConfigEntry): boolean {
+  return Boolean(entry.is_t0 || entry.dashboard_only);
+}
+
+function matchesSearch(entry: DashboardConfigEntry, term: string): boolean {
+  if (!term) return true;
+  const t = term.trim().toLowerCase();
+  if (!t) return true;
+  return (
+    entry.path.toLowerCase().includes(t) ||
+    entry.key.toLowerCase().includes(t) ||
+    (entry.description || "").toLowerCase().includes(t) ||
+    entry.section.toLowerCase().includes(t)
+  );
+}
+
+function entryHasOverride(
+  entry: DashboardConfigEntry,
+  scope: string,
+): boolean {
+  if (scope === "global") {
+    const layer = originLayer(entry);
+    return layer === "global" || layer === "project" || layer === "session";
+  }
+  return entry.scope_values?.[scope] !== undefined && entry.scope_values?.[scope] !== null;
+}
+
+export function SettingsPage({
+  settingsScope,
+  setSettingsScope,
+  hasProject,
+  hasSession,
+  configSections,
+  bashPolicy,
+  saveBashCommandState,
+  draftValues,
+  savingSetting,
+  requestConfigSave,
+  requestConfigBatchSave,
+  setDraftValue,
+  devModeEntry,
+  openImportExport,
+}: SettingsPageProps) {
+  const [searchTerm, setSearchTerm] = useState("");
+  const [activeFilters, setActiveFilters] = useState<Set<FilterId>>(new Set());
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const [dangerConfirm, setDangerConfirm] = useState<{
+    path: string;
+    typed: string;
+  } | null>(null);
+
+  const saveScope = settingsScope;
+  const draftKey = (path: string) => `${settingsScope}:${path}`;
+
+  // ── Effective-value resolution ─────────────────────────────────────
+
+  function effectiveValue(entry: DashboardConfigEntry): string {
+    const draft = draftValues[draftKey(entry.path)];
+    if (draft !== undefined && draft !== INHERIT_VALUE) return draft;
+    if (draft === INHERIT_VALUE) {
+      // Walk parent scopes for the inherited value.
+      if (settingsScope === "session") {
+        const proj = entry.scope_values?.["project"];
+        if (proj !== undefined && proj !== null) return asText(proj);
+        const glob = entry.scope_values?.["global"];
+        if (glob !== undefined && glob !== null) return asText(glob);
+      }
+      if (settingsScope === "project") {
+        const glob = entry.scope_values?.["global"];
+        if (glob !== undefined && glob !== null) return asText(glob);
+      }
+      return asText(entry.default);
+    }
+    const raw = entry.scope_values?.[settingsScope];
+    if (raw !== undefined && raw !== null) return asText(raw);
+    if (entry.current_value !== undefined && entry.current_value !== null)
+      return asText(entry.current_value);
+    return asText(entry.default);
+  }
+
+  function isOwn(entry: DashboardConfigEntry): boolean {
+    if (draftValues[draftKey(entry.path)] === INHERIT_VALUE) return false;
+    if (draftValues[draftKey(entry.path)] !== undefined) return true;
+    const raw = entry.scope_values?.[settingsScope];
+    if (raw === undefined || raw === null) return false;
+    return asText(raw) !== asText(entry.default);
+  }
+
+  function inheritedFrom(entry: DashboardConfigEntry): string | null {
+    if (isOwn(entry)) return null;
+    if (settingsScope === "global") return null;
+    if (settingsScope === "session") {
+      if (entry.scope_values?.["project"] != null) return "project";
+      if (entry.scope_values?.["global"] != null) return "global";
+      return "default";
+    }
+    if (settingsScope === "project") {
+      if (entry.scope_values?.["global"] != null) return "global";
+      return "default";
+    }
+    return null;
+  }
+
+  // ── Flatten + filter ───────────────────────────────────────────────
+
+  const allEntries = useMemo(
+    () => configSections.flatMap(({ entries }) => entries),
+    [configSections],
+  );
+
+  const namespaces = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of allEntries) set.add(e.section);
+    return Array.from(set).sort();
+  }, [allEntries]);
+
+  const visibleEntries = useMemo(() => {
+    return allEntries.filter((e) => {
+      if (!matchesSearch(e, searchTerm)) return false;
+      if (activeFilters.has("modified") && !isOwn(e)) return false;
+      if (activeFilters.has("security") && !e.security_sensitive) return false;
+      if (activeFilters.has("danger") && !isDangerEntry(e)) return false;
+      // Namespace filters (any namespace chip means restrict).
+      const nsFilters = Array.from(activeFilters).filter(
+        (f) => f !== "modified" && f !== "security" && f !== "danger",
+      );
+      if (nsFilters.length > 0 && !nsFilters.includes(e.section)) return false;
+      return true;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allEntries, searchTerm, activeFilters, draftValues, settingsScope]);
+
+  // Group filtered entries by section, security/dev sections last.
+  const visibleSections = useMemo(() => {
+    const groups = new Map<string, DashboardConfigEntry[]>();
+    for (const e of visibleEntries) {
+      groups.set(e.section, [...(groups.get(e.section) ?? []), e]);
+    }
+    const dangerSections = new Set(["dev", "security", "rbac", "audit", "policies"]);
+    return Array.from(groups.entries())
+      .sort(([a], [b]) => {
+        const aDanger = dangerSections.has(a) ? 1 : 0;
+        const bDanger = dangerSections.has(b) ? 1 : 0;
+        return aDanger - bDanger || a.localeCompare(b);
+      })
+      .map(([section, entries]) => ({
+        section,
+        entries,
+        isDanger: dangerSections.has(section),
+      }));
+  }, [visibleEntries]);
+
+  // ── Dirty + save ───────────────────────────────────────────────────
+
+  const dirtyEntries = useMemo(() => {
+    return allEntries.filter((e) => {
+      const draft = draftValues[draftKey(e.path)];
+      if (draft === undefined) return false;
+      if (draft === INHERIT_VALUE) {
+        const raw = e.scope_values?.[settingsScope];
+        return raw !== undefined && raw !== null;
+      }
+      const raw = e.scope_values?.[settingsScope];
+      const baseline =
+        raw !== undefined && raw !== null ? asText(raw) : asText(e.default);
+      return draft !== baseline;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allEntries, draftValues, settingsScope]);
+
+  const devDirty =
+    devModeEntry &&
+    draftValues[draftKey(devModeEntry.path)] !== undefined &&
+    draftValues[draftKey(devModeEntry.path)] !==
+      asText(devModeEntry.scope_values?.[saveScope] ?? devModeEntry.default);
+
+  const hasDirty = dirtyEntries.length > 0 || devDirty;
+
+  const dangerDirtyCount = dirtyEntries.filter(isDangerEntry).length;
+
+  function saveAll() {
+    const allDirty = devDirty && devModeEntry ? [...dirtyEntries, devModeEntry] : dirtyEntries;
+    const items = allDirty.map((entry) => ({
+      entry,
+      value: draftValues[draftKey(entry.path)] ?? asText(entry.current_value),
+    }));
+    if (items.length === 1) {
+      requestConfigSave(items[0].entry, saveScope, items[0].value);
+    } else if (items.length > 1) {
+      requestConfigBatchSave(items, saveScope);
+    }
+  }
+
+  function attemptSave() {
+    if (dangerDirtyCount > 0 && !dangerConfirm) {
+      // Trigger danger-zone confirm flow with the first danger entry.
+      const first = dirtyEntries.find(isDangerEntry);
+      if (first) {
+        setDangerConfirm({ path: first.path, typed: "" });
+        return;
+      }
+    }
+    saveAll();
+    setDangerConfirm(null);
+  }
+
+  // ── Filter chip toggle ─────────────────────────────────────────────
+
+  function toggleFilter(id: FilterId) {
+    setActiveFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleExpand(path: string) {
+    setExpandedPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────
+
+  const filterStatLine = (() => {
+    const parts: string[] = [];
+    parts.push(`${visibleEntries.length} of ${allEntries.length} settings`);
+    if (dirtyEntries.length > 0) parts.push(`${dirtyEntries.length} unsaved`);
+    if (dangerDirtyCount > 0) parts.push(`${dangerDirtyCount} in danger zone`);
+    return parts.join(" · ");
+  })();
+
+  return (
+    <section className="page page-config">
+      <div className="page-fixed-header config-header-row">
+        <div className="config-tabs">
+          <button
+            type="button"
+            className={settingsScope === "global" ? "config-tab is-active" : "config-tab"}
+            onClick={() => setSettingsScope("global")}
+          >
+            Global
+          </button>
+          <button
+            type="button"
+            className={settingsScope === "project" ? "config-tab is-active" : "config-tab"}
+            disabled={!hasProject}
+            onClick={() => setSettingsScope("project")}
+          >
+            Project
+          </button>
+          <button
+            type="button"
+            className={settingsScope === "session" ? "config-tab is-active" : "config-tab"}
+            disabled={!hasSession}
+            onClick={() => setSettingsScope("session")}
+          >
+            Session
+          </button>
+        </div>
+        <div className="config-header-actions">
+          <button
+            type="button"
+            className="action-button config-save-button"
+            style={{ whiteSpace: "nowrap" }}
+            onClick={openImportExport}
+          >
+            Import / Export
+          </button>
+          <button
+            type="button"
+            className={
+              "action-button config-save-button" +
+              (dangerDirtyCount > 0 && !dangerConfirm ? " danger-save" : "")
+            }
+            disabled={!hasDirty || !!savingSetting}
+            onClick={attemptSave}
+          >
+            {savingSetting
+              ? "Saving..."
+              : dangerDirtyCount > 0 && !dangerConfirm
+              ? `Confirm Save (${dangerDirtyCount} dangerous)`
+              : "Save"}
+          </button>
+        </div>
+      </div>
+
+      {/* ── Search + filter strip ─────────────────────────────────── */}
+      <div className="settings-control-strip">
+        <input
+          type="search"
+          className="settings-search"
+          placeholder="Search settings — key, namespace, description"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+        />
+        <div className="settings-filter-chips">
+          <button
+            type="button"
+            className={
+              "filter-chip" + (activeFilters.has("modified") ? " is-active" : "")
+            }
+            onClick={() => toggleFilter("modified")}
+            title="Show only settings the operator has overridden at the current scope"
+          >
+            Modified
+          </button>
+          <button
+            type="button"
+            className={
+              "filter-chip" + (activeFilters.has("security") ? " is-active" : "")
+            }
+            onClick={() => toggleFilter("security")}
+            title="Settings flagged security-sensitive — require explicit grant phrase"
+          >
+            Security
+          </button>
+          <button
+            type="button"
+            className={
+              "filter-chip filter-chip-danger" +
+              (activeFilters.has("danger") ? " is-active" : "")
+            }
+            onClick={() => toggleFilter("danger")}
+            title="T0 dashboard-only — agents categorically can't write these"
+          >
+            Danger zone
+          </button>
+          <span className="filter-chip-divider" aria-hidden="true">
+            |
+          </span>
+          {namespaces.map((ns) => (
+            <button
+              key={ns}
+              type="button"
+              className={
+                "filter-chip filter-chip-ns" + (activeFilters.has(ns) ? " is-active" : "")
+              }
+              onClick={() => toggleFilter(ns)}
+            >
+              {ns}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Danger-zone confirm banner ───────────────────────────── */}
+      {dangerConfirm && (
+        <div className="danger-zone-confirm" role="alert">
+          <strong>⚠ Danger zone confirm.</strong> Saving will modify a T0
+          dashboard-only setting. Type the full key{" "}
+          <code>{dangerConfirm.path}</code> to confirm:
+          <input
+            type="text"
+            className="danger-confirm-input"
+            placeholder={dangerConfirm.path}
+            value={dangerConfirm.typed}
+            onChange={(e) =>
+              setDangerConfirm({ ...dangerConfirm, typed: e.target.value })
+            }
+          />
+          <button
+            type="button"
+            className="action-button danger-save"
+            disabled={dangerConfirm.typed.trim() !== dangerConfirm.path}
+            onClick={() => {
+              saveAll();
+              setDangerConfirm(null);
+            }}
+          >
+            Confirm save
+          </button>
+          <button
+            type="button"
+            className="action-button"
+            onClick={() => setDangerConfirm(null)}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* ── Settings list ─────────────────────────────────────────── */}
+      <div className="page-scroll-region">
+        {/* Bash policy 3-state panel — collapsible, always visible */}
+        {bashPolicy && saveBashCommandState && (
+          <BashPolicyPanel
+            policy={bashPolicy}
+            activeLayer={settingsScope as "global" | "project" | "session"}
+            hasProject={hasProject}
+            hasSession={hasSession}
+            saving={savingSetting}
+            onSetCommandState={saveBashCommandState}
+          />
+        )}
+        <div className="settings-flat-list">
+          {visibleSections.length === 0 ? (
+            <div className="settings-empty">
+              No settings match the current filters.
+            </div>
+          ) : (
+            visibleSections.map(({ section, entries, isDanger }, sectionIdx) => {
+              const isLastSection = sectionIdx === visibleSections.length - 1;
+              return (
+                <div key={section}>
+                  <div
+                    className={
+                      isDanger
+                        ? "settings-section-header settings-section-danger"
+                        : "settings-section-header"
+                    }
+                  >
+                    {isDanger
+                      ? `Danger · ${section.replace(/_/g, " ")}`
+                      : section.replace(/_/g, " ")}
+                  </div>
+                  {entries.map((entry, entryIdx) => {
+                    const currentValue = effectiveValue(entry);
+                    const valueHelp = buildSettingTooltip(entry, currentValue);
+                    const hasOptions = !!(
+                      entry.allowed_values?.length || entry.type === "boolean"
+                    );
+                    const isNearBottom =
+                      isLastSection && entryIdx >= entries.length - 3;
+                    const inherited = inheritedFrom(entry);
+                    const own = isOwn(entry);
+                    const danger = isDangerEntry(entry);
+                    const layer = originLayer(entry);
+                    const expanded = expandedPaths.has(entry.path);
+
+                    const rowClasses = [
+                      "setting-row",
+                      danger ? "setting-row-danger" : null,
+                      own ? "setting-row-own" : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" ");
+
+                    return (
+                      <div
+                        key={`${settingsScope}:${entry.path}`}
+                        className={rowClasses}
+                      >
+                        <div className="setting-copy">
+                          <div className="setting-title-row">
+                            <strong className={danger ? "warning-text" : ""}>
+                              {entry.key}
+                            </strong>
+                            {/* Namespace tag */}
+                            <span className="setting-namespace-chip">
+                              {entry.section}
+                            </span>
+                            {/* Origin badge */}
+                            {layer && (
+                              <span
+                                className={`origin-badge origin-${layer}`}
+                                title={`Effective value comes from the ${LAYER_LABEL[layer]} layer`}
+                              >
+                                from {LAYER_LABEL[layer]}
+                              </span>
+                            )}
+                            {/* Hot-reload label */}
+                            {entry.requires_restart ? (
+                              <span
+                                className="reload-badge reload-restart"
+                                title="Setting takes effect after MCP server restart"
+                              >
+                                ⟳ restart
+                              </span>
+                            ) : (
+                              <span
+                                className="reload-badge reload-live"
+                                title="Setting takes effect immediately on save"
+                              >
+                                ● live
+                              </span>
+                            )}
+                            {/* Danger-zone marker */}
+                            {danger && (
+                              <span
+                                className="danger-pill"
+                                title="T0 — dashboard-only; agents categorically can't write this"
+                              >
+                                T0
+                              </span>
+                            )}
+                            {/* Help icon */}
+                            {hasOptions ? (
+                              <span
+                                className="setting-info"
+                                title={valueHelp}
+                                aria-label={valueHelp}
+                              >
+                                ?
+                              </span>
+                            ) : null}
+                            {/* Inheritance indicator */}
+                            {inherited ? (
+                              <span
+                                className="setting-inherited"
+                                title={`Inherited from ${inherited}`}
+                              >
+                                from {inherited}
+                              </span>
+                            ) : null}
+                            {own && settingsScope !== "global" ? (
+                              <span
+                                className="setting-own"
+                                title="This scope has its own override"
+                              >
+                                override
+                              </span>
+                            ) : null}
+                            {/* Expand toggle */}
+                            <button
+                              type="button"
+                              className="setting-expand-toggle"
+                              onClick={() => toggleExpand(entry.path)}
+                              title={expanded ? "Collapse layer detail" : "Expand to see all four layer values"}
+                            >
+                              {expanded ? "▾" : "▸"}
+                            </button>
+                          </div>
+                          <p className={danger ? "warning-text-soft" : ""}>
+                            {entry.description}
+                          </p>
+                          {/* Layer detail panel */}
+                          {expanded && (
+                            <div className="layer-detail">
+                              <div className="layer-detail-header">
+                                Layer cascade
+                              </div>
+                              <table className="layer-detail-table">
+                                <tbody>
+                                  <tr>
+                                    <th>factory</th>
+                                    <td>{asText(entry.default)}</td>
+                                  </tr>
+                                  {(["global", "project", "session"] as const).map(
+                                    (sc) => {
+                                      const v = entry.scope_values?.[sc];
+                                      return (
+                                        <tr
+                                          key={sc}
+                                          className={
+                                            entry.allowed_scopes.includes(sc)
+                                              ? ""
+                                              : "layer-disallowed"
+                                          }
+                                        >
+                                          <th>{sc}</th>
+                                          <td>
+                                            {v === undefined || v === null ? (
+                                              <span className="layer-empty">—</span>
+                                            ) : (
+                                              asText(v)
+                                            )}
+                                            {entry.allowed_scopes.includes(sc)
+                                              ? null
+                                              : (
+                                                <span className="layer-note" title="Setting cannot be written at this scope">
+                                                  not allowed at {sc}
+                                                </span>
+                                              )}
+                                          </td>
+                                        </tr>
+                                      );
+                                    },
+                                  )}
+                                </tbody>
+                              </table>
+                              {/* Origin map preview for dict-typed values */}
+                              {entry.type === "string_list" || typeof entry.current_value === "object" ? (
+                                <details className="origin-map-details">
+                                  <summary>
+                                    Per-leaf origin (
+                                    {Object.keys(entry.origin || {}).length} leaves)
+                                  </summary>
+                                  <table className="origin-map-table">
+                                    <tbody>
+                                      {Object.entries(entry.origin || {})
+                                        .sort(([a], [b]) => a.localeCompare(b))
+                                        .map(([leafPath, leafLayer]) => (
+                                          <tr key={leafPath}>
+                                            <td className="leaf-path">{leafPath}</td>
+                                            <td>
+                                              <span
+                                                className={`origin-badge origin-${leafLayer}`}
+                                              >
+                                                {leafLayer}
+                                              </span>
+                                            </td>
+                                          </tr>
+                                        ))}
+                                    </tbody>
+                                  </table>
+                                </details>
+                              ) : null}
+                            </div>
+                          )}
+                        </div>
+                        <SettingInput
+                          entry={entry}
+                          currentValue={currentValue}
+                          savingSetting={savingSetting}
+                          onChange={(value) =>
+                            setDraftValue(draftKey(entry.path), value)
+                          }
+                          openUpward={isNearBottom}
+                          inheritLabel={
+                            settingsScope === "session"
+                              ? "project"
+                              : settingsScope === "project"
+                              ? "global"
+                              : null
+                          }
+                          isInherited={!own && settingsScope !== "global"}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}

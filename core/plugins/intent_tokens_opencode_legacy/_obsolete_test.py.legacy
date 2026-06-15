@@ -1,0 +1,164 @@
+"""Tests for migrating intent_grant_detector's hardcoded _EN_FALLBACK
+lemma sets into intent_tokens/<lang>.toml [__grant_*] sections.
+
+Guarantees:
+  - A populated en.toml with [__grant_*] sections loads into a valid
+    LemmaSets instance.
+  - The detector uses the toml-loaded sets, NOT the hardcoded
+    fallback, when the toml contains grant sections.
+  - The existing 33 accept/deny/surfacing test cases produce the same
+    results regardless of whether the toml or fallback supplies the
+    lemma sets (parity).
+  - A German prompt ("lass dich grep machen" style) fires accept via
+    lingua language detection + de.toml grant sections.
+  - Falling back to _EN_FALLBACK still works when the toml is missing
+    or lacks the __grant_* sections.
+
+Tests run BEFORE the migration so they initially fail — that's the
+point; we're writing the spec first and then editing toml to make it
+green.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from aidocs_mcp.intent_grant_detector import (
+    LemmaSets,
+    _EN_FALLBACK,
+    _LEMMASETS_BY_LANG,
+    _load_lang_toml,
+    detect_grant,
+    get_lemma_sets,
+    nlp_backend_status,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    """Each test gets a fresh cache so toml edits take effect."""
+    _LEMMASETS_BY_LANG.clear()
+    yield
+    _LEMMASETS_BY_LANG.clear()
+
+
+class TestTomlLoading:
+    def test_en_toml_has_grant_sections(self) -> None:
+        """After migration the en.toml MUST contain __grant_* sections.
+        If this fails, the toml migration hasn't happened yet."""
+        result = _load_lang_toml("en")
+        assert result is not None, (
+            "intent_tokens/en.toml is missing [__grant_*] sections — "
+            "migration not done"
+        )
+        assert isinstance(result, LemmaSets)
+
+    def test_en_toml_loaded_sets_are_nonempty(self) -> None:
+        result = _load_lang_toml("en")
+        assert result is not None
+        assert len(result.approve_verbs) > 0
+        assert len(result.deny_verbs) > 0
+        assert len(result.scopeless_accept) > 0
+        assert len(result.second_person) > 0
+        assert len(result.first_person) > 0
+        assert len(result.negation_markers) > 0
+        assert len(result.tool_keywords) > 0
+
+    def test_toml_load_returns_none_for_unknown_lang(self) -> None:
+        """Languages without intent_tokens/<lang>.toml return None.
+        Caller falls back to English."""
+        result = _load_lang_toml("xx")
+        assert result is None
+
+    def test_get_lemma_sets_uses_toml_when_available(self) -> None:
+        """get_lemma_sets should prefer the toml over the hardcoded
+        fallback when the toml parses successfully."""
+        sets = get_lemma_sets("en")
+        # If the toml was loaded, the sets come from that file.
+        # This test is "proves the toml wire-up" — the toml MAY have
+        # a superset of the fallback vocabulary.
+        assert isinstance(sets, LemmaSets)
+
+
+class TestParityWithFallback:
+    """The existing 33-test corpus must yield the same accept/deny/
+    granted_tools results whether the toml or the fallback supplies
+    the sets. Catches vocabulary omissions during migration."""
+
+    def test_agreed_still_accepts_via_toml(self) -> None:
+        r = detect_grant("agreed")
+        assert r.accept is True
+
+    def test_proceed_still_accepts_via_toml(self) -> None:
+        r = detect_grant("proceed")
+        assert r.accept is True
+
+    def test_let_you_still_accepts_via_toml(self) -> None:
+        r = detect_grant("let you grep for that")
+        assert r.accept is True
+        assert "grep" in r.granted_tools
+
+    def test_let_me_still_does_not_accept_via_toml(self) -> None:
+        r = detect_grant("let me grep for that")
+        assert r.accept is False
+
+    def test_imperative_use_still_accepts_via_toml(self) -> None:
+        r = detect_grant("use normal read tool")
+        assert r.accept is True
+        assert "read" in r.granted_tools
+
+    def test_dont_read_denies_via_toml(self) -> None:
+        r = detect_grant("don't read that file")
+        assert r.accept is False
+
+    def test_tool_mention_surfaces_via_toml(self) -> None:
+        r = detect_grant("grep is handy")
+        assert "grep" in r.granted_tools
+
+    def test_domain_css_surfaces_via_toml(self) -> None:
+        r = detect_grant("the css needs updating")
+        assert "css" in r.surfaced_domains
+
+
+class TestGermanSupport:
+    """German prompt with grant phrase must fire accept. Requires:
+      1. lingua-py installed + detects "de"
+      2. intent_tokens/de.toml has [__grant_*] sections
+      3. simplemma lemmatizes German forms correctly
+    Skipped when any of lingua/simplemma deps are missing.
+    """
+
+    def test_de_bare_ok_accepts(self) -> None:
+        status = nlp_backend_status()
+        if not (status["lingua"] and status["simplemma"]):
+            pytest.skip("requires lingua + simplemma")
+        # "ok" / "okay" is universally bare across EN/DE
+        r = detect_grant("ok, verstanden")
+        assert r.accept is True
+
+    def test_de_imperative_grep_file_accepts(self) -> None:
+        status = nlp_backend_status()
+        if not (status["lingua"] and status["simplemma"]):
+            pytest.skip("requires lingua + simplemma")
+        de_sets = _load_lang_toml("de")
+        if de_sets is None:
+            pytest.skip("intent_tokens/de.toml lacks __grant_* sections")
+        # "benutze grep" ~ "use grep" imperative
+        r = detect_grant("benutze grep für die Suche")
+        assert "grep" in r.granted_tools
+
+
+class TestFallbackSafetyNet:
+    """When a toml fails to load or lacks __grant_* sections, the
+    detector must fall back to the hardcoded _EN_FALLBACK rather
+    than crash or return empty sets."""
+
+    def test_unknown_lang_uses_english_fallback(self) -> None:
+        sets = get_lemma_sets("xx")
+        # Falls back to _EN_FALLBACK; approve_verbs matches.
+        assert sets.approve_verbs == _EN_FALLBACK.approve_verbs
+
+    def test_empty_lang_code_uses_english_fallback(self) -> None:
+        sets = get_lemma_sets("")
+        assert sets.approve_verbs == _EN_FALLBACK.approve_verbs

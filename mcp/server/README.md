@@ -1,0 +1,100 @@
+# AIDOCS MCP Server
+
+This folder is the implementation scaffold for the optional AIDOCS MCP layer.
+
+Goals
+- Enforce the file-backed AIDOCS lifecycle
+- Keep `core/` and project-local `/.MEMORY/**` as canonical truth
+- Add structured session/memory operations without creating a second memory store
+- Keep code and memory indexes project-wide; use sessions to filter and rank retrieval results.
+- Infer useful file roles (page, layout, component, provider, service, controller, etc.) to improve retrieval quality.
+
+Initial method surface
+- `aidocs_orchestrate`
+- `aidocs_mode_get`
+- `aidocs_mode_set`
+- `aidocs_mode_clear`
+- `aidocs_classify_prompt`
+- `aidocs_route_prompt`
+- `aidocs_handle_prompt`
+- `project_bootstrap_or_resume`
+- `ai_session` (modes: list, create, connect, claim, claim_status, release, update, resume, skills_get, skills_set)
+- `ai_task` (modes: begin, update, complete, status)
+- `runtime_preflight`
+- `memory_read`
+- `memory_capture`
+- `project_check`
+- `project_check_legacy`
+- `project_fix`
+- `project_inspect_legacy`
+- `project_sync_indexes`
+- `project_status`
+- `project_status_model_get`
+- `project_status_evaluate`
+- `project_status_area_bundle`
+- `legacy_read_runtime`
+- `legacy_build_session_proposal`
+- `related_projects_list`
+- `related_project_get`
+- `related_project_code_search`
+- `related_project_symbol_bundle`
+- `related_project_subsystem_bundle`
+- `related_project_compare_concept`
+- `index_sync`
+- `index_status`
+- `memory_search`
+- `schema_index_sync`
+- `schema_index_status`
+- `schema_find_entities`
+- `schema_get_entity`
+- `schema_find_field`
+- `schema_trace_entity_flow`
+- `schema_trace_relationship_path`
+- `ai_index_sync`
+- `ai_index_status`
+- `ai_search`
+- `ai_get_dependencies`
+- `ai_find`
+- `ai_bundle`
+- `code_search_symbols`
+- `code_find_references`
+- `ai_trace`
+- `ai_trace`
+- `ai_trace`
+- `ai_trace`
+- `ai_trace`
+- `ai_find`
+- `ai_find`
+- `ai_find`
+- `ai_find`
+- `ai_find`
+- `ai_find`
+- `ai_find`
+- `ai_find`
+- `ai_find`
+- `ai_find`
+- `ai_find`
+- `ai_trace`
+- `ai_find`
+- `ai_get_outline`
+- `ai_find`
+- `ai_find`
+- `ai_find`
+- `ai_find`
+- `ai_get_symbol_snippet`
+- `ai_bundle`
+- `ai_bundle`
+- `ai_bundle`
+- `ai_bundle`
+- `ai_bundle`
+- `ai_bundle`
+- `ai_bundle`
+- `ai_trace`
+- `ai_bundle`
+- `ai_bundle`
+- `ai_bundle`
+- `ai_bundle`
+
+Implementation rule
+- The server reads and writes the existing Markdown files directly.
+- Any future SQLite index is derived only.

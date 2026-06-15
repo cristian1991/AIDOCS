@@ -1,0 +1,6 @@
+name = "resx"
+extensions = [".resx"]
+extractor_family = "resx_rich"
+
+# All resx files are resources
+role_hint = "resource"

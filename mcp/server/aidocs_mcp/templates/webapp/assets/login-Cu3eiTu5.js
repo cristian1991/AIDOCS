@@ -1,0 +1,1 @@
+import{n as a,p as n,m as i,j as e,R as c,L as r}from"./styles-DX64SWzd.js";async function s(){const o=document.getElementById("root");if(a())try{if(await n()){window.location.replace("/");return}}catch(t){console.error("CodeNexus sign-in failed:",t)}i.createRoot(o).render(e.jsx(c.StrictMode,{children:e.jsx(r,{})}))}s();

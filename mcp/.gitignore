@@ -1,0 +1,18 @@
+# AIDOCS local MCP config (contains absolute paths)
+.mcp.json
+
+# Build / cache / runtime trash — never source, never shipped. Keep the tree
+# clean so the deploy gate's committed-tree scan stays lean + deterministic
+# (these were the bloat behind the 2026-06-01 trufflehog scan-abort).
+.ruff_cache/
+.basedpyright/
+.pytest_cache/
+.pytest-tmp/
+.pytest-aidocs-global-config/
+.pytest-out-*.log
+dist/
+__pycache__/
+*.pyc
+# transient license-patch scratch (applied; not part of the package)
+PYPROJECT_LICENSE_SNIPPET.toml
+pyproject.toml.license.patch

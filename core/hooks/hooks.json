@@ -1,0 +1,66 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -m aidocs_mcp.claude_hook",
+            "timeout": 30,
+            "statusMessage": "AIDOCS startup routing"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -m aidocs_mcp.claude_hook",
+            "timeout": 30,
+            "statusMessage": "AIDOCS prompt routing"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|Glob|Grep|Bash|MultiEdit|Patch|ApplyPatch|Search|ListDir|Task|NotebookEdit|ScheduleWakeup|PowerShell|pwsh|Pwsh|cmd|wsl|Monitor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -m aidocs_mcp.claude_hook",
+            "timeout": 30,
+            "statusMessage": "AIDOCS tool guardrails"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "TodoWrite",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -m aidocs_mcp.claude_hook",
+            "timeout": 15,
+            "statusMessage": "AIDOCS todo auto-bridge"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -m aidocs_mcp.claude_hook",
+            "timeout": 15,
+            "statusMessage": "AIDOCS context reset"
+          }
+        ]
+      }
+    ]
+  }
+}

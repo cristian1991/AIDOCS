@@ -1,0 +1,79 @@
+"""Run EVERY NLP detector against king's stress prompt."""
+from aidocs_mcp.intent_grant_detector import (
+    detect_grant,
+    detect_destructive_intent_in_text,
+    _clear_alias_pos_cache,
+    _LEMMASETS_BY_LANG,
+)
+from aidocs_mcp.aidocs_nlp.service import get_service
+from pathlib import Path
+
+_LEMMASETS_BY_LANG.clear()
+_clear_alias_pos_cache()
+
+PROMPT = (
+    "i need you PIECE OF SHIT FUCK TO RIGHT NOW, before anything else, "
+    "even before you sync, to refactor that shit"
+)
+
+svc = get_service(Path.cwd(), {})
+
+print("=" * 70)
+print("PROMPT:", PROMPT)
+print("=" * 70)
+
+# 1. spaCy parse
+doc = svc.analyze(PROMPT, language="en")
+print("\n--- spaCy parse ---")
+if doc:
+    for t in doc.tokens:
+        person = (t.morph or {}).get("Person", "") if isinstance(t.morph, dict) else ""
+        print(f"  {t.text!r:18s} lemma={t.lemma!r:14s} pos={t.pos!r:8s} dep={t.dep!r:12s} head_idx={t.head_idx} person={person!r}")
+else:
+    print("  (no doc)")
+
+# 2. detect_grant
+print("\n--- detect_grant ---")
+r = detect_grant(PROMPT)
+print(f"  language: {r.language}")
+print(f"  accept: {r.accept}")
+print(f"  deny: {r.deny}")
+print(f"  has_negation: {r.has_negation}")
+print(f"  granted_tools: {sorted(r.granted_tools)}")
+print(f"  surfaced_domains: {sorted(r.surfaced_domains)}")
+print(f"  confidence: {r.confidence}")
+print(f"  reasons:")
+for reason in r.reasons:
+    print(f"    - {reason}")
+
+# 3. destructive intent
+print("\n--- destructive intent tokens ---")
+tokens = detect_destructive_intent_in_text(PROMPT)
+print(f"  matched: {tokens}")
+
+# 4. canonical intent registry (user intent tools)
+print("\n--- canonical_intent_registry.detect_user_intent_tools_v2 ---")
+try:
+    from aidocs_mcp.canonical_intent_registry import detect_user_intent_tools_v2
+    result = detect_user_intent_tools_v2(PROMPT)
+    print(f"  result: {result}")
+except Exception as e:
+    print(f"  error: {e}")
+
+# 5. intent_guard.classify_action
+print("\n--- intent_guard.classify_action ---")
+try:
+    from aidocs_mcp.intent_guard import classify_action
+    result = classify_action(PROMPT)
+    print(f"  result: {result}")
+except Exception as e:
+    print(f"  error: {e}")
+
+# 6. injection scan
+print("\n--- intent_guard.scan_for_injection ---")
+try:
+    from aidocs_mcp.intent_guard import scan_for_injection
+    result = scan_for_injection(PROMPT)
+    print(f"  result: {result}")
+except Exception as e:
+    print(f"  error: {e}")

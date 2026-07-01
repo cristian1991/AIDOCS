@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/assets/cn-logo-Cr4XFikc.svg" />
+    <title>Sign in — CodeNexus AIDOCS</title>
+    <script type="module" crossorigin src="/assets/login-Cu3eiTu5.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/styles-DX64SWzd.js">
+    <link rel="stylesheet" crossorigin href="/assets/styles-B_1RqD_g.css">
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Standalone sign-in entry. Served by the gate to UNAUTHENTICATED visitors instead
+         of the dashboard shell, so the dashboard bundle is never handed to anon users.
+         Reuses the same PKCE flow (webAuth) + LoginPage; on the OAuth callback it does the
+         token exchange then redirects to "/" (now cookie-authed -> the gate serves the SPA). -->
+  </body>
+</html>

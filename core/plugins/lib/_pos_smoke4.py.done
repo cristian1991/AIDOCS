@@ -1,0 +1,19 @@
+from aidocs_mcp.intent_grant_detector import detect_grant, _clear_alias_pos_cache
+_clear_alias_pos_cache()
+cases = [
+    ("after the commit, push to main", "git_ops (push action)"),
+    ("let me edit this", "[] (first-person)"),
+    ("i want to edit this file", "[] (first-person)"),
+    ("i will commit the changes", "[] (first-person)"),
+    ("i want you to refactor the page", "ai_slop (you=agent)"),
+    ("please edit the config", "ai_replace + edit"),
+    ("we should refactor this", "[] (first-person plural)"),
+    ("the edit was approved", "ai_review only"),
+    ("edit this for me", "ai_replace + edit (me is object)"),
+]
+for prompt, want in cases:
+    r = detect_grant(prompt)
+    sup = [x for x in r.reasons if "suppress" in x]
+    print("PROMPT:", prompt, "WANT:", want)
+    print("  granted:", sorted(r.granted_tools))
+    if sup: print("  suppressed:", sup)

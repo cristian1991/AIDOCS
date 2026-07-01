@@ -1,0 +1,29 @@
+"""Smoke ai_preflight against real prompts that mirror reinvention risk."""
+from aidocs_mcp.preflight_service import preflight
+from pathlib import Path
+
+PROJECT_ROOT = Path.cwd()
+
+cases = [
+    "build a new MCP tool to search across memory entries",
+    "create a service that detects intent and surfaces tools",
+    "I need to add a dashboard page for showing intent vocabulary",
+    "build a preflight tool for tasks",
+    "refactor intent_grant_detector to use spaCy POS filtering",
+    "write a new detector for first-person prompts",
+]
+
+for task in cases:
+    print("=" * 70)
+    print("TASK:", task)
+    print("=" * 70)
+    r = preflight(PROJECT_ROOT, task)
+    s = r["structured"]
+    print("seeds:", s["seeds"])
+    print("confidence:", s["confidence"])
+    print("existing_wheels:", [w["name"] for w in s["existing_wheels"][:5]])
+    print("inspect_first:", [(f["path"], f.get("symbol")) for f in s["inspect_first"][:5]])
+    print("known_traps:", [t["path"] for t in s["known_traps"][:3]])
+    print("do_not_create:", [w["capability"] for w in s["do_not_create_warnings"]])
+    print("missing:", s["missing_info"])
+    print()

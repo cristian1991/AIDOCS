@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read(*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"<AIDOCS_PLUGIN_PATH>\" pre-tool-use"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "TodoWrite",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"<AIDOCS_PLUGIN_PATH>\" post-tool-use"
+          }
+        ]
+      }
+    ]
+  }
+}

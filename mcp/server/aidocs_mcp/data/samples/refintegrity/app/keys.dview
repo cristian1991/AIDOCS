@@ -1,0 +1,5 @@
+# i18n key definitions for the demo app
+key = "greeting.hello"
+key = "greeting.goodbye"
+key = "nav.home"
+key = "nav.about"

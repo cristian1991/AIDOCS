@@ -1,0 +1,11 @@
+tool=smart-test
+status=resolved
+visibility=public
+base_sha_short=61e89cfedb38
+head_sha_short=13093613870d
+scope=full
+run_classification=full
+selector_reason=last chore(deploy-reports) ledger commit
+escalation_reason=<none>
+selected_target_count=0
+changed_file_count=0

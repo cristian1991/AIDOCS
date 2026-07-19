@@ -1,0 +1,486 @@
+[project]
+name = "aidocs-mcp"
+version = "2.5.0"
+description = "Portable AI coding-agent toolkit — MCP server with indexed code retrieval, session management, and persistent memory"
+readme = "README.md"
+license = "BUSL-1.1"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.11"
+authors = [
+  {name = "CodeNexus", email = "hello@codenexus.cloud"}
+]
+keywords = ["ai", "mcp", "coding-agent", "memory", "session", "code-index", "claude", "opencode"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+  "fastmcp>=3.4.4",  # #250: gate-proven floor (2026-07-09 suite green on 3.4.4);
+                     # the #280 daemon middleware seam (get_http_request/on_call_tool) verified on it
+  "mcp>=1.27.0",
+  "pydantic>=2.13.0",
+  # tree-sitter core is required by the C# AST validator (#52,
+  # 2026-04-27). Was previously in the optional [ast] extra while
+  # tree-sitter-c-sharp was a hard dep — that mismatch let installs
+  # without [ast] silently fail-open the validator. Promoting to
+  # hard dep so the validator can drop its try/except fail-open.
+  "tree-sitter>=0.23.0",
+  "tree-sitter-c-sharp>=0.23.5",
+  "tree-sitter-html>=0.23.0",
+  # CORE-DEPS (2026-05-26): the syntax validator hard-refuses to fail-open
+  # on .py/.js/.mjs/.cjs/.jsx/.ts/.tsx (see tree_sitter_service.py
+  # _SYNTAX_VALIDATION_EXTENSIONS + #57 "Refusing to fail-open"). Any
+  # ai_replace/str_replace/edit_lines on those extensions raises
+  # RuntimeError without these grammars present. They MUST be core deps —
+  # not optional — or every install without the `ast` extra silently
+  # ships a broken edit path.
+  "tree-sitter-python>=0.23.0",
+  "tree-sitter-javascript>=0.23.0",
+  "tree-sitter-typescript>=0.23.0",
+  # YAML edit-time validation (#57, 2026-04-27). Was an optional
+  # path with `except ImportError: pass` fail-open in
+  # host_policy_service.validate_edit_syntax — every YAML edit
+  # silently passed when PyYAML wasn't installed. Hard dep now per
+  # invariant #57: validators that can't decide fail closed.
+  "PyYAML>=6.0",
+  # webmcp service-mode authz (DoD #2): the gate resolves codenexus identity +
+  # webmcp entitlement by reading codenexus Postgres (CodenexusPostgresResolver).
+  # psycopg2-binary is the runtime driver — without it the resolver fail-closes
+  # (ImportError → deny-all), so it MUST be a hard runtime dep, not optional.
+  "psycopg2-binary>=2.9.9",
+  # bcrypt: the gate AUTHENTICATES webmcp logins against codenexus, whose User
+  # passwords are bcrypt hashes (DoD #2 "authenticates against codenexus"). The
+  # local identity_store also prefers bcrypt when present. Hard dep so the codenexus
+  # password check can never silently fail-open.
+  "bcrypt>=4.0.0",
+  # Security floor (2026-07-13): Pillow is a TRANSITIVE dep (via reportlab /
+  # pdfplumber, the PDF read/render path). Pin it above PYSEC-2026-2253..2257
+  # (five CVEs, all fixed in 12.3.0) so pip-audit's fix-available-block gate
+  # passes. A transitive CVE with an available fix must be floored here, not
+  # left to the resolver's whim (doctrine XXIV — guests need papers).
+  "pillow>=12.3.0",
+  # NLP stack, shipped by default. All deps permissive licenses.
+  # King doctrine 2026-05-13: ship spaCy + en_core_web_sm baseline
+  # bundled so NO operator-side download is needed. Additional
+  # language packs (it, es, fr, etc.) install on demand via the
+  # dashboard Languages page. lingua-language-detector dropped here
+  # (291 MB for multi-language detection we don't need at baseline);
+  # comes back as an optional install when operators add non-English
+  # packs.
+  # - spacy: POS / dep parse / NER / morphology / lemmatization (MIT).
+  #   Powers aidocs_nlp.SpacyPipeline.
+  # - en_core_web_sm: English baseline pipeline (~15 MB wheel from
+  #   spaCy releases). Direct URL install — no separate download step.
+  # - rapidfuzz: Levenshtein-like fuzzy match (MIT). Used by
+  #   search_symbols fuzz layer (replaced hand-rolled DP).
+  # Exact pins: we curate the NLP stack surface. Bumping a version is
+  # a deliberate operator decision + test pass, not implicit drift.
+  "spacy==3.8.13",
+  "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+  "rapidfuzz==3.14.5",
+  # RFC-4: mempalace's runtime deps. The mempalace package itself is
+  # vendored under third_party/mempalace (see AIDOCS_NOTICE.md). These
+  # are its declared runtime requirements, copied here so a fresh
+  # AIDOCS install pulls them without needing a separate `pip install
+  # mempalace`. Keep in sync with third_party/mempalace/pyproject.toml.
+  # Doctrine 2026-05-29 (king audit re-seal): floor bumped 1.5.4 → 1.5.9
+  # (current latest on PyPI). CVE-2026-45829 affects chromadb 1.5.9 but
+  # has NO fix version published upstream; pip-audit classifier returns
+  # verdict 1 (NO_FIX_VULN → warn, proceed). Bumping the floor avoids
+  # an install resolving to an older affected version with the same CVE
+  # plus prior bugs. Re-evaluate when upstream ships a fix.
+  "chromadb>=1.5.9,<2",
+  "tomli>=2.0.0; python_version < '3.11'",
+  # PyYAML pinned above already covers mempalace's pyyaml>=6.0,<7 too.
+  # ── Security-critical: promoted from transitive to direct (2026-05-28).
+  # bcrypt is used directly in identity_store.py for password hashing;
+  # cryptography is used in release_trust.py for Ed25519 manifest
+  # signing. Both came in transitively via fastmcp/mcp; pinning them
+  # directly protects against a future upstream that drops them.
+  # Doctrine: any module we call directly MUST be a direct dep.
+  # (bcrypt is already exact-floored above in the webmcp-auth block; the
+  # duplicate ">=4.0" pin that lived here was removed by the #423
+  # vendor-registry census — one name, one pin per group.)
+  "cryptography>=48.0.1",
+  # lingua is used by aidocs_nlp/language_detect.py + intent_grant_detector.py
+  # for language detection (king directive 2026-05-28 named it among the
+  # required NLP stack alongside spacy). Pinning explicitly so a fresh
+  # install brings it without per-operator surprise.
+  "lingua-language-detector>=2.0",
+  # click pinned 2026-05-29: typer 0.25 (a transitive dep) uses
+  # `click.Choice[T]` (subscriptable generic) which requires click 8.2+.
+  # The VPS install on 2026-05-29 had click 8.1.8 (pulled via semgrep's
+  # `click~=8.1.8` constraint) and broke `spacy.load(en_core_web_sm)`
+  # with `TypeError: type 'Choice' is not subscriptable`. That cascaded
+  # into 13 NLP test failures at Gate 2b. Pinning here ensures a fresh
+  # install satisfies typer; semgrep keeps working with the newer click
+  # at runtime (the `~=` constraint is metadata, not a hard import).
+  "click>=8.2",
+  # Security floor (2026-06-04): aiohttp is a 2nd-level transitive (kubernetes →
+  # aiohttp). Pin ≥3.14.0 to clear CVE-2026-34993 (fix = 3.14.0), which the
+  # deploy gate's Gate-1c pip-audit + osv-crown runtime scan refuse to ship.
+  "aiohttp>=3.14.1",
+  # Security floor (2026-06-23): joserfc is a transitive dep (authlib →
+  # joserfc>=1.6.0). Pin ≥1.6.7 to clear CVE-2026-48990 (fix = 1.6.7), which the
+  # deploy gate's Gate-1c pip-audit refuses to ship.
+  "joserfc>=1.6.7",
+    "pyjwt>=2.13.0",
+    "python-multipart>=0.0.31",
+    "starlette>=1.3.1",
+]
+
+[project.urls]
+Homepage = "https://codenexus.cloud"
+Repository = "https://github.com/cristian1991/AIDOCS"
+Issues = "https://github.com/cristian1991/AIDOCS/issues"
+Documentation = "https://github.com/cristian1991/AIDOCS#readme"
+
+[project.scripts]
+aidocs-mcp = "aidocs_mcp.mcp_server:main"
+aidocs = "aidocs_mcp.cli:main"
+
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project.optional-dependencies]
+# P0 dev toolchain — every gate (local, CI, deploy script) MUST install
+# `mcp[dev]` so the set is uniform. Pinning here means one place to bump
+# versions and the whole pipeline tracks. King directive 2026-05-28:
+# "uv, ruff, basedpyright, pytest, pytest-xdist, coverage, pytest-json-
+# report — install/enforce first." This block is the enforce surface.
+dev = [
+  "uv>=0.11",                  # canonical Python toolchain manager
+  "ruff>=0.15",                # correctness/style — BLOCKING gate
+  "basedpyright>=1.39",        # type-risk lane (was in [crown]; promoted to dev)
+  "pytest>=9.0.3",
+  "pytest-xdist>=3.6",
+  "pytest-json-report>=1.5",   # machine-readable test results for dashboards
+  "coverage[toml]>=7.0",
+  # "absence is a bug" vendoring campaign (doctrine XXXI, first scalp
+  # 2026-07-17): tests/parsers/test_pdf_parser.py imports the ai_read_pdf
+  # runtime path unconditionally, so the DEV/proof environment must carry
+  # the parser dep. Runtime keeps it optional in [office]; the proof env
+  # pins it EXACTLY so every gate judges the same bytes.
+  "pdfplumber==0.11.10"
+]
+ast = [
+  # tree-sitter-javascript / tree-sitter-typescript moved to core deps
+  # 2026-05-26 — see core-deps note above. This extra is now a no-op
+  # placeholder retained for installer scripts that still reference
+  # `aidocs[ast]`; safe to drop in a follow-up.
+]
+# OPTIONAL slop-reconnaissance backends — NOT in default deps (optional-backend
+# policy). ai_slop detects these at call time and degrades honestly when absent.
+#   vulture (MIT) — project-wide Python dead code (ai_slop dead_code_project).
+# jscpd (npm) and semgrep (CLI) are detected on PATH, not pip deps here.
+slop = [
+  "vulture>=2.0"
+]
+# P1 security/proof layer (king directive 2026-05-28). Install with
+# `pip install -e mcp[security]`. semgrep enforces custom AIDOCS doctrine
+# laws (core/semgrep/aidocs-laws.yml); pip-audit scans installed deps for
+# known CVEs. The binary tools — gitleaks, trufflehog, osv-scanner —
+# are not pip-installable and live in the pre-commit + CI configs
+# (.pre-commit-config.yaml + .github/workflows/security-scan.yml).
+#
+# Doctrine: a deploy that hasn't been scanned for secret leakage AND
+#           known-CVE deps is incomplete. Gate 1c enforces the Python
+#           half; the binary half is enforced at PR-CI time. Both must
+#           run on every release path.
+security = [
+  "semgrep>=1.50",
+  "pip-audit>=2.7"
+]
+# P3 structural law (king directive 2026-05-28). Architecture-level
+# correctness — import graph integrity, dep manifest hygiene, dead-code
+# detection, complexity ceiling. Install with `pip install -e mcp[structural]`.
+#
+# Doctrine: "tests prove the right thing happens"; this layer proves
+#           "the wrong thing CAN'T happen by accident." Examples:
+#           - import-linter contract: aidocs_mcp.lifecycle_service
+#             MUST NOT import aidocs_mcp.host_adapter_cli (or the
+#             dep graph forms a cycle). A test verifies behavior; an
+#             import-linter contract verifies the SHAPE that makes
+#             that behavior possible.
+#           - deptry: every dep in pyproject is actually used; every
+#             imported package is actually declared. No "where did
+#             this import come from" mystery.
+#           - radon/xenon: any function over <complexity ceiling> is
+#             a refactor candidate, surfaced before review.
+# Apply:    [structural] extra brings the linters; Gate 1d invokes
+#           them. import-linter contracts live in importlinter.cfg
+#           (operator-authored). vulture runs report-first via
+#           crown_gate already.
+structural = [
+  "import-linter>=2.0",
+  "deptry>=0.20",
+  "radon>=6.0",
+  "xenon>=0.9",
+  "vulture>=2.0"
+]
+# OPTIONAL crown-gate dev tooling (report-first lanes; NOT runtime deps). See
+# scratch/CROWN_GATE_DOCTRINE.md. Ruff (the blocking gate) is in `dev`.
+crown = [
+  "basedpyright>=1.39",   # type-risk lane (report-first, baseline)
+  "semgrep>=1.50",        # castle-law lane (CI/Linux; engine flaky on Windows)
+  "vulture>=2.0"          # project dead-code lane
+]
+# ── TOOLCHAIN — the de-overlapped union (#423, doctrine §XXXI) ──────────────
+# ONE grouping that carries EVERY pip-installable dev/CI tool exactly once.
+# `pip install -e mcp[toolchain]` = the whole build-time gate toolchain.
+# The stage groups above (dev/security/structural/slop/crown) remain as
+# gate-scoped SUBSETS for the scripts that install per stage; every floor
+# here must equal the floor in each stage group that names the same tool —
+# doctrine/vendors.toml is the registry of record and
+# tests/host/test_vendor_registry_contract.py enforces the equality both
+# ways. Binary tools (gitleaks, trufflehog, osv-scanner) are not pip deps;
+# they live in .pre-commit-config.yaml / CI workflows and are registered in
+# vendors.toml with origin="binary". pdfplumber in [dev] is NOT a tool — it
+# is an exact-pinned runtime parser for the proof env (see [dev] comment).
+toolchain = [
+  "uv>=0.11",
+  "ruff>=0.15",
+  "basedpyright>=1.39",
+  "pytest>=9.0.3",
+  "pytest-xdist>=3.6",
+  "pytest-json-report>=1.5",
+  "coverage[toml]>=7.0",
+  "vulture>=2.0",
+  "semgrep>=1.50",
+  "pip-audit>=2.7",
+  "import-linter>=2.0",
+  "deptry>=0.20",
+  "radon>=6.0",
+  "xenon>=0.9"
+]
+# Structured-file parsers — PDF, Excel, DOCX. SQLite uses stdlib.
+# All deps are permissive (MIT). See structured_file_parsers.py for the audit.
+office = [
+  "pdfplumber>=0.11",
+  "openpyxl>=3.1",
+  "python-docx>=1.1"
+]
+# Accurate token counting for tool_output.show_tokens debug marker.
+# Optional — falls back to len(bytes)//4 heuristic when absent.
+# tiktoken is MIT-licensed, pure-local (no API calls).
+tokens = [
+  "tiktoken>=0.8"
+]
+# Folder-sitter (observability.watch_user_drops) — optional filesystem
+# watcher that reindexes user-dropped files in the background. Default
+# off; enable when you want drag-drop of new files (PDFs, markdown,
+# source code pasted from outside) to surface in ai_find without a
+# manual ai_index_sync. Watchdog is MIT/Apache-2.0.
+sitter = [
+  "watchdog>=4.0"
+]
+
+[tool.deptry]
+# Deptry config — clears the noise so the gate surfaces REAL issues only.
+#
+# Doctrine: deptry's job is to catch (a) imports of packages that aren't
+#           declared anywhere (DEP001), (b) imports of declared but
+#           UNUSED packages (DEP002), (c) transitive imports that should
+#           be promoted to direct deps (DEP003). After this config the
+#           gate is high-signal — any future finding is a real bug.
+# Why:      baseline run found 54 issues; ~95% were name-mismatch noise
+#           (docx vs python-docx) or self-imports (aidocs_mcp inside
+#           aidocs_mcp). Clear those, the rest are real and worth
+#           fixing one-by-one.
+extend_exclude = [
+  # OPTIONAL backends imported with try/except ImportError gates.
+  # Documented degrade-honestly fallbacks; not pyproject-declared deps.
+  "server/aidocs_mcp/semantic_search.py",      # sentence_transformers — optional embed backend
+  "server/aidocs_mcp/server_recall_tools.py",  # aidocs_integration — optional cross-project
+]
+# First-party packages — `from aidocs_mcp.*` inside aidocs_mcp itself is
+# a self-import, not a transitive. mempalace is vendored under
+# third_party/; aidocs_integration is operator-installed locally.
+known_first_party = ["aidocs_mcp", "mempalace", "aidocs_integration"]
+
+# Map PACKAGE name (pyproject) → IMPORT name (as in `import X`).
+[tool.deptry.package_module_name_map]
+python-docx = "docx"
+opencv-python = "cv2"
+pillow = "PIL"
+beautifulsoup4 = "bs4"
+lingua-language-detector = "lingua"
+
+# Per-rule ignores.
+#   DEP002 unused: split into two reasoned groups:
+#     (a) CLI dev tools — invoked from .pre-commit, CI workflows, and
+#         the deploy script's Gate 1b/1c/1d; they don't appear in any
+#         `import X`, deptry has no way to see them.
+#     (b) Tree-sitter language grammars + spacy model + chromadb —
+#         RUNTIME deps that are loaded DYNAMICALLY (by language name
+#         via tree_sitter_service, by package name via spacy.load(),
+#         by service init via mempalace.palace). They are absolutely
+#         used; the dep-scanner just can't trace the dynamic load.
+#   DEP003 transitive: aidocs_mcp self-imports surface as transitive
+#     under the default ruleset; known_first_party above already handles
+#     this, this entry is a belt-and-braces backup.
+[tool.deptry.per_rule_ignores]
+DEP002 = [
+  # (a) CLI dev tools — EXECUTED, not IMPORTED
+  "uv", "ruff", "basedpyright", "semgrep", "pip-audit",
+  "vulture", "xenon", "radon", "import-linter", "deptry",
+  "pytest", "pytest-xdist", "pytest-json-report", "coverage",
+  # (b) Dynamic-load runtime deps — used at runtime via language
+  #     dispatch / model loader / service init. NOT optional, NOT dead.
+  "tree-sitter-html", "tree-sitter-python", "tree-sitter-javascript",
+  "tree-sitter-typescript", "tree-sitter-c-sharp",
+  "en-core-web-sm",        # loaded via spacy.load("en_core_web_sm")
+  "chromadb",              # loaded via mempalace.palace.get_collection
+]
+DEP003 = ["aidocs_mcp"]
+
+
+[tool.setuptools]
+package-dir = {"" = "server"}
+
+[tool.setuptools.package-data]
+# seed/factory.sqlite3 ships the canonical intent-token + gate-message
+# vocabulary (SQL-canonical seed). A fresh install copies it into the empire
+# DB on first run; if it's missing from the wheel, vocabulary silently
+# degrades to the hardcoded en_fallback. test_factory_db_packaging.py fails
+# the build if it's absent from the distribution.
+#
+# seed/project_memory.sqlite3 is a DISTINCT shipped seed: the SQLite-native
+# factory PROJECT-MEMORY defaults (rules/system/config/related-projects) that
+# bootstrap upserts into the per-project memory_index (+ routes). It seeds a
+# different live DB than factory.sqlite3; if absent, new projects get no factory
+# memory defaults. Generated by core/scripts/build_project_memory_seed.py.
+# data/bundled_skills/*.md is the #141 install seed: the bundled skill
+# payloads (incl. the public kingdom-doctrine freebie) that _ensure_bundled_seed
+# ingests into empire SQL on first touch. package-data globs are NOT recursive,
+# so the subdir needs its own entry — absent from the wheel, a fresh install's
+# empire DB seeds nothing and every bundled skill vanishes from the registry.
+aidocs_mcp = ["data/*", "data/bundled_skills/*.md", "seed/factory.sqlite3", "seed/project_memory.sqlite3", "law_rules/*.yml"]
+
+[tool.setuptools.packages.find]
+where = ["server"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: tests that take >5s (deselect with -m 'not slow')",
+    "xdist_group: route tests sharing this token to the same xdist worker (avoids cross-worker sqlite write races on shared global config DB)",
+    "rust_contract: aidocs-doctrine XXIX migration-ready contract test (driver-parametrized python|rust; the Rust case auto-appears when its binary is built, absent = not generated). 'pytest -m rust_contract' is the Rust port's acceptance suite.",
+    "migration_ready: aidocs-doctrine XXIX — the seam is contract-pinned at its public boundary and is part of the CI-selectable/countable migration boundary. Applied together with rust_contract on deploy/authority seam contracts (tests/deploy_contract/).",
+]
+# basetemp is NO LONGER pinned to a repo-local .pytest-tmp here: a tmp dir
+# INSIDE the repo nests every throwaway project under the commissioned
+# AIDOCS repo, tripping the nested-init refusal (product law). conftest.py
+# (pytest_configure) now allocates an EXTERNAL basetemp by default — off
+# the repo AND off %AppData%\Local\Temp (the AV-handle-contention reason
+# the old repo-local dir existed) — without anyone remembering --basetemp.
+# Override with AIDOCS_TEST_BASETEMP or an explicit --basetemp.
+# -n auto: pytest-xdist parallelization by default — agents kept running
+# suites serially; setting it in addopts makes parallel the only mode
+# anyone pays attention to. -n0 opts out when a test module explicitly
+# needs a single worker (e.g. stateful sqlite reset markers).
+addopts = "--tb=short -q --strict-markers --durations=10 --durations-min=2.0 -n auto --dist=loadgroup"
+
+# ── Ruff: the static-law gate ──────────────────────────────────────────────
+# Ruff is a fast whole-tree CORRECTNESS inspector that COMPLEMENTS tests (it
+# proves no test ever runs by catching undefined names / dead code / dup keys /
+# redefinitions / comparison & except bugs across every file in milliseconds) —
+# it does NOT replace them. Rule selection is deliberately narrow: fail CI on
+# real correctness hazards, never on cosmetic churn.
+#   Local:  ruff check mcp/            (lint, uses this config)
+#           ruff check mcp/ --fix      (apply safe autofixes)
+#           ruff format mcp/           (formatting — separate from the gate)
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["**/seed/**", "third_party"]
+
+[tool.ruff.lint]
+# ENFORCED (CI-blocking). The tree is clean on these today. Categories:
+#   F      — pyflakes: undefined names, unused imports/vars, duplicate dict keys,
+#            redefinitions, f-string/format bugs, syntax (bug + dead-code signal).
+#   E711-4 — comparison bugs (== None / == True / not-in / is-not).
+#   E722   — bare `except:` (swallows BaseException; real safety hazard).
+#
+# 2026-07-16 "make ruff ruffer" expansion (operator). Every rule below was
+# either already clean or made clean by fixing REAL findings first (see the
+# ruff-hardening commit): B023 loop-closure bugs (incl. the shell-broker
+# watchdog cancelling the WRONG connection), B033 duplicate set members,
+# B011/B008/B005 test hazards, ASYNC blocking calls in async fns,
+# PLE2502/PLE2515 raw bidi/zero-width chars (trojan-source class — the judge
+# subsystem's deliberate adversarial payloads are now escape-encoded;
+# Opus-audited semantics-preserving 2026-07-16), PLW0602 useless globals,
+# ISC003 explicit concat. Selected-by-rule (not whole families) where a family
+# still has open findings, so nothing is selected-then-ignored:
+#   B: bugbear bug-class subset (B007/B017/B018/B904/B905 remain unselected —
+#      open findings, candidates for a later burn-down).
+#   ASYNC: blocking-call-in-async + busy-wait rules. ASYNC109 (timeout-param
+#      style) and ASYNC240 (Path methods; one site in a handler whose sqlite
+#      calls block anyway — wrapping one stat() is compliance theater) are
+#      deliberately NOT selected.
+#   PLE: whole family (parse-blocking + trojan-source unicode) — clean.
+#   ISC: implicit-concat bugs (missing-comma class) — clean.
+#   G: logging-format bugs — clean. T10: leftover debugger imports — clean.
+#   RUF006 (dangling asyncio task) / RUF008 (mutable dataclass default) — clean.
+#   PLW0602/PLW0711 — useless global / catch-then-raise misuse — clean.
+select = [
+    "F", "E711", "E712", "E713", "E714", "E722",
+    "B002", "B004", "B005", "B006", "B008", "B011", "B012", "B015", "B016",
+    "B023", "B025", "B029", "B030", "B032", "B033",
+    "ASYNC100", "ASYNC110", "ASYNC115", "ASYNC116",
+    "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC222", "ASYNC230", "ASYNC251",
+    "PLE",
+    "ISC",
+    "G",
+    "T10",
+    "RUF006", "RUF008",
+    "PLW0602", "PLW0711",
+]
+
+# No deferrals: everything selected is BLOCKING and the tree is clean on it.
+# Cosmetic rules (E501 line length, E741 ambiguous names, E402 intentional
+# lazy/guarded imports, E702, W* whitespace, SIM/RET/UP/C4 style families)
+# are simply NOT selected above, so they never block the gate — nothing is
+# selected-then-ignored. Report-first candidates for a later burn-down: DTZ
+# (22 naive datetimes), B905 (22 zip-without-strict), B904 (11 raise-from),
+# RUF012 (38 mutable class defaults), B018 (600, mostly test bare-exprs).
+ignore = []
+
+# F841 (unused-local) is now BLOCKING (2026-05): every site was triaged by hand
+# — pure-dead assignments deleted, side-effecting calls kept with the binding
+# dropped, and no real bug was hiding behind one. Source F841 count is zero.
+# F821 (undefined-name) is BLOCKING (2026-05): all executable NameErrors
+# (logger / result / rows / _kill_record / project_root / _GIT_FAST_DIVERGENCE /
+# project_registry) are fixed, and the annotation-only references (Any / FastMCP /
+# ToolDecision / LaneState / sqlite3) now have real imports (module-level or
+# TYPE_CHECKING). Source F821 count is zero, so the gate stays green and catches
+# any new undefined-name regression — the executable kind.
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ── basedpyright: REPORT-FIRST type-risk lane (NOT a blocking gate) ─────────
+# See scratch/CROWN_GATE_DOCTRINE.md. Scoped to law-critical modules first;
+# generate a baseline (`basedpyright --writebaseline`) so only NEW type-risks
+# surface. typeCheckingMode "standard" (not basedpyright's stricter default)
+# keeps day-one noise down. Graduates to wider scope / blocking only per the
+# report-first ladder.
+[tool.basedpyright]
+typeCheckingMode = "standard"
+reportMissingImports = false
+include = [
+  "server/aidocs_mcp/config.py",
+  "server/aidocs_mcp/config_resolver.py",
+  "server/aidocs_mcp/package_integrity.py",
+  "server/aidocs_mcp/runtime_trust_store.py",
+  "server/aidocs_mcp/checkpoint_service.py",
+  "server/aidocs_mcp/audit_deletion_law.py",
+  "server/aidocs_mcp/session_deletion_law.py",
+  "server/aidocs_mcp/outer_gate.py",
+]

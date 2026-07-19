@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/src/cn-logo.svg" />
+    <title>Sign in — CodeNexus AIDOCS</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Standalone sign-in entry. Served by the gate to UNAUTHENTICATED visitors instead
+         of the dashboard shell, so the dashboard bundle is never handed to anon users.
+         Reuses the same PKCE flow (webAuth) + LoginPage; on the OAuth callback it does the
+         token exchange then redirects to "/" (now cookie-authed -> the gate serves the SPA). -->
+    <script type="module" src="/src/login-main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,27 @@
+from aidocs_mcp.intent_grant_detector import detect_grant, _clear_alias_pos_cache, _LEMMASETS_BY_LANG
+from aidocs_mcp.aidocs_nlp.service import get_service
+from pathlib import Path
+_LEMMASETS_BY_LANG.clear()
+_clear_alias_pos_cache()
+
+svc = get_service(Path.cwd(), {})
+
+for prompt in [
+    "i need you to refactor the page",
+    "i would like you to edit this file",
+    "could you please commit and push",
+    "i want you to fix the bug",
+    "i need to refactor this myself",
+    "i think we should commit",
+]:
+    doc = svc.analyze(prompt, language="en")
+    print("PROMPT:", prompt)
+    if doc:
+        for t in doc.tokens:
+            person = (t.morph or {}).get("Person", "") if isinstance(t.morph, dict) else ""
+            print(f"  {t.text!r} pos={t.pos!r} dep={t.dep!r} head_idx={t.head_idx} person={person!r}")
+    r = detect_grant(prompt)
+    sup = [x for x in r.reasons if "suppress" in x]
+    print("  granted:", sorted(r.granted_tools))
+    if sup: print("  suppressed:", sup)
+    print()

@@ -1,0 +1,25 @@
+# osv-scanner VEX exceptions for the AIDOCS deploy gate (Gate 1e).
+#
+# Doctrine: an entry here is a DOCUMENTED, AUDITABLE risk-acceptance — NOT a
+# silent waiver. Each carries a justification + a review date (ignoreUntil),
+# after which osv-scanner re-surfaces it so the call is revisited. Add an
+# entry ONLY for a vulnerability proven not-exploitable in THIS deployment
+# (VEX "not affected"), with the evidence written in `reason`.
+
+[[IgnoredVulns]]
+id = "GHSA-f4j7-r4q5-qw2c"           # CVE-2026-45829 — chromadb pre-auth RCE
+ignoreUntil = 2026-08-31T00:00:00Z   # REVIEW DATE: re-surfaces after this
+reason = """
+VEX: NOT AFFECTED (vulnerable code not in execute path). CVE-2026-45829 /
+GHSA-f4j7-r4q5-qw2c is a pre-authentication code-injection (CWE-94, CVSS:4.0
+AV:N) in ChromaDB's HTTP SERVER — it requires an attacker to reach the
+network endpoint /api/v2/tenants/{tenant}/databases/{db}/collections with a
+malicious model repository + trust_remote_code=true. AIDOCS/mempalace use
+chromadb EMBEDDED ONLY (PersistentClient/EphemeralClient over a local SQLite
+file): there is NO chromadb HTTP server, no /api/v2 endpoint, no network
+listener, and no attacker-supplied model-repo path anywhere in the tree
+(verified by source scan). The network attack surface does not exist here.
+No fixed chromadb version exists (every release >=1.0.0 is flagged; 1.5.9 is
+the latest on PyPI), so a version bump cannot clear it. Revisit on the review
+date or when chromadb ships a patched release (then bump + remove this entry).
+"""

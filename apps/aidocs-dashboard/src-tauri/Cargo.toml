@@ -1,0 +1,31 @@
+[package]
+name = "aidocs-dashboard"
+version = "2.1.0-beta.1"
+description = "Secure local AIDOCS operator dashboard"
+authors = ["CodeNexus"]
+edition = "2021"
+build = "build.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+# WebMCP cloud mode (DoD #6): Rust-backed HTTPS so the webview can call the gate's
+# /oauth/token + /v1/mcp without the gate having to CORS-enable for the desktop app.
+tauri-plugin-http = "2"
+toml = "0.8"
+# `bundled` feature compiles sqlite into the binary — no system
+# dependency, identical behavior across Windows/Mac/Linux dev boxes,
+# identical sqlite version to the one Python's stdlib uses. Matches the
+# zero-install stdlib-sqlite story across JS/Python/Rust for Beat 3.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

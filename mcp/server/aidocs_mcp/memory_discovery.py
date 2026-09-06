@@ -1,0 +1,1186 @@
+"""Context-memory discovery — surfaces canonical durable-memory entries as
+pointers when the user's prompt matches their keyword triggers.
+
+SQLite-only no-scroll seal (2026-06): discovery reads the SQL route ledger
+ONLY — ``memory_routes`` + ``memory_route_keywords`` joined to the ACTIVE
+``memory_index`` rows. It does NOT scan the ``.MEMORY/`` tree or read on-disk
+Markdown frontmatter at runtime; loose .md files are invisible until an
+operator imports them via the explicit ``migrate_markdown_to_sqlite`` path
+(which is where the frontmatter schema below is parsed INTO routes — an
+AUTHORING/import shape, not a runtime read).
+
+Philosophy:
+- No always-on memory. Every inclusion is triggered.
+- Pointers, not content. The hook emits a path + reason. The agent decides
+  whether to call memory_read. This keeps the per-turn context budget lean
+  and avoids re-injecting the same entry on every matching prompt.
+- Opt-in keywords. An entry with no keyword routes is invisible to this
+  matcher; keywords are declared at capture/import time and live in
+  ``memory_route_keywords`` (SQL), never read from disk at match time.
+
+Frontmatter schema:
+    ---
+    keywords: [live server, pm2, deploy, ssh, prod logs]
+    trigger: [topic]              # optional; default = ["topic"]
+    priority: high                # optional: low | normal | high
+    ---
+
+    # File content follows.
+
+``trigger`` values:
+- ``topic``   → subject matter keywords ("live server", "pdf", "patients").
+- ``action``  → user-intent keywords ("implement", "research", "harden").
+  Both are matched against the same prompt; the flag exists so one project
+  can mix topic files and action-type files in the same tree.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path
+
+# #755: the ONE canonical connect. All four sites here were plain raw-
+# sqlite reads (with a hand-set `conn.row_factory = sqlite3.Row`) never
+# carrying busy_timeout or foreign_keys=ON. Pure SELECT surface -- no
+# write ever lands through this module -- so Durability is moot and the
+# default (RUNTIME) is used unexamined.
+from ._sqlite_connect import connect as _canonical_connect
+from .memory_store import _SOVEREIGN_MEMORY_PATHS
+
+
+@dataclass(frozen=True)
+class MemoryHint:
+    path: str  # project-relative, forward-slash separated
+    why: str
+    matched_keywords: tuple[str, ...]
+    severity: str = "normal"  # normal | high | critical | sovereign
+    hop_depth: int = 0  # 0 = direct keyword/anchor match; 1+ = via code_edges traversal
+    matched_symbol: str = ""  # symbol that anchored this hint (when hop>=0 from anchor)
+    confidence: str = "operator_pinned"  # operator_pinned | exact_symbol | file_anchor | semantic_guess
+    edge: str = "keyword"  # terse provenance edge for structured discovery results
+    tier: str = "evidence"  # memory advises; it is never code truth or project law
+
+
+
+def canonical_memory_pointer_path(path: object) -> str:
+    """Return one safe project-memory route or the empty string.
+
+    This single boundary serves direct anchors and KG/code graph hops.
+    Absolute, traversal, ambiguous, and sovereign routes are suppressed.
+    """
+    raw = str(path or "").strip().replace(chr(92), "/")
+    if not raw or raw.startswith("/") or chr(0) in raw:
+        return ""
+    parts = raw.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return ""
+    normalized = "/".join(parts)
+    sovereign = {
+        item.replace(chr(92), "/").casefold()
+        for item in _SOVEREIGN_MEMORY_PATHS
+    }
+    if normalized.casefold() in sovereign:
+        return ""
+    return normalized
+
+def _memory_anchor_columns(conn) -> frozenset[str]:
+    """Current additive capabilities of the canonical anchor table."""
+    return frozenset(
+        str(row[1])
+        for row in conn.execute(
+            "PRAGMA table_info(memory_symbol_anchors)"
+        ).fetchall()
+    )
+
+
+# Keep the per-prompt hint count small — false positives teach agents to
+# ignore the hint line. Surface only the most-specific matches.
+_MAX_HINTS = 3
+
+# Frontmatter delimiters.
+_FRONTMATTER_START = "---\n"
+_FRONTMATTER_END_RE = re.compile(r"^---\s*$", re.MULTILINE)
+
+_PRIORITY_ORDER = {"high": 0, "normal": 1, "low": 2}
+
+# Observational adverbs — mirrors tool_discovery and the grant matcher so
+# behavior is consistent across all three keyword surfaces.
+_OBSERVATIONAL_PREFIXES: tuple[str, ...] = (
+    "usually ",
+    "typically ",
+    "normally ",
+    "sometimes ",
+    "often ",
+    "occasionally ",
+    "would ",
+    "used to ",
+    "tend to ",
+)
+
+_OBS_LOOKBACK = 20
+
+
+@dataclass(frozen=True)
+class _FileEntry:
+    path: str  # project-relative, forward-slash separated
+    why: str
+    keywords: tuple[str, ...]
+    triggers: frozenset[str]
+    priority: str  # "high" | "normal" | "low"
+    severity: str = "normal"  # normal | high | critical | sovereign
+    # Memory-loop seal (2026-07-09): keywords the operator stated explicitly
+    # at capture time. Entries matched ONLY via analyzer-derived terms rank
+    # AFTER explicit-term matches (law > explicit > derived > semantic).
+    explicit_keywords: frozenset[str] = frozenset()
+
+
+# Cache keyed by (project_root, max_mtime_ns). Rebuild when any memory file
+# changes — cheap because the walk is small.
+_scan_cache: dict[tuple[str, int], dict[str, list[_FileEntry]]] = {}
+
+
+def _parse_frontmatter(text: str) -> tuple[dict[str, object] | None, str]:
+    """Return (frontmatter_dict, body). When no frontmatter is present,
+    returns (None, full_text). Does not import a YAML library — we only
+    need a handful of scalar/list keys.
+    """
+    if not text.startswith(_FRONTMATTER_START):
+        return None, text
+    rest = text[len(_FRONTMATTER_START) :]
+    end_match = _FRONTMATTER_END_RE.search(rest)
+    if not end_match:
+        return None, text
+    fm_text = rest[: end_match.start()]
+    body = rest[end_match.end() :].lstrip("\n")
+    meta: dict[str, object] = {}
+    for raw_line in fm_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip().lower()
+        value = value.strip()
+        if not value:
+            meta[key] = ""
+            continue
+        if value.startswith("[") and value.endswith("]"):
+            inside = value[1:-1].strip()
+            if not inside:
+                meta[key] = []
+            else:
+                meta[key] = [
+                    item.strip().strip("'\"") for item in inside.split(",") if item.strip()
+                ]
+        else:
+            meta[key] = value.strip("'\"")
+    return meta, body
+
+
+def _memory_tree_mtime_ns(memory_root: Path) -> int:
+    """Highest mtime across the memory tree. Used as a cache-invalidation
+    signal — if any file changes, the scan is redone.
+    """
+    if not memory_root.is_dir():
+        return 0
+    max_ns = 0
+    for dirpath, _, files in os.walk(memory_root):
+        for fn in files:
+            if not fn.endswith(".md"):
+                continue
+            try:
+                st = os.stat(os.path.join(dirpath, fn))
+            except OSError:
+                continue
+            max_ns = max(max_ns, st.st_mtime_ns)
+    return max_ns
+
+
+def _load_keyword_map_from_sql(
+    project_root: Path,
+) -> dict[str, list[_FileEntry]]:
+    """Build the keyword→entries map from the memory_routes sql ledger.
+
+    Returns {} when the route table is empty (signals filesystem fallback
+    during transition before backfill). Sovereign-severity routes are
+    EXCLUDED at the SQL layer — discovery never surfaces them. Deathbed-grant
+    access uses a separate code path (future brick).
+    """
+    import sqlite3
+
+    db_path = project_root / ".MEMORY" / ".index" / "aidocs.sqlite3"
+    if not db_path.is_file():
+        return {}
+    try:
+        with _canonical_connect(db_path) as conn:
+            count_row = conn.execute(
+                "SELECT COUNT(*) AS n FROM memory_routes WHERE severity != 'sovereign'",
+            ).fetchone()
+            if not count_row or int(count_row["n"]) == 0:
+                return {}
+            # Phase-8 flip (2026-05-19): prefer memory_index (sqlite-
+            # canonical) for the title enrichment, fall back to
+            # memory_files only when memory_index has no row (cold-
+            # SQLite-only doctrine (2026-06): INNER JOIN canonical active
+            # memory_index. A route whose target has NO active canonical row is a
+            # ROUTE-ONLY GHOST (the memory was removed/superseded, or the route
+            # was never backed by a real entry) and must NOT surface. Removed the
+            # cold-start `mi.path IS NULL` escape that let ghosts through.
+            # Provenance column exists post memory-loop seal; older DBs
+            # degrade to all-explicit (legacy behavior preserved).
+            kw_cols = {
+                r[1]
+                for r in conn.execute(
+                    "PRAGMA table_info(memory_route_keywords)",
+                ).fetchall()
+            }
+            prov_select = (
+                "COALESCE(mrk.provenance, 'explicit') AS provenance"
+                if "provenance" in kw_cols
+                else "'explicit' AS provenance"
+            )
+            rows = conn.execute(
+                f"""
+                SELECT mrk.keyword, mr.target_path, mr.trigger, mr.priority,
+                       mr.severity,
+                       COALESCE(mi.title, '') AS title,
+                       {prov_select}
+                FROM memory_route_keywords mrk
+                JOIN memory_routes mr ON mr.route_id = mrk.route_id
+                JOIN memory_index mi ON mi.path = mr.target_path
+                WHERE mr.severity != 'sovereign'
+                  AND COALESCE(mi.status, 'active') = 'active'
+                  AND COALESCE(mi.superseded_by, '') = ''
+                """,
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+
+    by_path: dict[str, dict[str, object]] = {}
+    for row in rows:
+        path = canonical_memory_pointer_path(row["target_path"])
+        if not path:
+            continue
+        bucket = by_path.setdefault(
+            path,
+            {
+                "keywords": set(),
+                "explicit": set(),
+                "trigger": str(row["trigger"]),
+                "priority": str(row["priority"]),
+                "severity": str(row["severity"]),
+                "title": str(row["title"]),
+            },
+        )
+        kw = str(row["keyword"]).strip().lower()
+        if kw:
+            bucket["keywords"].add(kw)  # type: ignore[union-attr]
+            if str(row["provenance"]) == "explicit":
+                bucket["explicit"].add(kw)  # type: ignore[union-attr]
+
+    keyword_map: dict[str, list[_FileEntry]] = {}
+    for path, bucket in by_path.items():
+        keywords = tuple(sorted(bucket["keywords"]))  # type: ignore[arg-type]
+        if not keywords:
+            continue
+        why = str(bucket["title"]) or path.rsplit("/", 1)[-1].removesuffix(".md")
+        if len(why) > 60:
+            why = why[:57].rstrip() + "…"
+        triggers = frozenset({str(bucket["trigger"])})
+        entry = _FileEntry(
+            path=path,
+            why=why,
+            keywords=keywords,
+            triggers=triggers,
+            priority=str(bucket["priority"]),
+            severity=str(bucket["severity"]),
+            explicit_keywords=frozenset(bucket["explicit"]),  # type: ignore[arg-type]
+        )
+        for kw in keywords:
+            keyword_map.setdefault(kw, []).append(entry)
+    return keyword_map
+
+
+def _scan_memory_files(project_root: Path) -> dict[str, list[_FileEntry]]:
+    """Return a map from lower-cased keyword → list of matching file entries.
+
+    SQLite-only doctrine (2026-06): the SQL route ledger (memory_routes /
+    memory_route_keywords joined to canonical memory_index) is the SOLE source.
+    The legacy filesystem-frontmatter fallback (walking .MEMORY/*.md) is REMOVED
+    — loose markdown is invisible at runtime; import it via the explicit operator
+    migrate_markdown_to_sqlite path.
+    """
+    return _load_keyword_map_from_sql(project_root)
+
+
+def _is_observational(text: str, match_start: int) -> bool:
+    """True if the keyword is immediately preceded by a habit adverb."""
+    lookback = text[max(0, match_start - _OBS_LOOKBACK) : match_start].lower()
+    return any(lookback.endswith(prefix) for prefix in _OBSERVATIONAL_PREFIXES)
+
+
+def _keyword_matches_prompt(keyword: str, prompt_lower: str) -> int | None:
+    """Return the index of the first non-observational occurrence of
+    ``keyword`` in ``prompt_lower``, or None if none matches.
+
+    Word-boundary logic is keyword-aware: multi-word keywords ("live server")
+    match as substrings because a word-boundary regex is less useful for
+    phrases; single-word keywords use \\b boundaries to avoid partial hits.
+    """
+    # Observational/habit suppression REMOVED (2026): a keyword mention is a
+    # relevance signal, and once-per-epoch dedup means a memory surfaces at most
+    # once however it's phrased — so "usually pm2 handles this" SHOULD (and now
+    # does) surface the pm2 memory. Dedup controls frequency, not lexical filters.
+    kw = keyword.strip().lower()
+    if not kw:
+        return None
+    if " " in kw:
+        found = prompt_lower.find(kw)  # phrase — substring
+        return found if found != -1 else None
+    m = re.compile(rf"\b{re.escape(kw)}\b").search(prompt_lower)  # single word
+    return m.start() if m else None
+
+
+_LEMMA_MATCH_IDX = 10**8  # lemma (morphology) hits rank AFTER literal keyword hits
+_SEMANTIC_MATCH_IDX = 10**9  # semantic (palace) hits rank LAST — recall, not a pin
+_KW_LEMMA_CACHE: dict[str, frozenset[str]] = {}
+
+
+def _lemma_set(
+    text: str, project_root: Path, *, drop_observational: bool = False
+) -> set[str]:
+    """spaCy lemma set (lowercased) for ``text`` via aidocs_nlp, or an empty set
+    when NLP is unavailable. Empty -> callers fall back to literal matching, so
+    this only ADDS recall (morphological variants), never regresses it.
+
+    ``drop_observational=True`` (used for the PROMPT side) excludes tokens that
+    sit behind a habit adverb ("usually pm2 …"), mirroring the literal matcher's
+    observational suppression so the lemma lane can't re-fire a habit mention.
+    """
+    try:
+        from .aidocs_nlp.service import get_service
+
+        svc = get_service(project_root)
+        doc = svc.analyze(text)
+        if doc is None:
+            return set()
+        text_lower = text.lower()
+        out: set[str] = set()
+        for tok in getattr(doc, "tokens", None) or []:
+            lem = str(getattr(tok, "lemma", "") or "").strip().lower()
+            if not lem:
+                continue
+            if drop_observational:
+                cs = getattr(tok, "char_start", None)
+                if cs is not None and _is_observational(text_lower, int(cs)):
+                    continue
+            out.add(lem)
+        return out
+    except Exception:
+        return set()
+
+
+def _prompt_language(prompt: str, project_root: Path) -> str:
+    """The language to look keyword lemmas up under — resolved ONCE per hook.
+
+    #688: this used to happen inside the per-keyword loop (1031 lingua
+    detection calls per prompt). Per #680 ``detect_language`` returns 'en'
+    unconditionally unless the operator configures "auto", so those calls could
+    not change the answer; one call is both correct and free of that waste.
+    The default is NOT changed here — that is #680's operator decision.
+    """
+    try:
+        from .aidocs_nlp.service import get_service
+
+        return str(get_service(project_root).detect_language(prompt) or "en")
+    except Exception:
+        return "en"
+
+
+def _open_keyword_lexicon(project_root: Path, language: str, *, repair_enabled: bool):
+    """Open the persisted (keyword, language) -> lemmas lexicon for this read."""
+    from . import keyword_lemma_lexicon
+
+    return keyword_lemma_lexicon.open_lexicon(
+        project_root, language, repair_enabled=repair_enabled,
+    )
+
+
+def _keyword_lemma_in_prompt(
+    keyword: str, prompt_lemmas: set[str], project_root: Path
+) -> bool:
+    """True when every lemma of ``keyword`` is present in ``prompt_lemmas`` — the
+    keyword matches the prompt up to morphology ('deploy' vs 'deploying').
+
+    OFF THE HOT PATH since #688 — ``discover_relevant_memory`` matches against
+    the persisted ``keyword_lemmas`` lexicon (set intersection, zero parses)
+    rather than calling this once per candidate keyword. Kept for callers that
+    hold a single keyword and no open lexicon.
+    """
+    if not prompt_lemmas:
+        return False
+    kw = keyword.strip().lower()
+    if not kw:
+        return False
+    cached = _KW_LEMMA_CACHE.get(kw)
+    if cached is None:
+        cached = frozenset(_lemma_set(kw, project_root))
+        _KW_LEMMA_CACHE[kw] = cached
+    return bool(cached) and cached.issubset(prompt_lemmas)
+
+
+def _substance_lemmas(text: str, project_root: Path) -> set[str]:
+    """The 'stuff + action' a prompt is ABOUT: lemmas of its NOUNS, named
+    ENTITIES, and VERBS via the aidocs_nlp substance projection. Function words
+    (adverbs like 'usually', pronouns/determiners like 'this', aux) are excluded
+    — so matching keys on what the statement concerns, not filler:
+
+      'usually pm2 handles this'  -> {'pm2', 'handle'}      (surfaces pm2 memory)
+      'deploy on the server'      -> {'deploy', 'server'}   (surfaces BOTH)
+
+    Empty when NLP is unavailable -> callers fall back to literal matching, so
+    this only refines recall, never breaks it."""
+    try:
+        from .aidocs_nlp.service import get_service
+
+        svc = get_service(project_root)
+        sub = svc.analyze_substance(text)
+        if sub is None:
+            return set()
+        out: set[str] = set()
+        for tok in list(getattr(sub, "nouns", ()) or ()) + list(
+            getattr(sub, "verbs", ()) or ()
+        ):
+            lem = str(
+                getattr(tok, "lemma", "") or getattr(tok, "text", "") or ""
+            ).strip().lower()
+            if lem:
+                out.add(lem)
+        for ent in getattr(sub, "entities", ()) or ():
+            etxt = str(
+                getattr(ent, "text", "") or getattr(ent, "lemma", "") or ""
+            ).strip().lower()
+            if etxt:
+                out.add(etxt)
+                for w in etxt.split():
+                    if w:
+                        out.add(w)
+        return out
+    except Exception:
+        return set()
+
+
+_SEMANTIC_SEARCH_TIMEOUT_S = 2.0
+
+
+def _semantic_memory_hits(
+    prompt: str, project_root: Path, palace: object, hub_ctx: object
+) -> list["MemoryHint"]:
+    """Config-gated, timeboxed palace hybrid-search -> MemoryHints (the RECALL
+    lane). Returns [] on disable / timeout / any failure: never raises, never
+    blocks the prompt hook past the timebox. Strict by design so it can't poison
+    UPS precision (small top-K, conservative max_distance, ranked last)."""
+    try:
+        from .config import get_setting
+
+        if not bool(
+            get_setting(
+                "memory.semantic_recall_on_ups",
+                project_root=project_root,
+                default=True,
+            )
+        ):
+            return []
+        max_distance = float(
+            get_setting(
+                "memory.semantic_recall_max_distance",
+                project_root=project_root,
+                default=0.85,
+            )
+            or 0.85
+        )
+        limit = int(
+            get_setting(
+                "memory.semantic_recall_limit",
+                project_root=project_root,
+                default=2,
+            )
+            or 2
+        )
+    except Exception:
+        max_distance, limit = 0.85, 2
+
+    import threading
+
+    box: dict = {}
+
+    def _do() -> None:
+        try:
+            box["r"] = palace.search(  # type: ignore[attr-defined]
+                query=prompt,
+                limit=limit,
+                max_distance=max_distance,
+                hub_ctx=hub_ctx,
+            )
+        except Exception:
+            box["r"] = None
+
+    t = threading.Thread(target=_do, name="memory-semantic-recall", daemon=True)
+    t.start()
+    t.join(_SEMANTIC_SEARCH_TIMEOUT_S)
+    if t.is_alive():
+        return []  # palace too slow -> skip recall; keyword/lemma lanes stand
+    result = box.get("r")
+    if result is None:
+        return []
+
+    out: list[MemoryHint] = []
+    seen: set[str] = set()
+    for hit in getattr(result, "hits", ()) or ():
+        sf = str(getattr(hit, "source_file", "") or "").replace("\\", "/").lstrip("/")
+        if not sf or sf in seen:
+            continue
+        seen.add(sf)
+        snippet = str(getattr(hit, "snippet", "") or "").strip()
+        out.append(
+            MemoryHint(
+                path=sf,
+                why=(snippet[:120] or "semantically relevant to this prompt"),
+                matched_keywords=("semantic",),
+                severity="info",
+                tier="kingdom",
+            )
+        )
+    return out
+
+
+def _empire_semantic_hits(
+    prompt: str, project_root: Path, *, limit: int
+) -> list["MemoryHint"]:
+    """#375 Phase 2 (d): the EMPIRE palace lane — machine-global semantic
+    recall over sealed law scrolls / public empire skills, consulted as a
+    SECOND lane beside kingdom recall. Same gating knob as the kingdom lane
+    (memory.semantic_recall_on_ups); timeboxed + fail-quiet inside the
+    empire_palace helper. Hits are labeled tier='empire' so the two lanes
+    stay legible at surface time (§XIII)."""
+    try:
+        from .config import get_setting
+
+        if not bool(
+            get_setting(
+                "memory.semantic_recall_on_ups",
+                project_root=project_root,
+                default=True,
+            )
+        ):
+            return []
+    except Exception:
+        pass
+    try:
+        from .empire_palace import empire_semantic_hits
+
+        raw = empire_semantic_hits(prompt, limit=max(1, limit))
+    except Exception:
+        return []
+    out: list[MemoryHint] = []
+    for hit in raw:
+        path = str(hit.get("path") or "")
+        if not path:
+            continue
+        out.append(
+            MemoryHint(
+                path=path,
+                why=str(hit.get("why") or "empire knowledge"),
+                matched_keywords=("semantic", "empire"),
+                severity="info",
+                confidence="semantic_guess",
+                edge="palace:empire",
+                tier="empire",
+            )
+        )
+    return out
+
+
+def _global_law_hits(
+    prompt: str,
+    prompt_lower: str,
+    prompt_lemmas: set[str],
+    project_root: Path,
+    lexicon: object | None = None,
+) -> list["MemoryHint"]:
+    """Empire LAW hits (#213 Lane 2): a rule sealed ONCE in the global store
+    surfaces in EVERY project. Matched by the SAME keyword/lemma logic as local
+    memory; emitted as pinned ``global:<law_id>`` hints carrying the law's gist.
+    Best-effort — a global-store hiccup never breaks local discovery.
+    """
+    try:
+        from .global_law_store import list_active_global_law
+
+        laws = list_active_global_law()
+    except Exception:
+        return []
+    out: list[MemoryHint] = []
+    for law in laws:
+        keywords = [
+            k.strip().lower()
+            for k in str(law.get("keywords") or "").split(",")
+            if k.strip()
+        ]
+        matched: set[str] = set()
+        for kw in keywords:
+            if _keyword_matches_prompt(kw, prompt_lower) is not None:
+                matched.add(kw)
+            elif lexicon is not None and lexicon.matches(kw, prompt_lemmas):
+                matched.add(kw)
+            elif lexicon is None and _keyword_lemma_in_prompt(
+                kw, prompt_lemmas, project_root
+            ):
+                matched.add(kw)
+        if not matched:
+            continue
+        content = str(law.get("content") or "").strip()
+        first_line = content.splitlines()[0][:70] if content else str(law.get("kind") or "law")
+        out.append(
+            MemoryHint(
+                path=f"global:{law['law_id']}",
+                why=f"empire law — {first_line}",
+                matched_keywords=tuple(sorted(matched)),
+                severity="high",
+            )
+        )
+    return out
+
+
+def discover_relevant_memory(
+    prompt: str,
+    project_root: Path,
+    *,
+    action_kind: str | None = None,
+    max_hints: int = _MAX_HINTS,
+    palace: object | None = None,
+    hub_ctx: object | None = None,
+) -> list[MemoryHint]:
+    """Surface memory files whose keywords match the prompt.
+
+    Args:
+        prompt: User prompt text.
+        project_root: Project root containing a .MEMORY/ tree.
+        action_kind: When provided, files whose ``trigger`` includes
+            ``action`` are eligible regardless of keyword match — the
+            file's action relevance is the trigger. Topic-trigger files
+            still require a keyword match.
+        max_hints: Cap on hints returned.
+
+    Returns:
+        Deduped list of MemoryHint, ranked by priority (high first) then
+        by number of matched keywords (more specific first).
+
+    """
+    if not prompt or not prompt.strip() or not project_root:
+        return []
+    prompt_lower = prompt.lower()
+    # Substance-aware: match keyword lemmas against the prompt's STUFF + ACTIONS
+    # (nouns/entities/verbs), not filler ('usually'/'this'). Falls back to {} when
+    # NLP is down, leaving literal matching intact.
+    prompt_lemmas = _substance_lemmas(prompt, project_root)
+    # #688: keyword lemmas come from the PERSISTED (keyword, language) lexicon —
+    # written when a route is registered — so the per-keyword spaCy N+1 is gone.
+    # The language is resolved once; the lexicon read is one SELECT; matching is
+    # set intersection. When NLP is down prompt_lemmas is empty, the lemma lane
+    # never fires, and repair is pointless — so it is disabled in that case.
+    lexicon = _open_keyword_lexicon(
+        project_root,
+        _prompt_language(prompt, project_root),
+        repair_enabled=bool(prompt_lemmas),
+    )
+    # Empire LAW is independent of local memory — compute it up front so a
+    # globally-sealed rule surfaces even in a project with NO local memory yet.
+    global_hits = _global_law_hits(
+        prompt, prompt_lower, prompt_lemmas, project_root, lexicon,
+    )
+    try:
+        keyword_map = _scan_memory_files(project_root)
+    except Exception:
+        keyword_map = {}
+    if not keyword_map:
+        lexicon.flush()
+        return global_hits[:max_hints]
+
+    hits: dict[str, tuple[_FileEntry, set[str], int]] = {}
+    for keyword, entries in keyword_map.items():
+        match_idx = _keyword_matches_prompt(keyword, prompt_lower)
+        if match_idx is None:
+            # spaCy lemma fallback: catch morphological variants the literal
+            # matcher misses ('deploy' keyword vs 'deploying' prompt). Recall-
+            # only — when NLP is down prompt_lemmas is empty and this never
+            # fires, so literal behavior is preserved exactly.
+            if lexicon.matches(keyword, prompt_lemmas):
+                match_idx = _LEMMA_MATCH_IDX
+            else:
+                continue
+        for entry in entries:
+            if "topic" not in entry.triggers and "action" not in entry.triggers:
+                continue
+            # Topic-trigger files surface on any keyword match.
+            # Action-trigger files ALSO surface on keyword match; the flag
+            # only matters for the prompt-agnostic action path below.
+            existing = hits.get(entry.path)
+            if existing is None:
+                hits[entry.path] = (entry, {keyword}, match_idx)
+            else:
+                _, kws, first_idx = existing
+                kws.add(keyword)
+                hits[entry.path] = (entry, kws, min(first_idx, match_idx))
+
+    # Persist anything the lexicon had to recompute this read (a cold table, or
+    # rows a model upgrade invalidated) so the NEXT prompt pays nothing. The
+    # bounded repair keeps availability; the flush keeps it from recurring.
+    lexicon.flush()
+
+    # Action-type surfacing: files whose triggers include "action" and whose
+    # keywords include the action_kind string also qualify. e.g. a file with
+    # keywords=[implement, refactor] + trigger=[action] fires on action_kind
+    # == "implement" even if the word "implement" isn't in the prompt.
+    if action_kind:
+        action_key = action_kind.strip().lower()
+        for keyword, entries in keyword_map.items():
+            if keyword != action_key:
+                continue
+            for entry in entries:
+                if "action" not in entry.triggers:
+                    continue
+                existing = hits.get(entry.path)
+                if existing is None:
+                    hits[entry.path] = (entry, {keyword}, 10**9)
+                else:
+                    _, kws, first_idx = existing
+                    kws.add(keyword)
+                    hits[entry.path] = (entry, kws, first_idx)
+
+    # Provenance tier (memory-loop seal): entries matched via at least one
+    # EXPLICIT keyword rank before derived-only matches. Full ranking:
+    # global law (pinned below) > explicit-term > derived-term > semantic.
+    def _provenance_tier(entry: _FileEntry, matched: set[str]) -> int:
+        return 0 if (matched & entry.explicit_keywords) else 1
+
+    ranked = (
+        sorted(
+            hits.values(),
+            key=lambda item: (
+                _provenance_tier(item[0], item[1]),
+                _PRIORITY_ORDER.get(item[0].priority, 1),
+                -len(item[1]),
+                item[2],
+                item[0].path,
+            ),
+        )
+        if hits
+        else []
+    )
+    result_hints = [
+        MemoryHint(
+            path=entry.path,
+            why=entry.why,
+            matched_keywords=tuple(sorted(matched)),
+            severity=entry.severity,
+        )
+        for entry, matched, _ in ranked[:max_hints]
+    ]
+
+    # Palace semantic recall — the RECALL lane, appended AFTER the keyword + lemma
+    # PINS, deduped by path, capped at max_hints. Gated + timeboxed inside the
+    # helper. Runs even when the keyword lanes found nothing (un-keyworded
+    # recall). Once-per-epoch dedup is handled by the caller's
+    # _dedup_and_cap_hints, so a fuzzy hit won't re-surface every prompt.
+    if palace is not None and hub_ctx is not None and len(result_hints) < max_hints:
+        have = {h.path for h in result_hints}
+        for sh in _semantic_memory_hits(prompt, project_root, palace, hub_ctx):
+            if sh.path in have:
+                continue
+            result_hints.append(sh)
+            have.add(sh.path)
+            if len(result_hints) >= max_hints:
+                break
+
+    # #375 Phase 2 (d): EMPIRE palace — the SECOND semantic lane. Bounded by
+    # a hard cap (max(1, max_hints//3), the scroll-reserve doctrine) and
+    # interleaved so empire hits can never crowd kingdom hits out: kingdom
+    # hits are trimmed only when they had already saturated the budget, and
+    # never below max_hints - cap. Hits carry tier='empire'; kingdom
+    # semantic hits carry tier='kingdom'. Only consulted when the kingdom
+    # palace is wired (mempalace-installed contexts) — same lane condition.
+    if palace is not None:
+        empire_cap = max(1, max_hints // 3)
+        empire_hits = _empire_semantic_hits(prompt, project_root, limit=empire_cap)
+        if empire_hits:
+            n_emp = min(len(empire_hits), empire_cap)
+            kept = result_hints[: max(0, max_hints - n_emp)]
+            have = {h.path for h in kept}
+            for eh in empire_hits[:n_emp]:
+                if eh.path in have:
+                    continue
+                kept.append(eh)
+                have.add(eh.path)
+                if len(kept) >= max_hints:
+                    break
+            result_hints = kept
+
+    # Empire LAW is PINNED ahead of local memory (#213 Lane 2): a rule sealed
+    # once surfaces first, in every project. Merged last so it takes the front
+    # slots; local + palace hits fill the remainder under the cap.
+    if global_hits:
+        seen = {h.path for h in global_hits}
+        merged = list(global_hits)
+        for h in result_hints:
+            if h.path not in seen:
+                merged.append(h)
+                seen.add(h.path)
+        result_hints = merged[:max_hints]
+    return result_hints
+
+
+_TS_EXTS = (".tsx", ".ts", ".jsx", ".js")
+_PY_EXTS = (".py",)
+
+
+def _resolve_import_target(source_path: str, target: str, project_root: Path) -> str | None:
+    """Resolve a code_edges target (module specifier) to a project-relative
+    file path, or None when the target is external / unresolvable.
+
+    Handles:
+    - Relative imports: "./X" / "../X" — resolve via source's directory,
+      try common extensions (.tsx, .ts, .jsx, .js, .py) and dir-index.
+    - Bare imports for Python source: "X" → source_dir / X.py.
+    - Scoped/external (e.g. "@tauri-apps/...", "react", or 3rd-party
+      Python pkg) — return None; not in project tree.
+    """
+    raw = (target or "").strip()
+    if not raw:
+        return None
+    # External-looking patterns we don't resolve
+    if raw.startswith("@") or raw.startswith("/"):
+        return None
+    src = Path(source_path.replace("\\", "/"))
+    src_dir = src.parent if src.parts else Path()
+    # Pick extensions based on source language
+    if str(src).endswith((".py", ".pyi")):
+        exts = _PY_EXTS
+    else:
+        exts = _TS_EXTS
+    if raw.startswith("./") or raw.startswith("../") or exts is _PY_EXTS:
+        base = (src_dir / raw).as_posix()
+    else:
+        return None
+    candidates: list[str] = []
+    for ext in exts:
+        candidates.append(base + ext)
+        candidates.append(base + "/index" + ext)
+    if exts is _PY_EXTS:
+        candidates.append(base + "/__init__.py")
+    for cand in candidates:
+        cand_norm = Path(cand).as_posix()
+        if (project_root / cand_norm).is_file():
+            return cand_norm
+    return None
+
+
+def discover_memory_for_symbol(
+    project_root: Path,
+    symbol_name: str,
+    file_path: str = "",
+    *,
+    max_hints: int = _MAX_HINTS,
+    max_hops: int = 0,
+) -> list[MemoryHint]:
+    """Find memory entries anchored on a symbol or file (goggles hop-0 lookup).
+
+    Two query modes:
+      * Symbol-led: ``symbol_name`` non-empty → match by
+        ``memory_symbol_anchors.symbol_name``. When ``file_path`` also
+        supplied, anchors with the same file_path rank first.
+      * File-led: ``symbol_name`` empty AND ``file_path`` non-empty →
+        match by ``memory_symbol_anchors.file_path`` only. Wired for the
+        x-ray goggles on pure file reads (Read/Edit on a path with no
+        named symbol).
+
+    Sovereign routes are filtered at the SQL layer. Results carry
+    ``hop_depth=0`` and ``matched_symbol`` set to the anchor's symbol.
+
+    Hop 1+ (anchors in imported files) walks code_edges from ``file_path``.
+    """
+    import sqlite3
+
+    sym = (symbol_name or "").strip()
+    fp = (file_path or "").replace("\\", "/").strip()
+    if not sym and not fp:
+        return []
+    db_path = project_root / ".MEMORY" / ".index" / "aidocs.sqlite3"
+    if not db_path.is_file():
+        return []
+    try:
+        with _canonical_connect(db_path) as conn:
+            anchor_columns = _memory_anchor_columns(conn)
+            confidence_select = (
+                "COALESCE(msa.confidence,'operator_pinned')"
+                if "confidence" in anchor_columns
+                else "'operator_pinned'"
+            )
+            if sym:
+                sql = (
+                    "SELECT mr.route_id, mr.target_path, mr.severity, mr.priority, "
+                    "msa.symbol_name AS anchor_symbol, "
+                    "msa.file_path AS anchor_file, "
+                    f"{confidence_select} AS confidence, "
+                    "COALESCE(mi.title, '') AS title "
+                    "FROM memory_symbol_anchors msa "
+                    "JOIN memory_routes mr ON mr.route_id = msa.route_id "
+                    "JOIN memory_index mi ON mi.path = mr.target_path "
+                    "WHERE msa.symbol_name = ? AND mr.severity != 'sovereign' "
+                    # Suppress removed/superseded canonical rows
+                    # (2026-05-20). Same shape as the keyword query.
+                    "AND COALESCE(mi.status, 'active') = 'active' "
+                    "AND COALESCE(mi.superseded_by, '') = '' "
+                    "ORDER BY "
+                    "  CASE WHEN msa.file_path = ? THEN 0 ELSE 1 END, "
+                    "  CASE mr.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, "
+                    "  mr.route_id"
+                )
+                rows = conn.execute(sql, (sym, fp)).fetchall()
+            else:
+                # File-led: no symbol, find anchors by file_path.
+                sql = (
+                    "SELECT mr.route_id, mr.target_path, mr.severity, mr.priority, "
+                    "msa.symbol_name AS anchor_symbol, "
+                    "msa.file_path AS anchor_file, "
+                    f"{confidence_select} AS confidence, "
+                    "COALESCE(mi.title, '') AS title "
+                    "FROM memory_symbol_anchors msa "
+                    "JOIN memory_routes mr ON mr.route_id = msa.route_id "
+                    "JOIN memory_index mi ON mi.path = mr.target_path "
+                    "WHERE msa.file_path = ? AND mr.severity != 'sovereign' "
+                    # Suppress removed/superseded canonical rows.
+                    "AND COALESCE(mi.status, 'active') = 'active' "
+                    "AND COALESCE(mi.superseded_by, '') = '' "
+                    "ORDER BY "
+                    "  CASE mr.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, "
+                    "  mr.route_id"
+                )
+                rows = conn.execute(sql, (fp,)).fetchall()
+    except sqlite3.Error:
+        return []
+
+    # Candidate rows are filtered again at the canonical pointer boundary.
+
+    hints: list[MemoryHint] = []
+    seen: set[str] = set()
+    for row in rows:
+        path = canonical_memory_pointer_path(row["target_path"])
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        why = str(row["title"]) or path.rsplit("/", 1)[-1].removesuffix(".md")
+        if len(why) > 60:
+            why = why[:57].rstrip() + "…"
+        hints.append(
+            MemoryHint(
+                path=path,
+                why=why,
+                matched_keywords=(),
+                severity=str(row["severity"]),
+                hop_depth=0,
+                matched_symbol=sym or str(row["anchor_symbol"]),
+                confidence=str(row["confidence"]),
+                edge="anchor:symbol" if sym else "anchor:file",
+            ),
+        )
+        if len(hints) >= max_hints:
+            break
+
+    # ── palace drawer anchors (memory-loop seal, 2026-07-09) ──
+    # Palace-extracted anchors live in the SAME memory_symbol_anchors table
+    # but their compatibility routes are severity='sovereign', so the legacy
+    # query above deliberately skips them. USEFULNESS LAW (Empire, 2026-07-09):
+    # a drawer hint surfaces ONLY when it resolves to something the agent can
+    # act on — a memory_read-able canonical path (memory-sourced drawers have
+    # deterministic ids: memory_sqlite_store.memory_drawer_id = 'memdrawer:'
+    # + path, chunks suffixed '#chunkNNNN') joined to an ACTIVE memory_index
+    # row for the title. Unresolvable drawer ids emit NOTHING — spamming the
+    # agent with opaque ids is worse than silence. Advisory only; edit
+    # blocking stays with list_anchors_blocking_edit and is untouched here.
+    if len(hints) < max_hints:
+        try:
+            with _canonical_connect(db_path) as conn:
+                cols = anchor_columns
+                drawer_confidence = (
+                    "COALESCE(confidence,'operator_pinned')"
+                    if "confidence" in cols
+                    else "'operator_pinned'"
+                )
+                if "drawer_id" in cols:
+                    if sym and fp:
+                        where = (
+                            "(symbol_name = ? AND (file_path = '' OR file_path = ?)) "
+                            "OR file_path = ?"
+                        )
+                        params: tuple = (sym, fp, fp)
+                    elif fp:
+                        where = "file_path = ?"
+                        params = (fp,)
+                    else:
+                        where = "symbol_name = ?"
+                        params = (sym,)
+                    drawer_rows = conn.execute(
+                        "SELECT drawer_id, symbol_name, "
+                        f"{drawer_confidence} AS confidence "
+                        "FROM memory_symbol_anchors "
+                        f"WHERE drawer_id IS NOT NULL AND drawer_id != '' AND ({where}) "
+                        f"ORDER BY CASE {drawer_confidence} "
+                        "  WHEN 'operator_pinned' THEN 0 WHEN 'exact_symbol' THEN 1 "
+                        "  WHEN 'file_anchor' THEN 2 ELSE 3 END, anchor_id "
+                        "LIMIT 10",
+                        params,
+                    ).fetchall()
+                else:
+                    drawer_rows = []
+                for row in drawer_rows:
+                    if len(hints) >= max_hints:
+                        break
+                    drawer_id = str(row["drawer_id"])
+                    # Reverse the deterministic memory-drawer id → canonical
+                    # path. Chunked children collapse onto the parent path.
+                    if not drawer_id.startswith("memdrawer:"):
+                        continue  # opaque/code drawer — nothing useful, emit nothing
+                    mem_path = canonical_memory_pointer_path(
+                        drawer_id[len("memdrawer:"):].split("#chunk", 1)[0]
+                    )
+                    if not mem_path or mem_path in seen:
+                        continue
+                    mi = conn.execute(
+                        "SELECT COALESCE(title,'') AS title FROM memory_index "
+                        "WHERE path = ? AND COALESCE(status,'active')='active' "
+                        "AND COALESCE(superseded_by,'')=''",
+                        (mem_path,),
+                    ).fetchone()
+                    if mi is None:
+                        continue  # retired/ghost drawer — stale, emit nothing
+                    seen.add(mem_path)
+                    why = str(mi["title"]) or mem_path.rsplit("/", 1)[-1].removesuffix(".md")
+                    if len(why) > 60:
+                        why = why[:57].rstrip() + "…"
+                    hints.append(
+                        MemoryHint(
+                            path=mem_path,
+                            why=why,
+                            matched_keywords=(),
+                            severity="normal",
+                            hop_depth=0,
+                            matched_symbol=str(row["symbol_name"] or sym),
+                            confidence=str(row["confidence"]),
+                            edge="palace:anchor",
+                        ),
+                    )
+        except sqlite3.Error:
+            pass
+
+    # ── hop 1: anchors in files that file_path imports (via code_edges) ──
+    if max_hops >= 1 and fp and len(hints) < max_hints:
+        imported_files: set[str] = set()
+        try:
+            with _canonical_connect(db_path) as conn:
+                for r in conn.execute(
+                    "SELECT target FROM code_edges WHERE source_path = ?",
+                    (fp,),
+                ):
+                    resolved = _resolve_import_target(fp, str(r["target"]), project_root)
+                    if resolved:
+                        imported_files.add(resolved)
+                if imported_files:
+                    placeholders = ",".join("?" * len(imported_files))
+                    hop1_sql = (
+                        "SELECT mr.route_id, mr.target_path, mr.severity, "
+                        "msa.symbol_name AS anchor_symbol, "
+                        f"{confidence_select} AS confidence, "
+                        "COALESCE(mi.title, '') AS title "
+                        "FROM memory_symbol_anchors msa "
+                        "JOIN memory_routes mr ON mr.route_id = msa.route_id "
+                        "JOIN memory_index mi ON mi.path = mr.target_path "
+                            f"WHERE msa.file_path IN ({placeholders}) "
+                        "AND mr.severity != 'sovereign' "
+                        # Suppress removed/superseded canonical rows.
+                        "AND COALESCE(mi.status, 'active') = 'active' "
+                    "AND COALESCE(mi.superseded_by, '') = '' "
+                        "ORDER BY "
+                        "  CASE mr.severity WHEN 'critical' THEN 0 "
+                        "                   WHEN 'high'     THEN 1 "
+                        "                   ELSE 2 END, "
+                        "  mr.route_id"
+                    )
+                    for row in conn.execute(hop1_sql, list(imported_files)):
+                        if len(hints) >= max_hints:
+                            break
+                        path = canonical_memory_pointer_path(row["target_path"])
+                        if not path or path in seen:
+                            continue
+                        seen.add(path)
+                        why = str(row["title"]) or path.rsplit("/", 1)[-1].removesuffix(".md")
+                        if len(why) > 60:
+                            why = why[:57].rstrip() + "…"
+                        hints.append(
+                            MemoryHint(
+                                path=path,
+                                why=why,
+                                matched_keywords=(),
+                                severity=str(row["severity"]),
+                                hop_depth=1,
+                                matched_symbol=str(row["anchor_symbol"]),
+                                confidence=str(row["confidence"]),
+                                edge="code:import",
+                            ),
+                        )
+        except sqlite3.Error:
+            pass
+
+    return hints
+
+
+def format_memory_hints(hints: Iterable[MemoryHint]) -> str:
+    """Render memory hints as a single prompt-context line.
+
+    Severity is a tag, not inline content (Empire's decree). Each entry is
+    prefixed with [CRITICAL]/[HIGH] when applicable; [hop:N] when the
+    entry was reached via symbol-anchor traversal at depth N>0;
+    [symbol:NAME] when a hop-0 anchor match named the symbol. Sovereign
+    entries are filtered upstream and never reach this renderer.
+    """
+    hint_list = list(hints)
+    if not hint_list:
+        return ""
+    parts: list[str] = []
+    for h in hint_list:
+        markers: list[str] = []
+        sev = (h.severity or "normal").lower()
+        if sev == "critical":
+            markers.append("[CRITICAL]")
+        elif sev == "high":
+            markers.append("[HIGH]")
+        if h.hop_depth and h.hop_depth > 0:
+            markers.append(f"[hop:{h.hop_depth}]")
+        elif h.matched_symbol:
+            markers.append(f"[symbol:{h.matched_symbol}]")
+        prefix = (" ".join(markers) + " ") if markers else ""
+        if h.why:
+            parts.append(f"{prefix}`{h.path}` ({h.why})")
+        else:
+            parts.append(f"{prefix}`{h.path}`")
+    paths = [h.path for h in hint_list]
+    call_hint = f"memory_read(targets={paths!r})"
+    return "Relevant project memory: " + ", ".join(parts) + f". Read with {call_hint}."
+
+
+def clear_cache() -> None:
+    """Test-only helper — drop the scan cache."""
+    _scan_cache.clear()

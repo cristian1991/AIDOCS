@@ -1,0 +1,199 @@
+# AIDOCS doctrine laws — Semgrep rules
+#
+# Doctrine 2026-05-29 (Empire re-seal — deploy-gate truth, post-bloat):
+# Gate 1c invokes this ruleset with `--error`. EVERY new finding
+# fails the deploy. After the 2026-05-29 semgrep audit pass:
+#   - cli.py editor launch: MIGRATED to subprocess.run argv (waiver gone)
+#   - mcp_server.py related-project wrapper: MIGRATED to compile() +
+#     types.FunctionType (waiver gone)
+#   - shell_egress_service.py execute_shell(): KEPT — the ONE
+#     chokepoint where shell-string semantics survive after the
+#     destructive_floor + heuristic_judge cascade. Rationale rewritten
+#     to NOT claim the destructive_floor "closes" all injection;
+#     caller contract enforced by
+#     test_no_untrusted_fragment_concat_into_execute_shell.
+# baseline_count=1 (was 3 pre-audit).
+# To add a NEW waiver, annotate the specific line with
+# `# nosemgrep:<rule-id>  # <why>` and reference the rationale in
+# the commit. The baseline is intentional friction, not silent
+# suppression — `grep -rn nosemgrep mcp/server` lists every audit.
+#
+# Severity: ERROR across every rule. Deliberately consistent with the
+# deploy-script call (`--error`) and the README in mcp/.deploy-
+# reports/. One doctrine, three surfaces, same answer.
+#
+# Why rules here and not in tests: tests prove behavior on inputs you
+# thought to write; semgrep proves SHAPE — code patterns that would
+# violate doctrine independent of which input flows through them. The
+# combination is what the Empire's "structural law + behavioral law"
+# doctrine pins.
+
+rules:
+  - id: aidocs-direct-subprocess-outside-shell-egress
+    # THE AUDITED SEAM IS THE LAW; THE WAIVER LIST WAS THE BUG.
+    #
+    # Measured 2026-09-06: 63 `nosemgrep` waivers under mcp/server/aidocs_mcp,
+    # and almost every one sat on a line like
+    #
+    #     run=lambda *a, **kw: subprocess.run(*a, **kw),   # nosemgrep: ...
+    #
+    # — the passthrough lambda INSIDE `audited_run(...)` / `audited_popen(...)`.
+    # That is the CORRECT, fully-governed form: the wrapper applies the
+    # fingerprint, the reason, the window posture and the process-audit ledger
+    # row, and the lambda exists only so the real callee is named at the seam.
+    # The rule could not see the wrapper, so it flagged the compliant code and
+    # every compliant author had to write a waiver. THE LAW WAS PUNISHING
+    # COMPLIANCE — and 63 waivers is what that costs: a list too long to read,
+    # in which one genuinely raw spawn would hide perfectly.
+    #
+    # It now recognises the seam directly, so a properly-routed spawn needs NO
+    # waiver and the 28 file-level excludes are gone. What stays flagged is
+    # exactly what should be: a subprocess call NOT inside the chokepoint.
+    #
+    # THE ONE STANDING EXCEPTION is claude_hook_shim, which cannot import
+    # ShellEgressService without depending on the very package whose absence it
+    # exists to survive (#616). It is declared once in
+    # spawn_census.UNAUDITABLE_PRE_IMPORT_SPAWNS — read by the #345 seal, the
+    # fingerprint doctrine and the census — and carries the single remaining
+    # inline waiver here. Four surfaces, one fact.
+    #
+    # SEVERITY IS NOW ERROR WITH NO PRODUCTION EXCLUDES, which is the promotion
+    # path the old comment described and deferred: "as files migrate ... flip
+    # this severity back to ERROR and the rule becomes the second seal." The
+    # migration it was waiting for had in fact already happened — every one of
+    # those 28 files routes through audited_*; only the rule could not tell.
+    # `tests/**` and `scripts/**` remain out of scope because this rule governs
+    # SHIPPED RUNTIME CODE, which is a scope statement, not a baseline.
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(...)
+          - pattern: subprocess.Popen(...)
+          - pattern: subprocess.call(...)
+          - pattern: subprocess.check_output(...)
+          - pattern: subprocess.check_call(...)
+          - pattern: os.system(...)
+      # The sanctioned form: anything lexically inside an audited_* call is at
+      # the chokepoint by construction.
+      - pattern-not-inside: audited_run(...)
+      - pattern-not-inside: audited_popen(...)
+    message: |
+      Direct subprocess / os.system call OUTSIDE the audited shell-egress
+      chokepoint. Route it through audited_run(...) / audited_popen(...) —
+      or ShellEgressService.execute() for governed shell — so the
+      fingerprint, reason, window posture and process-audit ledger row are
+      applied uniformly.
+
+      A passthrough lambda inside audited_run/audited_popen is ALREADY
+      correct and needs no waiver. If you are seeing this on one, the
+      wrapper call is malformed.
+
+      There is exactly ONE sanctioned exception (claude_hook_shim, which
+      must run when the package holding the auditor is absent), declared in
+      spawn_census.UNAUDITABLE_PRE_IMPORT_SPAWNS. A second one is a
+      doctrine change, not a waiver.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include:
+        - "*.py"
+      exclude:
+        # The chokepoint itself: its calls ARE the seam.
+        - "**/shell_egress_service.py"
+        # Not shipped runtime code; scope, not baseline.
+        - "tests/**"
+        - "scripts/**"
+
+  - id: aidocs-no-os-system
+    pattern: os.system(...)
+    message: |
+      Use code_runner / ai_run instead of os.system — every shell
+      invocation must flow through the judge / bash_policy / T0
+      gates. os.system bypasses all of that.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include:
+        - "*.py"
+      exclude:
+        - "tests/**"
+        - "scripts/**"
+
+  - id: aidocs-no-shell-true-in-subprocess
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(..., shell=True, ...)
+          - pattern: subprocess.Popen(..., shell=True, ...)
+          - pattern: subprocess.call(..., shell=True, ...)
+          - pattern: subprocess.check_output(..., shell=True, ...)
+          - pattern: subprocess.check_call(..., shell=True, ...)
+    message: |
+      shell=True invites command injection. Pass argv as a list and
+      let subprocess execve directly. If you genuinely need shell
+      composition, route through code_runner.ai_run which applies
+      bash_policy + judge.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include:
+        - "*.py"
+      exclude:
+        - "tests/**"
+        - "scripts/**"
+
+  - id: aidocs-no-bare-except-pass
+    pattern: |
+      try:
+          ...
+      except:
+          pass
+    message: |
+      Bare-except + pass swallows EVERY exception including
+      KeyboardInterrupt and SystemExit. Catch the specific class
+      you expect; if the doctrine genuinely is "best-effort, never
+      raise", catch Exception and log at debug — but never bare.
+    severity: ERROR
+    languages: [python]
+
+  - id: aidocs-no-eval
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+    message: |
+      eval/exec on agent-derived strings is a code-injection vector.
+      If you need dynamic dispatch, use a registry / lookup table.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include:
+        - "*.py"
+      exclude:
+        - "tests/**"
+
+  - id: aidocs-no-pickle-load
+    pattern-either:
+      - pattern: pickle.load(...)
+      - pattern: pickle.loads(...)
+    message: |
+      pickle is a deserialization-RCE surface. Use json / msgpack /
+      protobuf for cross-process payloads. AIDOCS persists state via
+      sqlite + json, not pickle, by doctrine.
+    severity: ERROR
+    languages: [python]
+
+  - id: aidocs-no-hardcoded-vps-ip
+    # The VPS IP is a deploy-script constant; it must NOT appear in
+    # any runtime aidocs_mcp source. Catches a copy-paste from the
+    # deploy script into a normal Python file.
+    pattern-regex: '159\.195\.32\.176'
+    message: |
+      VPS IP hardcoded in source. Deploy infrastructure addresses
+      belong in the deploy script (mcp/scripts/deploy_aidocs_gate.sh)
+      or operator config — never in runtime code that would ship.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include:
+        - "*.py"
+      exclude:
+        - "scripts/**"
+        - "tests/**"

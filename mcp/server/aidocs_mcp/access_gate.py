@@ -1,0 +1,2342 @@
+"""Unified access gate — single decision engine for all file access control.
+
+6-level cascade, first match wins:
+    Level 1: Managed Mode Gate         — block raw file tools when managed
+    Level 2: Infrastructure Protection — block writes to AIDOCS config/source
+    Level 3: Sensitive File Protection — block .env, credentials, keys
+    Level 4: Memory Path Gate          — .MEMORY/ reads free, writes intent-gated
+    Level 5: Read Gate                 — per-file discovery, known_exact_path bypass
+    Level 6: Edit Gate                 — requires prior read/discovery
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .query_gate import QueryGateStore
+
+
+@dataclass(slots=True)
+class GateContext:
+    """Caller builds this from managed mode, session, and gate state."""
+
+    managed: bool
+    session_id: str | None
+    dev_mode: bool  # unlocks AIDOCS source editing
+    allow_config_edit: bool  # unlocks aidocs.toml editing
+    gate_enforce: bool  # tool gates active (bash allowlist, raw tools, destructive)
+    gate_state: dict[str, Any]
+    # RBAC-resolved unlock for hard-protected DATA files (index.aidocs,
+    # gate-state JSON). Set upstream after a role check (+ escalate). Does
+    # NOT unlock sqlite — those are config_set-only, never file-writable.
+    # Defaulted so existing GateContext constructions stay valid.
+    allow_hard_protected_edit: bool = False
+
+
+@dataclass(slots=True)
+class GateDecision:
+    allowed: bool
+    level: str
+    reason: str | None = None
+    # Marks a pass-through that should still be recorded in the event
+    # stream for audit — used when an operator-deliberate unblock
+    # (e.g. security.allow_raw_edits) lets a tool through that would
+    # otherwise have been blocked at tier-0.
+    advisory: bool = False
+    # #590 follow-up (2026-08-13): the level alone is NOT enough to decide
+    # whether a refusal may degrade during a daemon outage. `read_gate` is
+    # the level for BOTH "reach this via ai_find first" (pure routing, the
+    # nudge #590 correctly freed) AND "you may not see this file at all" —
+    # '..' traversal escape, symlink/junction path-laundering, and
+    # OWNERSHIP_FOREIGN cross-session artifact isolation. Degrading the
+    # LEVEL degraded the isolation checks with it, so while the daemon was
+    # down an agent could traverse out of the project and read another
+    # session's task output, both answering allowed=True.
+    #
+    # Isolation refusals set degradable=False and keep refusing. The default
+    # stays True so #590's contract (level-based eligibility) is unchanged
+    # for every routing nudge that has not opted out.
+    #
+    # KNOWN RESIDUAL: a NEW isolation refusal added on `read_gate` that
+    # forgets this flag degrades again. The durable fix is to move isolation
+    # refusals onto their own level so they are ineligible by construction
+    # rather than by memory — matching this module's "derived rather than
+    # listed" preference. Filed as follow-up; not done here because renaming
+    # a level ripples into consumers that branch on decision.level
+    # (mcp_server.py lane-inert check, agent_orchestrator family mapping).
+    degradable: bool = True
+
+    def __post_init__(self) -> None:
+        if self.allowed or not self.reason:
+            return
+        from .daemon_reachability import decorate_refusal, degraded_read_allowance
+        from .tool_gate_service import refusal_with_affordance
+
+        # #590: DEGRADE, DO NOT DEADLOCK. When the aidocs tool surface is
+        # unreachable, a READ-routing workflow nudge (indexed_file_gate /
+        # read_gate) must not hold — its whole content is "use ai_find
+        # instead", and ai_find does not exist right now. Holding it forbids
+        # nothing hazardous and costs an entire session, in EVERY project on
+        # this machine, because one daemon serves them all.
+        #
+        # This is the ONE place the flip happens for this gate: every hook-side
+        # deny is constructed through GateDecision, so the class distinction
+        # lands for all of them at once rather than at each call site.
+        # Security-grade levels and execution/write nudges are excluded inside
+        # degraded_read_allowance and keep refusing — that pair (raw read
+        # succeeds, real security still refuses) IS #590's acceptance test.
+        banner = degraded_read_allowance(self.level or "") if self.degradable else None
+        if banner is not None:
+            self.allowed = True
+            self.advisory = True  # recorded in the event stream, never silent
+            self.reason = f"⚠ {banner}\n  ↳ Workflow routing suppressed: {self.reason}"
+            return
+
+        self.reason = refusal_with_affordance(self.reason, self.level or "access_gate.refusal")
+        # #432 residual: when hooks are alive but the aidocs daemon is
+        # unreachable (half-open gate), the deny STANDS (fail-closed) but
+        # names the condition + recovery instead of a generic block. Passing
+        # the level lets it also mark an unreachable tool suggestion as
+        # SUPERSEDED (#590 ask 3) rather than leaving the agent to choose
+        # between a headline and a contradicting footnote.
+        self.reason = decorate_refusal(self.reason, None, self.level or "")
+
+
+
+
+# ── Constants ──
+
+_BLOCKED_RAW_FILE_TOOLS: set[str] = {
+    "read",
+    "grep",
+    "glob",
+    "edit",
+    "update",
+    "write",
+    "patch",
+    "apply_patch",
+    "multiedit",
+}
+
+# Raw edit tools that ALSO bypass the AIDOCS index and leave stale
+# snapshots behind. Unlike raw reads (which waste tokens but are
+# recoverable), raw edits are a silent correctness hazard: other lanes
+# read stale code, edit_history loses the change, and audit trails
+# break. "edit"/"write" overlap with everyday English verbs, so NLP
+# user-grants are not enough signal — unlock is dashboard-only via
+# `security.allow_raw_edits` config, which is operator-deliberate,
+# persisted, and survives restarts.
+_RAW_EDIT_TOOLS: set[str] = {
+    "edit",
+    "update",
+    "write",
+    "patch",
+    "apply_patch",
+    "multiedit",
+    "notebookedit",
+    "str_replace_based_edit_tool",
+}
+
+# Raw shell tools that route around `ai_run`'s journal audit trail.
+# The Claude Code VSCode extension names this tool "Bash"; some CLI
+# variants expose it as "update" — both must block identically so
+# host-dependent behavior doesn't emerge. Two unblock paths:
+#   - `security.allow_raw_shell` dashboard flag: persistent operator
+#     unblock, survives restarts.
+#   - Per-turn NLP grant ("I allow bash"): one-turn bypass for cases
+#     where ai_run can't run the command (e.g. test retry loop).
+# Both unblock paths still flow through bash_policy (allow/deny table)
+# and the heuristic judge downstream, so destructive commands stay
+# blocked regardless of grant.
+# 2026-04-27: extended from {"bash"} to cover every shell-equivalent
+# tool surface. Pre-fix, hosts that exposed PowerShell / pwsh / cmd /
+# wsl / Monitor as separate tools bypassed the raw-shell gate entirely
+# because their tool names weren't in this set. Confirmed via red-team
+# probes 7-12 + 14b (backlog #61): PowerShell `Set-Content` against
+# `mcp/server/aidocs_mcp/_probe.py` with dev_mode=off succeeded silently.
+# Same root cause as the heuristic-judge `_SHELL_EQUIVALENT_TOOL_NAMES`
+# fix earlier 2026-04-26 — every gate that has a tool-name allowlist
+# needs to know about all shell-shape tool surfaces.
+# Names are lowercased here because access_gate normalizes tool names
+# to lowercase before the membership check (see check_raw_shell).
+_RAW_SHELL_TOOLS: set[str] = {
+    "bash",
+    "powershell",
+    "pwsh",
+    "cmd",
+    "wsl",
+    "monitor",
+}
+
+
+def _gate_msg(key: str, **kwargs: str) -> str:
+    """Load gate message from gate_messages TOML with variable substitution."""
+    from .config import render_interaction_text
+
+    return render_interaction_text(f"interaction.gate_messages.{key}", **kwargs)
+
+
+# Path-extraction slot map. Each slot is one semantic target — its
+# aliases must agree, but slots in different rows are independent.
+#
+# Rationale (co-conductor 2026-04-30): conflicting aliases for the
+# SAME slot are ambiguous input that lets one gate see "src/app.py"
+# while another sees "../outside.py". But many tools legitimately
+# send TWO independent paths (move/copy: source_path + dest_path;
+# rename: old_path + new_path; batch_edit: each edit has its own
+# path). A naive cross-key comparison would refuse those.
+#
+# So: aliases are grouped by slot. Within a slot, aliases must
+# normalize to the same value. Across slots, no comparison is made.
+# Tools that act on multiple paths walk each slot or each list entry
+# independently.
+_PATH_SLOT_ALIASES: dict[str, tuple[str, ...]] = {
+    # Primary target — what the tool reads/writes/edits/searches.
+    # `file_path` is the Claude Code/MCP canonical; `filePath` is the
+    # OpenCode host convention; `path` is the legacy short form still
+    # used by ai_get_lines, ai_text_search, etc.
+    "target_path": ("file_path", "filePath", "path"),
+    # Notebook target — used by NotebookEdit. Distinct slot because a
+    # notebook call may legitimately reference both the notebook AND
+    # a sidecar file; the notebook is the live target.
+    "notebook_target": ("notebook_path", "notebookPath"),
+}
+
+# Pattern keys (Glob/Grep). Patterns are NOT paths — they describe
+# search criteria, not a target file. Kept separate so the discovery
+# branch can still consult them when no real path slot is set.
+_PATTERN_INPUT_KEYS: tuple[str, ...] = ("pattern",)
+
+
+class PathInputConflict(ValueError):
+    """Slot-internal alias conflict — two or more aliases for the same
+    semantic target slot resolve to distinct paths after light
+    normalization. Refused at the trust boundary because silently
+    picking precedence would let one gate decide on one path while
+    another decides on a different one within the same call.
+
+    Distinct slots (e.g. `file_path` vs `notebook_path`) are NOT
+    compared and never raise this; tools that legitimately use both
+    walk each slot independently.
+
+    Attributes:
+        slot: the slot name whose aliases disagree.
+        values: dict[alias_key, normalized_value] of the conflict.
+
+    """
+
+    def __init__(self, slot: str, values: dict[str, str]) -> None:
+        self.slot = slot
+        self.values = dict(values)
+        rendered = ", ".join(f"{k}={v!r}" for k, v in sorted(values.items()))
+        super().__init__(
+            f"conflicting aliases for slot {slot!r}: {rendered}. "
+            f"Aliases for the same slot must agree after normalization.",
+        )
+
+
+def _is_windows_host() -> bool:
+    import sys as _sys
+
+    return _sys.platform == "win32"
+
+
+# Sentinel for traversal-rejected values. Distinct from "" (absent)
+# because a caller who SENDS `../x` is not the same as a caller who
+# omits the slot — the former should fail loudly when paired with a
+# real path (the alias disagreement is real), while the latter should
+# leave the slot empty.
+_TRAVERSAL_REJECTED = "<<traversal-rejected>>"
+
+
+def _normalize_path_value(value: object) -> str:
+    """Light, deterministic normalization for slot-equality comparison.
+
+    Steps (in order):
+      - trim leading/trailing whitespace
+      - return "" on empty
+      - normalize separators: backslash -> forward slash
+      - reject ``..`` segments anywhere in the path (BEFORE any
+        normpath collapse — `src/../outside.py` is just as suspect
+        as `../outside.py` and must not be silently rewritten to
+        `outside.py`). Returns the traversal sentinel so a paired
+        clean path triggers conflict refusal rather than being
+        silently accepted.
+      - collapse ``./`` and redundant slashes (posixpath.normpath)
+      - casefold on Windows (NTFS is case-insensitive); leave POSIX
+        case-sensitive
+
+    Does NOT resolve(), realpath(), or canonicalize against the
+    filesystem — gates that need that decide explicitly. Equality
+    here is purely string-level after the listed steps.
+    """
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    text = text.replace("\\", "/")
+    # Reject traversal segments before normpath collapses them.
+    # `src/../outside.py` would normpath to `outside.py`, hiding the
+    # original intent — refuse loudly instead.
+    if ".." in text.split("/"):
+        return _TRAVERSAL_REJECTED
+    # Collapse `./` and redundant slashes via posixpath only — never
+    # os.path, since we've already forced forward slashes and don't
+    # want host-platform behavior leaking back in.
+    import posixpath as _pp
+
+    text = _pp.normpath(text)
+    if _is_windows_host():
+        text = text.casefold()
+    return text
+
+
+def _collect_slot_values(
+    tool_input: dict[str, Any] | None,
+    aliases: tuple[str, ...],
+) -> dict[str, str]:
+    """Return {alias: normalized_value} for present aliases.
+
+    Includes the traversal sentinel so the caller can detect a
+    `..`-bearing alias and refuse loudly when paired with a clean
+    path. Empty/absent aliases are skipped.
+    """
+    if not tool_input:
+        return {}
+    found: dict[str, str] = {}
+    for key in aliases:
+        if key in tool_input:
+            normalized = _normalize_path_value(tool_input.get(key))
+            if normalized:  # includes _TRAVERSAL_REJECTED sentinel
+                found[key] = normalized
+    return found
+
+
+def _resolve_slot(
+    tool_input: dict[str, Any] | None,
+    slot: str,
+) -> str:
+    """Return the canonical normalized value for one slot.
+
+    - 0 aliases present -> "".
+    - 1 alias present, or N aliases all normalizing equal ->
+      return that canonical value.
+    - N aliases with distinct normalized values -> raise
+      PathInputConflict(slot, values).
+    - Single alias with a `..` traversal segment -> raise
+      PathInputConflict(slot, values) with the sentinel marker so
+      the caller refuses the call instead of silently treating the
+      slot as empty.
+    """
+    aliases = _PATH_SLOT_ALIASES.get(slot)
+    if not aliases:
+        return ""
+    found = _collect_slot_values(tool_input, aliases)
+    if not found:
+        return ""
+    distinct = set(found.values())
+    if len(distinct) == 1:
+        canonical = next(iter(distinct))
+        if canonical == _TRAVERSAL_REJECTED:
+            raise PathInputConflict(slot, found)
+        return canonical
+    # Multiple distinct values — conflict regardless of whether one
+    # of them is the traversal sentinel. The sentinel paired with a
+    # clean path is exactly the case we want to fail loudly on.
+    raise PathInputConflict(slot, found)
+
+
+def _extract_path(tool_input: dict[str, Any] | None) -> str:
+    """Return the single canonical target path from `tool_input`.
+
+    Slot-aware: checks `target_path` first, falls back to
+    `notebook_target` when the primary slot is empty. Each slot's
+    aliases are checked for internal conflict; cross-slot values are
+    never compared.
+
+    Raises PathInputConflict on slot-internal disagreement (after
+    normalization). Returns "" when no path-slot alias is present.
+    """
+    primary = _resolve_slot(tool_input, "target_path")
+    if primary:
+        return primary
+    return _resolve_slot(tool_input, "notebook_target")
+
+
+def _extract_path_or_pattern(tool_input: dict[str, Any] | None) -> str:
+    """Like _extract_path but also accepts pattern keys (Glob/Grep).
+
+    Path slots take precedence over pattern keys: a Grep call with
+    both `file_path` and `pattern` is treated as a path call. The
+    pattern key is consulted only when no path slot is set.
+    """
+    direct = _extract_path(tool_input)
+    if direct:
+        return direct
+    if not tool_input:
+        return ""
+    for key in _PATTERN_INPUT_KEYS:
+        value = tool_input.get(key)
+        if value:
+            normalized = _normalize_path_value(value)
+            if normalized:
+                return normalized
+    return ""
+
+
+def _get_raw_tool_replacement(tool: str) -> str:
+    from .config import render_interaction_text
+
+    text = render_interaction_text(f"interaction.raw_tool_replacements.{tool}")
+    if text and not text.startswith("{"):
+        return text
+    return f"Use the equivalent AIDOCS MCP tool instead of `{tool}`."
+
+
+def _build_reroute_call(tool: str, tool_input: dict[str, Any] | None) -> str:
+    """Build an exact MCP call suggestion from the intercepted raw tool args.
+
+    Pure UX helper — runs only after a gate has already decided to
+    block. If path inputs conflict (PathInputConflict), the caller's
+    block message stands on its own; we just skip the reroute hint.
+    """
+    if not tool_input:
+        return ""
+    tool = tool.strip().lower()
+
+    try:
+        canonical_path = _extract_path(tool_input)
+    except PathInputConflict:
+        return ""
+
+    if tool == "read":
+        path = canonical_path
+        if path:
+            offset = tool_input.get("offset") or tool_input.get("start_line") or 1
+            limit = tool_input.get("limit") or tool_input.get("count") or 100
+            return f'Use instead: `ai_get_lines(path="{path}", start_line={offset}, count={limit}, known_exact_path=true)`'
+
+    if tool == "grep":
+        pattern = tool_input.get("pattern") or ""
+        path = tool_input.get("path") or tool_input.get("include") or ""
+        if pattern:
+            # A grep pattern IS a regex — pass regex=true so ai_text_search
+            # keeps its meaning (a literal query would mangle metacharacters),
+            # and surface regex support at the exact moment the agent reaches
+            # for grep (#269: make regex discoverable by default).
+            args = f'query="{pattern}", regex=true'
+            if path:
+                args += f', root="{path}"'
+            return (
+                f"Use instead: `ai_text_search({args})` "
+                "(grep patterns are regex; ai_find(mode='regex') also does pattern search)"
+            )
+
+    if tool == "glob":
+        pattern = tool_input.get("pattern") or ""
+        if pattern:
+            return f'Use instead: `ai_search(query="{pattern}")`'
+
+    if tool in ("edit", "update", "multiedit", "patch", "apply_patch"):
+        path = canonical_path
+        if path:
+            return f'Use instead: `ai_replace(mode="string", path="{path}", old_string=..., new_string=...)` for a small swap, or `ai_replace(mode="anchor", path="{path}", start_anchor=..., end_anchor=..., replacement=...)` for a surgical edit (also modes "symbol" and "lines")'
+
+    if tool == "write":
+        path = canonical_path
+        if path:
+            return f'Use instead: `ai_create_file(path="{path}", content=...)`'
+
+    return ""
+
+
+# Infrastructure protection — always blocked for writes
+_PROTECTED_CONFIG_FILES: set[str] = {"aidocs.toml", "aidocs-plugin.json"}
+
+# Infrastructure paths — blocked unless dev_mode
+_INFRASTRUCTURE_PREFIXES: tuple[str, ...] = ("mcp/server/aidocs_mcp/",)
+
+# Sensitive file patterns
+_SENSITIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(^|[/-])\.env(\.|$)", re.IGNORECASE),
+    re.compile(r"credential", re.IGNORECASE),
+    re.compile(r"secret", re.IGNORECASE),
+    re.compile(r"\.(key|pem|pfx|p12|keystore|jks)$", re.IGNORECASE),
+    # SSH material — id_rsa / id_ed25519 / id_ecdsa / id_dsa and anything
+    # under a .ssh/ directory. None of these match key/secret/credential
+    # by name, so they need their own pattern.
+    re.compile(r"(^|[/-])\.ssh/", re.IGNORECASE),
+    re.compile(r"(^|[/-])id_(rsa|dsa|ecdsa|ed25519)(\.|$)", re.IGNORECASE),
+    # AWS / cloud credential stores.
+    re.compile(r"(^|[/-])\.aws/credentials$", re.IGNORECASE),
+    re.compile(r"(^|[/-])\.npmrc$", re.IGNORECASE),
+    # Install-wide AIDOCS global config DB — lives in the user home dir,
+    # holds settings that affect every project for this user.
+    re.compile(r"(^|/)\.aidocs/config\.sqlite3(-journal|-wal|-shm)?$", re.IGNORECASE),
+    # The sovereign soul chamber (#222 leak 1). empire.sqlite3 carries the
+    # sovereign-only rows and soul-backups/ holds each scroll in PLAINTEXT
+    # JSON. config.sqlite3 was listed here and its sibling was not — an
+    # oversight, not a decision: the config DB holds settings, the empire DB
+    # holds souls. These two patterns are only the DEFAULT-path backstop;
+    # _is_soul_chamber below is the load-bearing check, because a hand-kept
+    # pattern for ~/.aidocs stops fencing anything the moment
+    # AIDOCS_EMPIRE_DB relocates the chamber.
+    re.compile(r"(^|/)\.aidocs/empire\.sqlite3(-journal|-wal|-shm)?$", re.IGNORECASE),
+    re.compile(r"(^|/)\.aidocs/soul-backups/", re.IGNORECASE),
+    # Cloud / service credential files whose NAME carries no env/key/secret
+    # token but which routinely hold private keys or tokens. Scoped tightly
+    # (extension- or path-anchored) so ordinary source like
+    # `service_account_manager.py` is NOT swept in — those reach the indexed
+    # gate instead. The CONTENT backstop below catches the rest.
+    re.compile(r"service[_-]?account[^/]*\.json$", re.IGNORECASE),
+    re.compile(r"[-_]adminsdk[^/]*\.json$", re.IGNORECASE),  # firebase admin sdk
+    re.compile(r"(^|[/-])\.netrc$", re.IGNORECASE),
+    re.compile(r"(^|[/-])\.pgpass$", re.IGNORECASE),
+    re.compile(r"(^|[/-])\.htpasswd$", re.IGNORECASE),
+    re.compile(r"(^|[/-])\.dockercfg$", re.IGNORECASE),
+    re.compile(r"(^|/)\.docker/config\.json$", re.IGNORECASE),
+    re.compile(r"(^|/)\.kube/config$", re.IGNORECASE),
+    re.compile(r"\.(p8|ovpn|kdbx|asc|gpg)$", re.IGNORECASE),
+    # Unix credential stores (2026-07-09): with unknown-external reads now
+    # GOVERNED (3d903bd4) instead of blanket-denied, these must block by
+    # NAME — /etc/shadow et al. previously hid behind the unknown-external
+    # deny and matched no sensitive pattern. /etc/passwd stays governed
+    # (world-readable, not a secret store).
+    re.compile(r"(^|/)etc/(shadow|gshadow|sudoers)(\.|$|/)", re.IGNORECASE),
+)
+
+# Source-code extensions that ARE covered by the AIDOCS index. Host Read
+# of these must go through discovery (ai_find/ai_bundle/ai_get_lines) or
+# carry a known_exact/lane grant — they're not free-form artifacts. Any
+# OTHER extension (logs, csv, config text, assets, structured-binary) is
+# treated as a non-indexed artifact that the host Read viewer may open.
+_CODE_SOURCE_SUFFIXES: tuple[str, ...] = (
+    ".py",
+    ".pyi",
+    ".pyx",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".go",
+    ".rs",
+    ".rb",
+    ".php",
+    ".java",
+    ".kt",
+    ".kts",
+    ".scala",
+    ".cs",
+    ".fs",
+    ".vb",
+    ".c",
+    ".h",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".hpp",
+    ".hh",
+    ".swift",
+    ".m",
+    ".mm",
+    ".vue",
+    ".svelte",
+    ".dart",
+    ".lua",
+    ".sql",
+)
+
+# Global host bootstrap files — agents must NEVER mutate these.
+# They define per-user routing rules that every AIDOCS session relies
+# on; silent drift here creates cascading confusion across projects.
+# Only the AIDOCS installer touches them (via its own managed section
+# markers). Tier-0 block: no grant phrase, no dev_mode, no gate_enforce
+# override flips this. Operator fix-up = edit manually in your editor.
+# (Regression guard 2026-04-20 after agent slipped through the gate.)
+_GLOBAL_BOOTSTRAP_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(^|/|\\)\.claude[/\\]CLAUDE\.md$", re.IGNORECASE),
+    re.compile(r"(^|/|\\)\.claude[/\\]AGENTS\.md$", re.IGNORECASE),
+    re.compile(r"(^|/|\\)\.config[/\\]opencode[/\\]AGENTS\.md$", re.IGNORECASE),
+    re.compile(r"(^|/|\\)\.claude[/\\]settings\.json$", re.IGNORECASE),
+    re.compile(r"(^|/|\\)\.config[/\\]opencode[/\\]opencode\.jsonc?$", re.IGNORECASE),
+    # #621: host SKILL and SLASH-COMMAND files. The host lists their
+    # frontmatter into EVERY future session's context, so whoever writes one
+    # injects instructions into every session that follows -- with no
+    # signature, no hash, no manifest and no approval. That is the same
+    # authority CLAUDE.md carries above, reached by a different path, and it
+    # was the one host-listed surface this exhaustive list omitted.
+    #
+    # The irony that motivated the fix: skill_scanner's own CRITICAL patterns
+    # are exactly this attack ("ignore all previous instructions", "| sh"),
+    # and the scanner runs over the AIDOCS registry only -- never over
+    # `.claude/**`. It was pointed away from the one surface that is both
+    # unprotected and auto-injected.
+    #
+    # WRITES ONLY. Host READS are deliberately not gated anywhere: gating
+    # them would kill the operator's /command surface. This list is consulted
+    # by the write path.
+    #
+    # The whole skill SUBTREE is sealed, not just SKILL.md -- a script sitting
+    # beside it is executed with the same trust the manifest carries.
+    re.compile(r"(^|/|\\)\.claude[/\\]commands[/\\].+\.md$", re.IGNORECASE),
+    re.compile(r"(^|/|\\)\.claude[/\\]skills[/\\].+$", re.IGNORECASE),
+)
+
+
+def _is_global_bootstrap(path: str) -> bool:
+    """True when path points at a per-user AIDOCS bootstrap file."""
+    normalized = path.replace("\\", "/")
+    return any(p.search(normalized) for p in _GLOBAL_BOOTSTRAP_PATTERNS)
+
+
+_MEMORY_PREFIX = ".MEMORY/"
+
+
+def _normalize_path(path: str) -> str:
+    return path.replace("\\", "/").strip()
+
+
+def _is_memory_path(path: str) -> bool:
+    """Match `.MEMORY/` anywhere in a normalized path, case-insensitive.
+
+    Accepts both relative paths (`.MEMORY/...`) and absolute paths
+    (`D:/.../project/.MEMORY/...`). Case-insensitive because Windows
+    filesystems and tool inputs are inconsistent.
+    """
+    normalized = _normalize_path(path).lower()
+    memory_lc = _MEMORY_PREFIX.lower()
+    return (
+        normalized.startswith(memory_lc)
+        or normalized == ".memory"
+        or f"/{memory_lc}" in normalized
+        or normalized.endswith("/.memory")
+    )
+
+
+# .MEMORY/ paths where writes affect code execution — require user intent
+_PROTECTED_MEMORY_PREFIXES: tuple[str, ...] = (
+    ".memory/rules/workflow",
+    ".memory/rules/security",
+    ".memory/config/",
+    ".memory/.index/",  # SQLite config/execution store + derived index files
+)
+# Gate/state files that agents must never modify directly
+_INFRASTRUCTURE_MEMORY_PATTERNS: tuple[str, ...] = (
+    "query-gate.json",
+    "aidocs-managed.json",
+    "conductor-state.json",
+    "plan_conductor_state.json",
+    "skills.json",
+    "aidocs.sqlite3",
+    "aidocs.sqlite3-journal",
+    "aidocs.sqlite3-wal",
+    "aidocs.sqlite3-shm",
+)
+
+
+def _is_protected_memory_path(path: str) -> bool:
+    """Workflow rules, security rules, config, and gate state files are protected."""
+    normalized = _normalize_path(path).lower()
+    if any(normalized.startswith(prefix) for prefix in _PROTECTED_MEMORY_PREFIXES):
+        return True
+    filename = normalized.rsplit("/", 1)[-1] if "/" in normalized else normalized
+    return filename in _INFRASTRUCTURE_MEMORY_PATTERNS
+
+
+def _is_soul_chamber(path: str) -> bool:
+    """True when ``path`` is the empire DB (or one of its sqlite sidecars) or
+    lives inside the per-soul backup chamber.
+
+    Derived from ``skill_store.soul_chamber_paths`` — the same code that
+    WRITES those files — so the fence follows the chamber if
+    ``AIDOCS_EMPIRE_DB`` relocates it (#222 leak 1). A pattern list pinned to
+    ``~/.aidocs`` is a fence around a place the material may have left.
+
+    Fails OPEN (returns False) if the chamber cannot be resolved: the
+    default-path patterns in ``_SENSITIVE_PATTERNS`` remain as the backstop,
+    and a resolver error must not blanket-block unrelated reads.
+    """
+    normalized = _normalize_path(path).lower()
+    if not normalized:
+        return False
+    try:
+        from .skill_store import soul_chamber_paths
+
+        chambers = soul_chamber_paths()
+    except Exception:
+        return False
+    for chamber in chambers:
+        c = _normalize_path(str(chamber)).lower().rstrip("/")
+        if not c:
+            continue
+        # The chamber itself, anything beneath it (backup scrolls), or a
+        # sqlite sidecar of the empire DB — a -wal file holds the same rows.
+        if normalized == c or normalized.startswith(c + "/"):
+            return True
+        if normalized in {c + suffix for suffix in ("-journal", "-wal", "-shm")}:
+            return True
+    return False
+
+
+def _is_sensitive(path: str) -> bool:
+    normalized = _normalize_path(path)
+    if any(p.search(normalized) for p in _SENSITIVE_PATTERNS):
+        return True
+    if _is_soul_chamber(normalized):
+        return True
+    # Check configurable protected patterns from aidocs.toml
+    import fnmatch
+
+    from .config import GATE_PROTECTED_PATTERNS
+
+    filename = normalized.rsplit("/", 1)[-1] if "/" in normalized else normalized
+    return any(fnmatch.fnmatch(filename.lower(), pat.lower()) for pat in GATE_PROTECTED_PATTERNS)
+
+
+# Bytes sniffed from a to-be-allowed artifact before a host read. Credential
+# material lives at the top of key/token/env files; a bounded head keeps the
+# gate cheap while catching the secrets a NAME-only classifier misses.
+_SECRET_SNIFF_BYTES = 65536
+
+
+def _abs_for_content_sniff(gate_state: dict[str, Any], normalized: str) -> str | None:
+    """Resolve the on-disk path to sniff for an artifact-level read.
+
+    External/absolute targets are already filesystem paths; project-internal
+    relative targets are joined onto ``gate_state['project_root']`` (the same
+    root the Read-tool gate stamps). Returns None when no usable path exists
+    (the content backstop is then skipped — name/zone rules still apply).
+    """
+    if _is_external_path(normalized):
+        return normalized
+    root = gate_state.get("project_root")
+    if not root:
+        return None
+    base = _normalize_path(str(root)).rstrip("/")
+    return f"{base}/{normalized}" if base else None
+
+
+def _content_is_secret(abs_path: str | None) -> bool:
+    """True when an artifact's CONTENT carries credential material.
+
+    Reuses ``output_guard.scan_text`` (the same detector the egress guard and
+    write-side judge share) on a bounded head, and blocks ONLY on
+    ``credential:*`` findings — high-confidence key formats (PEM/OpenSSH/RSA
+    private keys, GitHub/OpenAI/Anthropic/Stripe/Slack keys, JWTs) and quoted
+    ``api_key=``/``password=``/``secret=`` assignments. The broad
+    ``sensitive:*`` env/ssh heuristics are intentionally excluded here to keep
+    false positives off Makefiles / .properties (real ``.env`` files are
+    name-blocked upstream).
+
+    Fail-safe: a missing / unreadable / empty file → not secret (it either
+    cannot be read at all, or is governed by the name + zone rules).
+    """
+    if not abs_path:
+        return False
+    try:
+        import os
+
+        if not os.path.isfile(abs_path):
+            return False
+        with open(abs_path, "rb") as fh:
+            head = fh.read(_SECRET_SNIFF_BYTES)
+    except (OSError, ValueError):
+        return False
+    if not head:
+        return False
+    text = head.decode("utf-8", errors="replace")
+    try:
+        from .output_guard import scan_text
+
+        result = scan_text(text, redact=False)
+    except Exception:
+        return False
+    return any(f.category.startswith("credential:") for f in result.findings)
+
+
+def _secret_content_block(normalized: str) -> GateDecision:
+    return GateDecision(
+        allowed=False,
+        level="sensitive_file_protection",
+        reason=(
+            _gate_msg("sensitive_file_blocked", path=normalized)
+            + " Credential material detected in file content "
+            "(name-based classification missed it)."
+        ),
+    )
+
+
+def _is_protected_config(path: str) -> bool:
+    normalized = _normalize_path(path)
+    filename = normalized.rsplit("/", 1)[-1] if "/" in normalized else normalized
+    return filename.lower() in _PROTECTED_CONFIG_FILES
+
+
+def _is_infrastructure(path: str) -> bool:
+    normalized = _normalize_path(path).lower()
+    return any(normalized.startswith(prefix) for prefix in _INFRASTRUCTURE_PREFIXES)
+
+
+def _is_hard_protected_data(path: str) -> bool:
+    """True iff the path is a hard-protected project-internal DATA file
+    (sqlite DB, AIDOCS index, gate-state JSON, or an operator-configured
+    extra). Single source: hard_protected_paths.is_hard_protected, unioned
+    with the configured EXTRA globs. See that module for the doctrine.
+    """
+    from .config import GATE_HARD_PROTECTED_PATTERNS
+    from .hard_protected_paths import is_hard_protected
+
+    return is_hard_protected(_normalize_path(path), extra_patterns=GATE_HARD_PROTECTED_PATTERNS)
+
+
+def _is_sqlite_data(path: str) -> bool:
+    """True iff the path is a sqlite database (or -wal/-shm/-journal sidecar).
+    These are config_set-only; a direct file-write is never permitted.
+    """
+    base = _normalize_path(path).rsplit("/", 1)[-1].lower()
+    return ".sqlite3" in base
+
+
+def _is_safe_grantable_path(path: str) -> bool:
+    """Paths that can be added to known_exact_paths.
+
+    Only filters path-shape hazards (absolute paths, traversal). Infrastructure
+    and protected-config checks belong at the write gate — silently dropping
+    read grants here left AIDOCS-repo files unreadable via indexed tools
+    despite discovery tools (ai_bundle, ai_find, ai_text_search) having
+    just returned the same path.
+    """
+    normalized = _normalize_path(path)
+    if not normalized or normalized.startswith("/") or re.match(r"^[A-Za-z]:/", normalized):
+        return False
+    if ".." in normalized.split("/"):
+        return False
+    return True
+
+
+def _is_path_granted(gate_state: dict[str, Any], path: str) -> bool:
+    """Check if path appears in known_exact_paths or lane_exact_paths."""
+    normalized = _normalize_path(path)
+    known = gate_state.get("known_exact_paths")
+    if isinstance(known, list) and normalized in known:
+        return True
+    lane = gate_state.get("lane_exact_paths")
+    if isinstance(lane, list) and normalized in lane:
+        return True
+    return False
+
+
+def _ledger_admits(gate_state: dict[str, Any], normalized: str) -> bool:
+    """Session-ledger discovery fallback (#474 tranche 2, War Y).
+
+    DISCOVERY ("may this session read this file at all?") is a
+    per-SESSION fact backed by the ``session_surfaced_files`` ledger;
+    the per-task ``known_exact_paths`` set stays the primary source and
+    keeps its task_begin/task_complete wipe (line-freshness hygiene is
+    a separate concern enforced by the Phoenix eviction + turn-edit
+    lock, which are untouched).
+
+    ADMIT-only and deliberately narrow:
+      - consulted ONLY at the two discovery refusal points
+        (indexed_file_gate / read_gate) — never for sensitive paths,
+        never for protected config, never for edits;
+      - INERT whenever a lane context is active (``current_lane_id``
+        set): lane isolation must not be widened by session history;
+      - absent/malformed ``session_surfaced_paths`` → False
+        (fail-closed to today's stricter behavior).
+    """
+    if not isinstance(gate_state, dict):
+        return False
+    if gate_state.get("current_lane_id"):
+        return False
+    # King directive 2026-05-12 (line-freshness outranks continuity): a
+    # file line-edited THIS TURN keeps its unflagged-read refusal until
+    # the turn-edit lock clears — the ledger only bridges the PER-TASK
+    # wipe, never the per-turn re-read discipline.
+    turn_edited = gate_state.get("turn_edited_files")
+    if isinstance(turn_edited, (set, frozenset, list, tuple)) and normalized in {
+        str(item).replace("\\", "/").strip() for item in turn_edited
+    }:
+        return False
+    surfaced = gate_state.get("session_surfaced_paths")
+    if isinstance(surfaced, (set, frozenset, list, tuple)):
+        return normalized in surfaced
+    return False
+
+
+def _is_external_path(normalized: str) -> bool:
+    """True for an absolute path / home-relative path that points OUTSIDE
+    the current project's relative tree.
+    """
+    if not normalized:
+        return False
+    if normalized.startswith("/") or normalized.startswith("~"):
+        return True
+    if re.match(r"^[A-Za-z]:/", normalized):  # Windows drive
+        return True
+    return False
+
+
+def _under_approved_external_root(gate_state: dict[str, Any], normalized: str) -> bool:
+    roots = gate_state.get("approved_external_roots")
+    if not isinstance(roots, list):
+        return False
+    target = normalized.lower()
+    for root in roots:
+        r = _normalize_path(str(root)).lower().rstrip("/")
+        if r and (target == r or target.startswith(r + "/")):
+            return True
+    return False
+
+
+def _is_recorded_artifact(gate_state: dict[str, Any], normalized: str) -> bool:
+    arts = gate_state.get("session_artifact_paths")
+    if not isinstance(arts, list):
+        return False
+    target = normalized.lower()
+    return any(_normalize_path(str(a)).lower() == target for a in arts)
+
+
+def _is_session_task_output(gate_state: dict[str, Any], normalized: str) -> bool:
+    """True for THIS session's fresh task/deploy output capture.
+
+    Replaces the earlier broad ``<TEMP>/claude/**/tasks/*`` SHAPE exemption
+    (any session, any project). Delegates to
+    ``session_artifact.is_session_task_artifact``: the path must sit under
+    ``<TEMP>/claude/<project-slug>/<session-uuid>/tasks/`` with a safe capture
+    extension, the slug must match the CURRENT project, the session-UUID must
+    be one of the current session ids (``host_session_ids`` in gate_state —
+    the hook-stamped host id, the managed session id, and/or the owned
+    host-id chain: rotated host uuids + the harness transcript-dir uuid,
+    #464), and the file must be FRESH (mtime within the TTL). Another session's UUID, another project's
+    slug, a stale capture, a secret-named file, a ``..`` traversal, or an
+    arbitrary TEMP path all return False. Consulted AFTER the sensitive/secret
+    and ``..`` floors, so it can never expose a secret or a ``..`` escape.
+    """
+    try:
+        from .session_artifact import is_session_task_artifact
+
+        return is_session_task_artifact(
+            normalized,
+            project_root=gate_state.get("project_root"),
+            host_session_ids=gate_state.get("host_session_ids"),
+        )
+    except Exception:
+        return False
+
+
+def host_read_hard_block(path: str) -> GateDecision | None:
+    """Return a blocking GateDecision for paths that NO exemption, lane
+    grant, or approved root may ever open: secrets/sensitive, global
+    bootstrap/config, and parent-traversal escapes. Returns None when the
+    path is not hard-blocked.
+
+    This is the floor the read gate runs BEFORE consulting
+    ``gate.exempt_paths`` / ``gate.exempt_extensions`` or lane raw-read
+    grants, so a broad exemption can never expose ``.env``, ``*.pem``,
+    ``.ssh/id_rsa``, or a ``..`` escape. (Mirrors steps 1–2 of
+    ``host_read_decision``.)
+    """
+    normalized = _normalize_path(path)
+    if not normalized:
+        return None
+    if _is_sensitive(normalized) or _is_global_bootstrap(normalized):
+        return GateDecision(
+            allowed=False,
+            level="sensitive_file_protection",
+            reason=_gate_msg("sensitive_file_blocked", path=normalized),
+        )
+    if ".." in normalized.split("/"):
+        return GateDecision(
+            allowed=False,
+            level="read_gate",
+            degradable=False,  # traversal escape is isolation, not routing
+            reason=(
+                f"Read blocked: '{normalized}' escapes the project via '..'. "
+                f"Reads are confined to the project tree (or an approved "
+                f"external root)."
+            ),
+        )
+    return None
+
+
+def host_read_decision(gate_state: dict[str, Any], path: str) -> GateDecision:
+    """Decide whether the NORMAL HOST Read tool may open ``path`` in
+    managed mode. Host Read is the operator's artifact viewer — distinct
+    from raw EDIT (always blocked) and raw shell. See the read-gate law
+    in claude_hook/access docs.
+
+    Order (block beats allow):
+      1. sensitive / secrets / SSH / global-bootstrap   → BLOCK
+      2. parent-traversal escape (..)                   → BLOCK
+      3. explicit grant (known_exact / lane_exact)      → ALLOW
+      4. external path: approved root / recorded
+         artifact → ALLOW, otherwise                    → BLOCK
+      5. memory-internal                                → ALLOW
+      6. protected config (aidocs.toml…) w/o grant      → BLOCK
+      7. indexed source-code extension w/o grant        → BLOCK (discover)
+      8. any other project-internal, non-sensitive file → ALLOW (artifact)
+    """
+    normalized = _normalize_path(path)
+    if not normalized:
+        return GateDecision(
+            allowed=False,
+            level="read_gate",
+            degradable=False,  # malformed input, not a routing nudge
+            reason="Read blocked: no path supplied.",
+        )
+
+    # 0. Relativize an absolute path that lives INSIDE the project, so the
+    #    indexed-source / artifact / grant rules apply (otherwise an
+    #    absolute in-project path would be misread as unknown-external).
+    #    Callers that know the project root pass it via gate_state.
+    proj = gate_state.get("project_root") if isinstance(gate_state, dict) else None
+    if proj:
+        proj_norm = _normalize_path(str(proj)).rstrip("/")
+        if proj_norm and normalized.lower().startswith((proj_norm + "/").lower()):
+            normalized = normalized[len(proj_norm) + 1 :]
+
+    # 1. Secrets / sensitive / bootstrap — extension never exempts these.
+    #    The soul chamber refuses FIRST so it can name its own remedy: the
+    #    generic sensitive-file message would leave a caller with a
+    #    legitimate need for its OWN scroll with nowhere to go (#222).
+    if _is_soul_chamber(normalized):
+        return GateDecision(
+            allowed=False,
+            level="sensitive_file_protection",
+            reason=(
+                f"Read blocked: '{normalized}' is sovereign soul material "
+                f"(the empire ledger / per-soul backup chamber). Souls are "
+                f"read through their governed door, which records the act: "
+                f"use ai_soul(mode='read', skill_id=...) for a sovereign "
+                f"scroll, or ai_skill(mode='read', ...) for a public one."
+            ),
+        )
+    if _is_sensitive(normalized) or _is_global_bootstrap(normalized):
+        return GateDecision(
+            allowed=False,
+            level="sensitive_file_protection",
+            reason=_gate_msg("sensitive_file_blocked", path=normalized),
+        )
+
+    # 2. Traversal escape.
+    if ".." in normalized.split("/"):
+        return GateDecision(
+            allowed=False,
+            level="read_gate",
+            degradable=False,  # traversal escape is isolation, not routing
+            reason=(
+                f"Read blocked: '{normalized}' escapes the project via '..'. "
+                f"Reads are confined to the project tree (or an approved "
+                f"external root)."
+            ),
+        )
+
+    # 3. Discovered / granted exact path (covers indexed source the agent
+    #    already surfaced via ai_find/ai_bundle/etc.).
+    if _is_path_granted(gate_state, normalized):
+        # A grant unblocks raw read — but a granted NON-source data file
+        # (config.json / *.yaml / *.dat surfaced via ai_bundle / ai_text_search
+        # / ai_create_file) can still hold credentials, and the grant would
+        # otherwise skip the step-8 content backstop. Sniff those. Source
+        # files keep the fast path: their hardcoded-secret risk is a write-side
+        # concern, and content-sniffing every code read false-positives on
+        # fixtures / pattern files.
+        if not normalized.lower().endswith(_CODE_SOURCE_SUFFIXES) and _content_is_secret(
+            _abs_for_content_sniff(gate_state, normalized),
+        ):
+            return _secret_content_block(normalized)
+        return GateDecision(allowed=True, level="raw_tool_discovery_grant")
+
+    # 4. External paths: only approved roots or recorded artifacts.
+    if _is_external_path(normalized):
+        if _under_approved_external_root(gate_state, normalized):
+            if _content_is_secret(_abs_for_content_sniff(gate_state, normalized)):
+                return _secret_content_block(normalized)
+            return GateDecision(allowed=True, level="approved_external_workspace")
+        if _is_recorded_artifact(gate_state, normalized):
+            if _content_is_secret(_abs_for_content_sniff(gate_state, normalized)):
+                return _secret_content_block(normalized)
+            return GateDecision(allowed=True, level="session_artifact")
+        if _is_session_task_output(gate_state, normalized):
+            # THIS session's OWN fresh task/deploy output (sensitive +
+            # traversal floors already ran above). Bound to project_root +
+            # session-UUID + freshness, not a blanket TEMP shape.
+            return GateDecision(allowed=True, level="claude_session_task_artifact")
+        # External path, not an approved root / recorded artifact / session
+        # output: ALLOW via the GOVERNED Read (operator 2026-07-07). External
+        # files are no longer blocked by default — the raw Read tool IS the
+        # governed surface now. The content-secret sniff is the governance: a
+        # credential hiding in an innocuously-named external file still BLOCKS +
+        # strikes (judge/content classifier). Sensitive dirs (.ssh/.aws/global
+        # bootstrap) and '..' traversal were already HARD-blocked above (steps
+        # 1-2), so this branch can never reach them. Project INDEXED source is a
+        # separate branch (step 7) and keeps its discovery-first gate unchanged.
+        #
+        # EXCEPTION — the managed session-artifact tree (<temp>/claude/**) has its
+        # OWN per-session-UUID binding (checked just above). A path there that
+        # reached here FAILED that binding — i.e. it's ANOTHER session's task
+        # output — so keep it REFUSED (cross-session isolation), never governed-
+        # allow it. General external files (host cache, D:/elsewhere, …) fall
+        # through to the governed allow.
+        try:
+            import tempfile
+
+            _managed = _normalize_path(str(Path(tempfile.gettempdir()) / "claude")).rstrip("/")
+            if _managed and normalized.lower().startswith(_managed.lower() + "/"):
+                # #379 (WAR U): the caller's OWN session workspace (scratchpad/
+                # and any other subdir under <temp>/claude/<slug>/<own-uuid>/)
+                # is NOT "another session's" output. Ownership is proven by the
+                # owned host-id chain (host_session_ids); the sensitive-name and
+                # traversal floors already ran above, and the content sniff
+                # below still blocks secret-shaped bytes. A foreign uuid, a
+                # foreign slug, or a symlink-laundered path stays refused.
+                # #672: ownership is a THREE-WAY fact, not a boolean. The old
+                # code asked is_own_session_workspace() and, on False,
+                # asserted "another session's" — even when the caller had no
+                # usable id at all and ownership was never established (the
+                # mixed-axis bag's dead slug element defeated the emptiness
+                # guard). Report what could NOT be established, and a next
+                # step, the way indexed_file_gate does.
+                try:
+                    from .session_artifact import (
+                        OWNERSHIP_FOREIGN,
+                        OWNERSHIP_LAUNDERED,
+                        OWNERSHIP_OWN,
+                        OWNERSHIP_UNESTABLISHED,
+                        session_workspace_ownership,
+                    )
+
+                    _ownership = session_workspace_ownership(
+                        normalized,
+                        project_root=gate_state.get("project_root"),
+                        host_session_ids=gate_state.get("host_session_ids"),
+                    )
+                except Exception:
+                    _ownership = "unavailable"
+                if _ownership == OWNERSHIP_OWN:
+                    if _content_is_secret(_abs_for_content_sniff(gate_state, normalized)):
+                        return _secret_content_block(normalized)
+                    return GateDecision(allowed=True, level="claude_session_workspace")
+                if _ownership == OWNERSHIP_UNESTABLISHED:
+                    return GateDecision(
+                        allowed=False,
+                        level="read_gate",
+                        degradable=False,  # cross-session / path-laundering isolation
+                        reason=(
+                            f"Read blocked: '{normalized}' sits in the managed "
+                            f"per-session workspace and AIDOCS could not establish "
+                            f"who owns it: no harness session UUID is recorded for "
+                            f"this session, so the owning session was never "
+                            f"determined. This is NOT a finding that the file "
+                            f"belongs to another session. Owning UUIDs are stamped "
+                            f"from the Claude Code hook payload, so if the hooks are "
+                            f"not reaching AIDOCS nothing in this tree is readable. "
+                            f"Next: take the output from the tool that produced it "
+                            f"(a Task/Bash result is returned to its caller "
+                            f"directly), or have the path recorded as a session "
+                            f"artifact and read it by that grant. If identity SHOULD "
+                            f"be known here, file it: ai_backlog(mode='add', "
+                            f"tags=['false-positive'], content='rule_id=read_gate "
+                            f"ownership unestablished for {normalized}')."
+                        ),
+                    )
+                if _ownership == OWNERSHIP_LAUNDERED:
+                    return GateDecision(
+                        allowed=False,
+                        level="read_gate",
+                        degradable=False,  # cross-session / path-laundering isolation
+                        reason=(
+                            f"Read blocked: '{normalized}' could not be verified as a "
+                            f"real regular file inside this session's workspace — a "
+                            f"'..' segment, a symlink/junction/reparse component, or "
+                            f"a non-regular target. Path-laundering is refused "
+                            f"regardless of ownership. Next: read the file by its "
+                            f"real, fully-resolved path."
+                        ),
+                    )
+                if _ownership == OWNERSHIP_FOREIGN:
+                    return GateDecision(
+                        allowed=False,
+                        level="read_gate",
+                        degradable=False,  # cross-session / path-laundering isolation
+                        reason=(
+                            f"Read blocked: '{normalized}' belongs to another "
+                            f"session's managed task-artifact output — its session "
+                            f"UUID is not one this session owns (cross-session "
+                            f"isolation). Next: ask that agent for the output "
+                            f"(SendMessage), or re-run the work in this session so "
+                            f"the artifact is yours."
+                        ),
+                    )
+                return GateDecision(
+                    allowed=False,
+                    level="read_gate",
+                    degradable=False,  # cross-session / path-laundering isolation
+                    reason=(
+                        f"Read blocked: '{normalized}' is under the managed "
+                        f"session-artifact tree but does not match the per-session "
+                        f"layout (<temp>/claude/<project-slug>/<session-uuid>/…), so "
+                        f"ownership could not be checked (cross-session isolation). "
+                        f"Next: read the artifact by its canonical per-session path."
+                    ),
+                )
+        except Exception:
+            pass
+        if _content_is_secret(_abs_for_content_sniff(gate_state, normalized)):
+            return _secret_content_block(normalized)
+        return GateDecision(allowed=True, level="external_governed_read")
+
+    # 5. .MEMORY/ internal — always readable (non-sensitive already checked).
+    if _is_memory_path(normalized):
+        return GateDecision(allowed=True, level="memory_path_exemption")
+
+    # 6. Protected config files need an explicit discovery grant.
+    basename = normalized.rsplit("/", 1)[-1] if "/" in normalized else normalized
+    if basename in {"aidocs.toml", "aidocs-plugin.json"}:
+        return GateDecision(
+            allowed=False,
+            level="read_gate",
+            degradable=False,  # protected-config guard, not routing
+            reason=_gate_msg("read_gate_blocked", path=normalized),
+        )
+
+    # 7. Indexed source code → push to discovery-first tools.
+    if normalized.lower().endswith(_CODE_SOURCE_SUFFIXES):
+        # #474 tranche 2: session-ledger discovery continuity — a source
+        # file this SESSION already surfaced stays readable across the
+        # per-task known_exact_paths wipe. Lane contexts are inert inside
+        # _ledger_admits; sensitive/traversal were hard-blocked in steps
+        # 1-2 and can never reach here.
+        if _ledger_admits(gate_state, normalized):
+            return GateDecision(allowed=True, level="session_discovery_ledger")
+        return GateDecision(
+            allowed=False,
+            level="indexed_file_gate",
+            reason=(
+                f"Read blocked: '{normalized}' is indexed source. Use "
+                f"ai_find / ai_bundle / ai_get_lines (after discovery the "
+                f"raw read is allowed)."
+            ),
+        )
+
+    # 8. Any other project-internal, non-sensitive file is a host artifact
+    #    (logs, csv, config text, PDFs, images, structured-binary, …) — BUT
+    #    a name-based classifier misses secrets hidden in innocuously named,
+    #    non-source files (serviceAccount.json, tokens.dat, config.json with
+    #    an embedded key). Sniff the content before admitting it.
+    if _content_is_secret(_abs_for_content_sniff(gate_state, normalized)):
+        return _secret_content_block(normalized)
+    return GateDecision(allowed=True, level="host_read_artifact")
+
+
+def _extract_bash_commands(tool_input: dict[str, Any]) -> list[str]:
+    """Extract all base commands from a Bash tool_input (handles && and || chains)."""
+    import shlex
+
+    command = tool_input.get("command")
+    if not command or not isinstance(command, str):
+        return []
+    cmd_str = command.strip()
+    # Split on && and || only (not ; which appears inside quoted strings)
+    import re as _re
+
+    segments = _re.split(r"\s*(?:&&|\|\|)\s*", cmd_str)
+    results: list[str] = []
+    for segment in segments:
+        segment = segment.strip()
+        if not segment:
+            continue
+        # Take first command in pipe chain (but not inside quotes)
+        # Simple heuristic: split on | not preceded/followed by quotes
+        pipe_first = (
+            segment.split("|")[0].strip()
+            if "|" in segment and '"' not in segment.split("|")[0]
+            else segment
+        )
+        # Strip heredoc content
+        pipe_first = pipe_first.split("<<")[0].strip()
+        try:
+            parts = shlex.split(pipe_first)
+        except ValueError:
+            parts = pipe_first.split()
+        if not parts:
+            continue
+        # Skip env var assignments
+        for part in parts:
+            if "=" in part and not part.startswith("-"):
+                continue
+            # Normalize fully-qualified invocations to the bare binary name:
+            # "C:/Program Files/PostgreSQL/17/bin/pg_dump.exe" → "pg_dump"
+            # "/usr/local/bin/python3" → "python3"
+            # Agents often get exact paths from shells like Git Bash; the
+            # allowlist holds basenames only. Without this, the gate blocks
+            # any invocation that doesn't happen to be on PATH.
+            import os as _os
+
+            normalized = _os.path.basename(part).lower()
+            normalized = normalized.removesuffix(".exe")
+            if normalized:
+                results.append(normalized)
+            else:
+                results.append(part.lower())
+            break
+    return results
+
+
+def _extract_file_path(tool_input: dict[str, Any]) -> str | None:
+    """Extract file path from tool_input regardless of parameter name.
+
+    Used by the gate-exempt-extension/-path check, which fires after a
+    raw-tool block decision is being considered. Accepts the path-key
+    set (with conflict detection — see _extract_path) and falls back
+    to pattern/command when no path key is present. PathInputConflict
+    bubbles up to the caller; the exempt check loses its grounds and
+    the block stands.
+    """
+    direct = _extract_path(tool_input)
+    if direct:
+        return direct
+    for key in ("pattern", "command"):
+        val = tool_input.get(key)
+        if val and isinstance(val, str):
+            stripped = val.strip()
+            if stripped:
+                return stripped
+    return None
+
+
+def _is_gate_exempt(tool_input: dict[str, Any]) -> bool:
+    """Check if the tool target file is exempt from gate blocking.
+
+    Exempt files (by extension or explicit path) are allowed through
+    the raw tool gate even in managed mode. Configured via aidocs.toml:
+        [gate]
+        exempt_extensions = [".output", ".log", ".txt", ...]
+        exempt_paths = ["some/specific/file.dat"]
+    """
+    from .config import GATE_EXEMPT_EXTENSIONS, GATE_EXEMPT_PATHS
+
+    file_path = _extract_file_path(tool_input)
+    if not file_path:
+        return False
+
+    normalized = _normalize_path(file_path).lower()
+
+    # Check extension exemptions
+    for ext in GATE_EXEMPT_EXTENSIONS:
+        if normalized.endswith(ext.lower()):
+            return True
+
+    # Check explicit path exemptions
+    for exempt in GATE_EXEMPT_PATHS:
+        exempt_norm = _normalize_path(exempt).lower()
+        if normalized == exempt_norm or normalized.endswith("/" + exempt_norm):
+            return True
+
+    return False
+
+
+class AccessGate:
+    """Unified access gate — all callers delegate here."""
+
+    # ── Tier-0: Raw Shell Redirect ──
+    #
+    # Fires before every other gate. Raw Bash routes around
+    # `ai_run`'s bash_policy evaluation (allow/deny tables)
+    # and the audit trail written to execution_events + the session
+    # journal. The redirect message names the canonical MCP tool so
+    # agents migrate without guessing.
+
+    @staticmethod
+    def check_raw_shell(
+        ctx: GateContext,
+        tool_name: str,
+        *,
+        allow_raw_shell: bool = False,
+        user_granted: bool = False,
+    ) -> GateDecision:
+        """Block raw shell tools on AIDOCS-managed projects (tier-0).
+
+        Per Invariant #38 (security-gates.md, canonical 2026-04-29
+        Batch B live): in managed AIDOCS sessions, native Bash and
+        peer host shells (PowerShell, pwsh, cmd, wsl, monitor) are
+        permanently T0-blocked. NO NLP unlock, NO sticky/session
+        grant, NO lane delegation, NO dashboard flag lifts this. The
+        ``user_granted`` and ``allow_raw_shell`` parameters are
+        ACCEPTED for back-compat with non-managed-mode callers but
+        IGNORED for native Bash in managed mode. Use ai_run instead.
+
+        Behavior:
+          - Tool not in _RAW_SHELL_TOOLS: allow (not applicable).
+          - Unmanaged session: allow (T0 only fires in managed mode).
+          - Managed session, native Bash: hard-deny — both unblock
+            kwargs ignored. Doctrine-enforced by Invariant #38.
+          - Edge case: if a future doctrine amendment legitimately
+            adds a managed-mode unblock for a non-bash raw shell,
+            that path can re-introduce conditional advisory bypass.
+            Today no such doctrine exists; the kwargs are dead-letter.
+
+        The kwargs were the legacy "two unblock paths" dating from
+        before Invariant #38 hardened the contract. They are kept in
+        the signature so existing callers compile without churn but
+        are observably no-ops in the managed/native-Bash case.
+        """
+        normalized_tool = tool_name.strip().lower()
+        if normalized_tool not in _RAW_SHELL_TOOLS:
+            return GateDecision(
+                allowed=True,
+                level="raw_shell_not_applicable",
+            )
+        if not ctx.managed:
+            return GateDecision(allowed=True, level="raw_shell_unmanaged")
+        # Invariant #38 hard floor: managed-mode native shell is
+        # T0-blocked regardless of user_granted/allow_raw_shell.
+        return GateDecision(
+            allowed=False,
+            level="raw_shell_blocked",
+            reason=(
+                f"`{tool_name}` blocked. Use mcp__aidocs__ai_run "
+                "instead. (Invariant #38: native shell tools are "
+                "T0-blocked in managed AIDOCS sessions; no flag or "
+                "grant lifts this.)"
+            ),
+        )
+
+    # ── Tier-0: Edit Redirect ──
+    #
+    # Fires BEFORE every other gate. Raw edit tools would leave the
+    # index stale — other lanes/sessions read old content, edit_history
+    # loses the change, audits break. Everyday-English verbs like
+    # "edit" mean NLP user-grants are unsafe here, so the only unblock
+    # path is the dashboard-set `security.allow_raw_edits` config.
+
+    @staticmethod
+    def check_edit_redirect(
+        ctx: GateContext,
+        tool_name: str,
+        *,
+        allow_raw_edits: bool = False,
+        tool_input: dict[str, Any] | None = None,
+        project_root: Any = None,
+    ) -> GateDecision:
+        """Block raw edit tools on AIDOCS-managed projects (tier-0).
+
+        Scope is the AIDOCS-managed project tree. Edits targeting paths
+        outside that tree (sibling repos, /tmp, /var/log, absolute paths
+        the user named explicitly) fall through — the AIDOCS index
+        doesn't cover them so there's no staleness risk, and raw Edit
+        is genuinely the right tool there.
+
+        `allow_raw_edits` comes from `security.allow_raw_edits` config —
+        dashboard-only, persistent, ignored by user_granted / dev_mode /
+        gate_enforce overrides. When True, returns advisory=True so the
+        event stream still records the bypass for audit.
+        """
+        normalized_tool = tool_name.strip().lower()
+        if normalized_tool not in _RAW_EDIT_TOOLS:
+            return GateDecision(allowed=True, level="edit_redirect_not_applicable")
+        if not ctx.managed:
+            return GateDecision(allowed=True, level="edit_redirect_unmanaged")
+
+        # External-path exemption: if the target is outside the managed
+        # project's tree AND not under any other AIDOCS project, raw
+        # Edit/Write is the correct tool there.
+        #
+        # Cross-project leak fix (2026-04-27): pre-fix the exemption
+        # fired on any path outside THIS project's tree, including
+        # paths inside OTHER AIDOCS projects — letting raw Edit/Write
+        # bypass those projects' gates entirely. Now: walk up from the
+        # target looking for an `.MEMORY/.aidocs/index.aidocs` marker;
+        # if found, target is inside some AIDOCS project (cross-project
+        # case) and raw Edit/Write is refused with the same redirect
+        # message. Walk only fires when target is OUTSIDE the current
+        # project — common in-project case stays a fast 2-comparison
+        # check.
+        if project_root is not None and tool_input:
+            try:
+                target_path = _extract_path(tool_input)
+            except PathInputConflict as conflict:
+                return GateDecision(
+                    allowed=False,
+                    level="edit_redirect_path_conflict",
+                    reason=(f"`{tool_name}` blocked: {conflict}"),
+                )
+            if target_path:
+                from pathlib import Path as _Path
+
+                try:
+                    resolved = _Path(target_path).expanduser().resolve()
+                    root_resolved = _Path(project_root).resolve()
+                    in_project = resolved == root_resolved or root_resolved in resolved.parents
+                except (OSError, ValueError):
+                    in_project = True
+                if not in_project:
+                    # Check for any AIDOCS marker on ancestors. Cheap:
+                    # capped by filesystem depth (~10 stat calls max).
+                    from .mcp_server_runtime_helpers import is_aidocs_managed
+
+                    in_other_aidocs = False
+                    try:
+                        for ancestor in (resolved, *resolved.parents):
+                            if is_aidocs_managed(ancestor):
+                                in_other_aidocs = True
+                                break
+                    except (OSError, ValueError):
+                        in_other_aidocs = False
+                    if not in_other_aidocs:
+                        return GateDecision(
+                            allowed=True,
+                            level="edit_redirect_external_path",
+                        )
+                    # Falls through to the redirect-blocked return below.
+
+        if allow_raw_edits:
+            # Audit breadcrumb — operator has deliberately unblocked, but
+            # the event stream records every pass-through so the change
+            # remains visible after the fact.
+            return GateDecision(
+                allowed=True,
+                level="edit_redirect_operator_unblocked",
+                advisory=True,
+            )
+
+        # Route to the right AIDOCS alternative based on the tool's
+        # intent family. create → ai_create_file, edit → ai_str_replace
+        # or ai_edit_lines, notebook → ai_create_file for .ipynb.
+        if normalized_tool == "write":
+            suggestion = "Use ai_create_file."
+        elif normalized_tool == "notebookedit":
+            suggestion = "Use ai_create_file for .ipynb."
+        else:
+            # Quote the ACTUAL configured cap (edit.str_replace_max_old_chars),
+            # never a hardcoded number — the config default is 1000 and
+            # operators can change it (0 = unlimited).
+            try:
+                from .file_ops import str_replace_old_chars_cap
+
+                _cap = str_replace_old_chars_cap(project_root)
+                _cap_txt = f"old_string under {_cap} chars" if _cap > 0 else "old_string (no length cap)"
+            except Exception:
+                _cap_txt = "old_string under the configured cap"
+            suggestion = f"Use ai_replace(mode='string'|'anchor'|'symbol'|'lines') - string: small swap ({_cap_txt}); anchor: replace between two unique anchor strings; symbol: replace a whole function/method body; lines: a line range."
+        return GateDecision(
+            allowed=False,
+            level="edit_redirect_blocked",
+            reason=f"`{tool_name}` blocked. {suggestion}",
+        )
+
+    # ── Level 1: Managed Mode Gate ──
+
+    @staticmethod
+    def check_raw_tool(
+        ctx: GateContext,
+        tool_name: str,
+        *,
+        allow_subagents: bool = True,
+        tool_input: dict[str, Any] | None = None,
+    ) -> GateDecision:
+        """Block raw file tools when managed mode is active.
+
+        Exempt files by extension or explicit path list (configured in aidocs.toml
+        under [gate].exempt_extensions and [gate].exempt_paths).
+        """
+        normalized_tool = tool_name.strip().lower()
+
+        # Agent blocking is independent of managed mode file gating
+        if normalized_tool == "agent" and not allow_subagents:
+            return GateDecision(
+                allowed=False,
+                level="managed_mode_gate",
+                reason=_gate_msg("agent_disabled"),
+            )
+
+        if not ctx.managed:
+            return GateDecision(allowed=True, level="managed_mode_gate")
+
+        if not ctx.gate_enforce:
+            return GateDecision(allowed=True, level="managed_mode_gate")
+
+        # ── Host READ is special (read-gate law) ──────────────────────
+        # The normal host Read tool is the operator's artifact viewer, NOT
+        # an edit surface. It must open safe non-code / non-indexed /
+        # artifact files (PDFs, images, logs, CSVs, config text, approved
+        # external artifacts) while still blocking indexed source without
+        # discovery, secrets, and unknown external paths. Split it out
+        # from the generic raw-file block so it never inherits edit policy.
+        if normalized_tool == "read":
+            return AccessGate._host_read_raw_gate(ctx, tool_name, tool_input)
+
+        if normalized_tool in _BLOCKED_RAW_FILE_TOOLS:
+            return AccessGate._blocked_raw_file_tool_gate(
+                ctx,
+                tool_name,
+                normalized_tool,
+                tool_input,
+            )
+
+        return GateDecision(allowed=True, level="managed_mode_gate")
+
+    @staticmethod
+    def _lane_raw_tool_grant(
+        ctx: GateContext,
+        normalized_tool: str,
+    ) -> GateDecision | None:
+        """Conductor→lane raw-tool grant lookup (shared by read + raw-file gates).
+
+        Returns an allow decision when the caller is executing inside a lane
+        AND the conductor has explicitly delegated this raw tool to this
+        lane; None otherwise (caller continues its cascade unchanged).
+        """
+        current_lane = ctx.gate_state.get("current_lane_id") if ctx.gate_state else None
+        lane_grants = ctx.gate_state.get("lane_raw_tools_granted") if ctx.gate_state else None
+        if isinstance(current_lane, str) and current_lane and isinstance(lane_grants, dict):
+            granted_for_lane = lane_grants.get(current_lane)
+            if isinstance(granted_for_lane, list) and normalized_tool in granted_for_lane:
+                return GateDecision(allowed=True, level="lane_raw_tool_grant")
+        return None
+
+    @staticmethod
+    def _host_read_raw_gate(
+        ctx: GateContext,
+        tool_name: str,
+        tool_input: dict[str, Any] | None,
+    ) -> GateDecision:
+        """Host Read branch of check_raw_tool (read-gate law).
+
+        Ordering is load-bearing: path-input conflict → hard blocks →
+        operator exemptions → lane grant → host_read_decision.
+        """
+        try:
+            _conflict = _extract_path(tool_input or {})
+            del _conflict
+        except PathInputConflict as conflict:
+            return GateDecision(
+                allowed=False,
+                level="path_input_conflict",
+                reason=f"`{tool_name}` blocked: {conflict}",
+            )
+        target_path = _extract_path(tool_input or {}) if tool_input else ""
+        # HARD BLOCKS FIRST (one-law goal 2026-05-20): secrets,
+        # global bootstrap/config, and traversal can never be lifted by
+        # an exemption or a lane grant. Run them before any allow path.
+        hard = host_read_hard_block(target_path)
+        if hard is not None:
+            return hard
+        # Operator-configured [gate].exempt_paths/extensions may allow
+        # harmless artifacts — but only AFTER the hard-block floor above.
+        if tool_input and _is_gate_exempt(tool_input):
+            return GateDecision(allowed=True, level="managed_mode_gate")
+        # Conductor→lane raw-read grant (lane explicitly delegated read).
+        lane_grant = AccessGate._lane_raw_tool_grant(ctx, "read")
+        if lane_grant is not None:
+            return lane_grant
+        return host_read_decision(ctx.gate_state or {}, target_path)
+
+    @staticmethod
+    def _blocked_raw_file_tool_gate(
+        ctx: GateContext,
+        tool_name: str,
+        normalized_tool: str,
+        tool_input: dict[str, Any] | None,
+    ) -> GateDecision:
+        """Raw-file-tool branch of check_raw_tool (non-Read blocked tools).
+
+        Ordering is load-bearing: path-input conflict → operator
+        exemptions (read-only tools) → discovery grant → lane grant →
+        block with reroute suggestion.
+        """
+        # Path-input conflict (e.g. `file_path` + `filePath` with
+        # different values) is refused before any exemption,
+        # discovery, or lane-grant branch can fire. Silent
+        # precedence selection would let a caller route different
+        # paths to different gates — co-conductor 2026-04-30.
+        try:
+            _conflict_check_path = _extract_path(tool_input or {})
+            _conflict_check_pattern = _extract_path_or_pattern(tool_input or {})
+            del _conflict_check_path, _conflict_check_pattern
+        except PathInputConflict as conflict:
+            return GateDecision(
+                allowed=False,
+                level="path_input_conflict",
+                reason=(f"`{tool_name}` blocked: {conflict}"),
+            )
+        # Extension/path exemptions are only for non-mutating raw file tools.
+        # Raw edits must stay blocked because they bypass indexing,
+        # edit_history, and audit/rollback surfaces.
+        if (
+            normalized_tool not in _RAW_EDIT_TOOLS
+            and tool_input
+            and _is_gate_exempt(tool_input)
+        ):
+            return GateDecision(allowed=True, level="managed_mode_gate")
+        # Discovery-grant for read-only raw tools (canonical
+        # 2026-04-30): if the file path is in known_exact_paths
+        # or lane_exact_paths, the operator/agent has discovered
+        # it via AIDOCS indexed tools (ai_find/ai_investigate/
+        # ai_get_symbol_snippet/etc.) and the follow-up raw read
+        # is the natural flow — especially on hosts (OpenCode)
+        # where the agent's primary read surface IS the raw
+        # `read` tool. Edits stay hard-blocked because they
+        # bypass indexing/audit; reads after discovery don't.
+        #
+        # The discovery grant only applies to read-only tools
+        # in _BLOCKED_RAW_FILE_TOOLS - _RAW_EDIT_TOOLS (i.e.
+        # read, grep, glob).
+        if normalized_tool not in _RAW_EDIT_TOOLS and tool_input and ctx.gate_state:
+            target_path = _extract_path_or_pattern(tool_input)
+            if target_path and _is_path_granted(
+                ctx.gate_state,
+                target_path,
+            ):
+                return GateDecision(
+                    allowed=True,
+                    level="raw_tool_discovery_grant",
+                )
+        # Conductor-to-lane raw-tool grant: when the caller is executing
+        # inside a lane AND the conductor has explicitly delegated this
+        # raw tool to this lane, unblock it. The lane-tool gate still
+        # runs separately; this only lifts the raw-file-tool block.
+        lane_grant = AccessGate._lane_raw_tool_grant(ctx, normalized_tool)
+        if lane_grant is not None:
+            return lane_grant
+        replacement = _get_raw_tool_replacement(normalized_tool)
+        reroute = _build_reroute_call(normalized_tool, tool_input)
+        reason = _gate_msg("raw_tool_blocked", tool=normalized_tool, replacement=replacement)
+        if reroute:
+            reason = f"{reason} {reroute}"
+        return GateDecision(
+            allowed=False,
+            level="managed_mode_gate",
+            reason=reason,
+        )
+
+    # ── Level 2+3+4+5: Read path checks ──
+
+    @staticmethod
+    def check_read(
+        ctx: GateContext,
+        path: str,
+        *,
+        known_exact_path: bool = False,
+        is_indexed: bool = False,
+    ) -> GateDecision:
+        """Check if a file read is allowed through the cascade."""
+        normalized = _normalize_path(path)
+
+        # Indexed files: block raw read UNLESS the caller has discovered
+        # the path (grant via ai_find/snippet/etc) or passed
+        # known_exact_path=True. ai_get_lines after a valid discovery
+        # is the sanctioned indexed-read path; blocking it was the bug.
+        if (
+            is_indexed
+            and not known_exact_path
+            and not _is_path_granted(ctx.gate_state, normalized)
+            # #474 tranche 2: session-ledger discovery continuity — a file
+            # this SESSION already surfaced stays discoverable across the
+            # per-task known_exact_paths wipe. Admits past THIS check only;
+            # sensitive / lane-isolation / protected-config checks below
+            # still run and still refuse.
+            and not _ledger_admits(ctx.gate_state, normalized)
+        ):
+            return GateDecision(
+                allowed=False,
+                level="indexed_file_gate",
+                reason=_gate_msg("read_gate_blocked", path=normalized),
+            )
+
+        # Level 3: Sensitive file protection
+        if _is_sensitive(normalized):
+            return GateDecision(
+                allowed=False,
+                level="sensitive_file_protection",
+                reason=_gate_msg("sensitive_file_blocked", path=normalized),
+            )
+
+        # Config files are readable — agents need to inspect settings
+        # Write protection is handled separately in check_write()
+
+        # Level 4: .MEMORY/ reads — always allowed
+        if _is_memory_path(normalized):
+            return GateDecision(allowed=True, level="memory_path_exemption")
+
+        # Unmanaged mode — no read gate
+        if not ctx.managed:
+            return GateDecision(allowed=True, level="unmanaged")
+        # Lane isolation: when a conductor lane is active, restrict to lane files
+        current_lane = ctx.gate_state.get("current_lane_id")
+        if current_lane:
+            lane_paths = {
+                str(item).replace("\\", "/").strip()
+                for item in (ctx.gate_state.get("lane_exact_paths") or [])
+                if str(item).strip()
+            }
+            if normalized in lane_paths:
+                return GateDecision(allowed=True, level="lane_isolation")
+            # .MEMORY/ is always readable even in lane isolation
+            if _is_memory_path(normalized):
+                return GateDecision(allowed=True, level="memory_path_exemption")
+            return GateDecision(
+                allowed=False,
+                level="lane_isolation",
+                reason=f"Lane isolation: '{normalized}' is not in lane '{current_lane}' allowed files. Ask the conductor via lane_scope_ask (structured scope request; conductor grants subset-only) — #218.",
+            )
+
+        # Protected config files — known_exact_path alone is not enough;
+        # must be explicitly granted via indexed discovery
+        basename = normalized.rsplit("/", 1)[-1] if "/" in normalized else normalized
+        if basename in {"aidocs.toml", "aidocs-plugin.json"}:
+            if _is_path_granted(ctx.gate_state, normalized):
+                return GateDecision(allowed=True, level="read_gate")
+            return GateDecision(
+                allowed=False,
+                level="read_gate",
+                degradable=False,  # protected-config guard, not routing
+                reason=_gate_msg("read_gate_blocked", path=normalized),
+            )
+
+        # Asset / structured-binary exemption (2026-04-21): files with
+        # dedicated parser tools (ai_read_pdf/excel/docx/sqlite/jsonl)
+        # AND multimodal assets (images, rendered via Read) are ALWAYS
+        # readable. The indexed-read gate exists to push agents toward
+        # discovery-first workflows for source code; it has no value
+        # for user-dropped PDFs, spreadsheets, or screenshots — those
+        # files don't have cross-references to discover. Operator-
+        # confirmed: never gate PDFs/images.
+        #
+        # Plain-text assets (.txt/.log/.csv/.tsv/.md) are NOT on this
+        # list — they flow through the normal gate so discovery-first
+        # workflows still apply to code-adjacent text. Agents with a
+        # legit need can pass known_exact_path=True.
+        lower = normalized.lower()
+        _ALWAYS_READABLE_SUFFIXES = (
+            # Structured-binary with dedicated parser tools
+            ".pdf",
+            ".docx",
+            ".doc",
+            ".xlsx",
+            ".xls",
+            ".xlsm",
+            ".sqlite",
+            ".sqlite3",
+            ".db",
+            ".jsonl",
+            ".ndjson",
+            # Multimodal assets (Read tool renders them visually)
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".gif",
+            ".svg",
+            ".bmp",
+            ".tiff",
+            ".heic",
+            # Markdown (indexed but low-outline-quality, allow raw read)
+            ".md",
+            ".mdx",
+            ".markdown",
+        )
+        if lower.endswith(_ALWAYS_READABLE_SUFFIXES):
+            return GateDecision(allowed=True, level="asset_exemption")
+
+        # Level 5: Read gate — per-file discovery
+        if known_exact_path:
+            return GateDecision(allowed=True, level="read_gate")
+
+        if _is_path_granted(ctx.gate_state, normalized):
+            return GateDecision(allowed=True, level="read_gate")
+
+        # #474 tranche 2: session-ledger discovery continuity fallback.
+        # Reached only OUTSIDE a lane context (the lane branch returned
+        # above) and only for non-sensitive, non-protected-config paths.
+        if _ledger_admits(ctx.gate_state, normalized):
+            return GateDecision(allowed=True, level="session_discovery_ledger")
+
+        # War FF (unindexed dead-end, Wars BB/V/U sightings): this final
+        # refusal is reachable only when the file is NOT in the code_files
+        # index (an indexed undiscovered file already blocked at the
+        # indexed_file_gate above). The old "Use ai_find first" message
+        # prescribed a DEAD-END here — ai_find only searches indexed files
+        # and returns zero hits for these paths forever (tests/** are
+        # excluded from the default index sync). Be honest instead: name
+        # the state and the recoveries that actually work.
+        if not is_indexed:
+            return GateDecision(
+                allowed=False,
+                level="read_gate",
+                reason=(
+                    f'Read gate: "{normalized}" is not in the code index, so '
+                    f"discovery tools (ai_find/ai_bundle) cannot surface it. "
+                    f"Pass known_exact_path=true for a path you know, or run "
+                    f"ai_index_sync (include_tests=true for test files) to "
+                    f"index it."
+                ),
+            )
+        return GateDecision(
+            allowed=False,
+            level="read_gate",
+            reason=_gate_msg("read_gate_blocked", path=normalized),
+        )
+
+    # ── Lane tool enforcement ──
+
+    # Conductor-only tools: broad `session_*` / `code_*` allowlist patterns
+    # would otherwise let a lane call these and escape isolation. They must
+    # be reachable only by the main conductor (no current_lane_id set).
+    _CONDUCTOR_ONLY_TOOLS: set[str] = {
+        # Conductor→lane delegation — conductor-only; a lane must not
+        # be able to grant raw tools to itself or to a peer lane. The
+        # tool further refuses any grant the current turn's user intent
+        # did not authorize (see runtime_service.grant_raw_tools_for_lane).
+        "lane_grant_raw_tools",
+    }
+
+    # Default lane allowlist — Expert (white head) baseline per Empire's
+    # role doctrine 2026-05-01. Explicit names, narrow globs only.
+    # Globs `ai_*`/`session_*`/`plan_*`/`memory_*`/`skill_*` were too loose:
+    # they matched ai_index_sync (admin), session_create (admin),
+    # plan_create_from_spec (conductor), memory_capture (Empire-grant),
+    # session_skills_set (admin) — letting Experts reach into doctrine
+    # writes and global index mutation. Tightened to:
+    #   read + write + run + lifecycle + worker plumbing + read-only inspection.
+    # Conductor grants extras via lane_extra_tools (additive, not replacement).
+    # Empire grants via NLP intent / sticky_grants_store.
+    _DEFAULT_LANE_ALLOWLIST: tuple[str, ...] = (
+        # Read — code-output investigation tools.
+        "ai_find",
+        "ai_investigate",
+        "ai_trace",
+        "ai_bundle",
+        "ai_search",
+        "ai_text_search",
+        "ai_get_lines",
+        "ai_get_symbol_snippet",
+        "ai_get_symbol_info",
+        "ai_get_outline",
+        "ai_get_dependencies",
+        "ai_get_module_files",
+        "ai_get_modules",
+        "ai_schema",
+        "ai_read_*",
+        # Write / edit — Empire doctrine 2026-05-01: ai_replace(mode=…)
+        # is the canonical unified replace tool. Modes: string (old_string
+        # capped by edit.str_replace_max_old_chars, default 1000), anchor
+        # (start/end anchors, no middle
+        # content shipped), symbol (index-resolved body rewrite),
+        # lines (no longer granted-only — Phoenix 2026-05-12: line-
+        # based edits now evict the file from known_exact_paths,
+        # forcing a re-read before the next line op. Re-read discipline
+        # replaces conductor grant). Less tools with more uses.
+        # ai_str_replace / ai_anchor_replace / ai_edit_lines were
+        # deregistered as MCP tools 2026-05-12 — ai_replace is the
+        # only door. Bodies remain as private helpers.
+        "ai_replace",
+        "ai_batch_edit",
+        "ai_create_file",
+        "ai_insert_lines",
+        # Run / test — lane workers verify via the SUBAGENT-SAFE ai_test
+        # (language-agnostic; argv-form, shell=False). Raw ai_run is
+        # DELIBERATELY withheld from lane agents (2026-06-13): a worker with
+        # raw shell can write to / evade SELF_MOD_GATE_CODE-protected gate
+        # code (observed repeatedly). A conductor that genuinely needs to
+        # grant a lane raw shell does so explicitly via lane_allowed_tools
+        # (merged with this default below) — so ai_run is conductor-grantable,
+        # not lane-default. Raw Bash stays tier-0.
+        "ai_test",
+        # Lifecycle and worker plumbing — boot sequence + progress.
+        # ai_session(mode='connect') is the single boot door (paved-road,
+        # 2026-05-12 mode-collapse); detects worker env vars and binds +
+        # delivers lane plan in one call. ai_task covers begin/update/
+        # complete/status via mode dispatch.
+        "ai_session",
+        "ai_task",
+        "verification_gate",
+        "ai_plan_report",
+        "ai_plan_signal",
+        # Conductor messaging (worker → conductor channel).
+        "ai_lane_inbox",
+        "ai_lane_send",
+        "ai_lane_state",
+        # Read-only memory — capture stays out of Expert scope (doctrine
+        # writes go through Empire grant or conductor, not Experts).
+        "memory_read",
+        "memory_search",
+        # Read-only inspection.
+        "ai_index_status",
+        "index_status",
+        "ai_status",
+        "ai_jobs",
+    )
+
+    @staticmethod
+    def check_lane_tool(ctx: GateContext, tool_name: str) -> GateDecision:
+        """Check if a tool is allowed in the current lane scope.
+
+        When a conductor lane is active, only tools matching the lane's
+        allowed tool patterns are permitted. Configured via:
+            conductor.lane_allowed_tools = ["code_*", "session_*", ...]
+              — REPLACES the default allowlist entirely (narrow/override).
+            conductor.lane_extra_tools = ["mcp__custom__tool", ...]
+              — EXTENDS whatever base allowlist is in effect (default or
+                lane_allowed_tools). Use this to grant one extra tool
+                without redefining the whole list.
+
+        Conductor-only tools (lane_grant_raw_tools) are blocked regardless
+        of allowlist — a lane must not be able to grant raw tools to itself
+        or to a peer lane.
+        """
+        current_lane = ctx.gate_state.get("current_lane_id")
+        if not current_lane:
+            return GateDecision(allowed=True, level="no_lane")
+
+        # Normalize tool name — strip MCP namespace prefixes so patterns
+        # match both bare and prefixed forms. Two-step: try the full
+        # `mcp__aidocs__` first (preserves longest-match), then fall
+        # back to the generic `mcp__` prefix to cover custom MCP servers
+        # (`mcp__custom__*`, `mcp__playwright__*`, etc.). 2026-04-25
+        # audit: previous version only stripped `mcp__aidocs__`,
+        # leaving custom MCP names un-normalized.
+        name = tool_name.strip().lower()
+        for prefix in ("mcp__aidocs__", "mcp__"):
+            if name.startswith(prefix):
+                name = name[len(prefix) :]
+                break
+        # Conductor-only tools: hard-block before any allowlist match.
+        # These must remain unreachable from a lane even when the lane's
+        # allowlist would otherwise permit them via a broad wildcard.
+        if name in AccessGate._CONDUCTOR_ONLY_TOOLS:
+            return GateDecision(
+                allowed=False,
+                level="lane_tool_blocked",
+                reason=(
+                    f"Tool '{tool_name}' is conductor-only and cannot be "
+                    f"called from lane '{current_lane}'. Granting raw-tool "
+                    f"access from inside a lane would defeat lane isolation; "
+                    f"ask the conductor to expand tool permissions instead."
+                ),
+            )
+
+        # Lane-system tools: always allowed regardless of allowlist. Lanes
+        # need these to read context and report progress. Also includes
+        # conductor-self-rescue tools — a conductor accidentally trapped
+        # in a worker's lane scope MUST be able to call conductor_lane_exit
+        # etc. without the gate blocking the one tool that fixes the trap
+        # (chicken-and-egg bug reported 2026-04-20 by dental session).
+        # Tools that should remain worker-refused despite being in this
+        # allowlist env-gate off AIDOCS_EXPERT_LANE_ID internally.
+        _LANE_SYSTEM_TOOLS = {
+            # Task + session lifecycle (mode-dispatched, 2026-05-12 collapse).
+            "ai_task",
+            "ai_session",
+            # Plan / conductor progress reporting + claim-next-lane.
+            # ai_plan_dispatch is the agent's lane-claim entry — without
+            # it in the system-tool set, a worker can't pick up its own
+            # next lane packet without an explicit allowlist grant
+            # (2026-05-16 fix; was a silent gap during the plan-tool
+            # surface consolidation).
+            "ai_plan_dispatch",
+            "ai_plan_report",
+            "ai_plan_signal",
+            "ai_plan_expand",
+            # Conductor↔worker messagerie (WAR D #452 / #217): the drain,
+            # send, and state-report surfaces must NEVER be blocked by a
+            # declared-tools REPLACE — a worker that cannot read its lane
+            # inbox can never clear the unread-message block, and a worker
+            # that cannot send can never signal the conductor (STOP shape).
+            "ai_lane_inbox",
+            "ai_lane_send",
+            "ai_lane_state",
+            # Read-only session + memory.
+            "memory_read",
+            "memory_search",
+            "ai_get_lines",
+            "ai_get_symbol_snippet",
+            "metrics_snapshot",
+            # Conductor-self-rescue (env-gated off workers by the
+            # tool itself). Without these, a trapped conductor has no
+            # escape path from a sticky lane id left by a worker.
+            "ai_lane_exit",
+            "ai_seat",
+            # Read-only worker monitoring — a conductor MUST be able
+            # to see worker status even when its own session was
+            # lane-bound by the lane's worker.
+            "ai_status",
+            "ai_jobs",
+            # Read-only mode inspection. mode_set / mode_clear stay
+            # blocked so a worker can't self-elevate; mode_get is read.
+            "mode_get",
+            # Host-native CLI tools — AIDOCS lane gate has no jurisdiction
+            # over them (CLI's --allowedTools enforces).
+            "toolsearch",
+        }
+        if name in _LANE_SYSTEM_TOOLS:
+            return GateDecision(allowed=True, level="lane_system_tool")
+
+        # Build the effective allowlist.
+        allowed_patterns = list(ctx.gate_state.get("lane_allowed_tools") or [])
+        extra_patterns = list(ctx.gate_state.get("lane_extra_tools") or [])
+
+        if allowed_patterns:
+            # Explicit allowlist present — full REPLACE of the default,
+            # plus any extras on top.
+            all_patterns = allowed_patterns + extra_patterns
+        else:
+            # No explicit allowlist — use default, plus any extras on top.
+            # This makes lane_extra_tools an EXTENSION, not a replacement,
+            # so a conductor can grant one extra tool without losing the
+            # default AIDOCS surface.
+            all_patterns = list(AccessGate._DEFAULT_LANE_ALLOWLIST) + extra_patterns
+
+        import fnmatch
+
+        for pattern in all_patterns:
+            if fnmatch.fnmatch(name, pattern.lower()):
+                return GateDecision(allowed=True, level="lane_tool_allowed")
+
+        # Also check full tool name (for mcp__custom__tool patterns).
+        full_name = tool_name.strip().lower()
+        for pattern in all_patterns:
+            if fnmatch.fnmatch(full_name, pattern.lower()):
+                return GateDecision(allowed=True, level="lane_tool_allowed")
+
+        # WAR D (#452): the refusal names the lane, the DECLARED tool set,
+        # and the conductor's grant path (lane_extra_tools — additive, an
+        # EXTENSION of the declared set, never a replacement). A worker
+        # reading this refusal knows exactly what it may call and how the
+        # conductor widens the surface (#218 grant_scope kind='tools').
+        _declared_preview = ", ".join(sorted(all_patterns)[:25]) or "<empty>"
+        return GateDecision(
+            allowed=False,
+            level="lane_tool_blocked",
+            reason=(
+                f"Tool '{tool_name}' is not declared for lane '{current_lane}'. "
+                f"Declared tool set ({len(all_patterns)} patterns): "
+                f"[{_declared_preview}]. The conductor grants additional tools "
+                f"additively via lane_extra_tools — "
+                f"ai_lane(action='grant_scope', lane_id='{current_lane}', "
+                f"kind='tools') — extras EXTEND the declared set, they never "
+                f"replace it. Send a request_scope_extension ask (#218) and "
+                f"wait; do not retry the undeclared tool."
+            ),
+        )
+
+    # ── Level 2+3+4+6: Edit path checks ──
+
+    @staticmethod
+    def check_edit(ctx: GateContext, path: str) -> GateDecision:
+        """Check if a file edit is allowed — requires prior discovery."""
+        normalized = _normalize_path(path)
+
+        # Level 3: Sensitive file protection
+        if _is_sensitive(normalized):
+            return GateDecision(
+                allowed=False,
+                level="sensitive_file_protection",
+                reason=f"Edit access to sensitive file blocked: {normalized}",
+            )
+
+        # Level 2: Infrastructure protection
+        if _is_protected_config(normalized):
+            return GateDecision(
+                allowed=False,
+                level="infrastructure_protection",
+                reason=f"Edit access to AIDOCS config file blocked: {normalized}",
+            )
+
+        # Unmanaged mode — no edit gate
+        if not ctx.managed:
+            return GateDecision(allowed=True, level="unmanaged")
+
+        # Lane isolation: when a conductor lane is active, restrict to lane files
+        current_lane = ctx.gate_state.get("current_lane_id")
+        if current_lane:
+            lane_paths = {
+                str(item).replace("\\", "/").strip()
+                for item in (ctx.gate_state.get("lane_exact_paths") or [])
+                if str(item).strip()
+            }
+            if normalized in lane_paths:
+                return GateDecision(allowed=True, level="lane_isolation")
+            # WAR D (#452) §VII: out-of-scope writes are a STOP-and-signal
+            # shape, not a dead-end. The worker halts, signals the
+            # conductor, and waits for an additive grant — it never
+            # self-expands or works around the gate.
+            return GateDecision(
+                allowed=False,
+                level="lane_isolation",
+                reason=(
+                    f"STOP — lane isolation: '{normalized}' is not in lane "
+                    f"'{current_lane}' allowed files. Do NOT edit this file "
+                    f"and do NOT work around the gate. Signal the conductor: "
+                    f"send a request_scope_extension ask (lane_scope_ask, "
+                    f"#218) or ai_plan_signal, then WAIT. The conductor "
+                    f"grants additively via ai_lane(action='grant_scope', "
+                    f"lane_id='{current_lane}', kind='files')."
+                ),
+            )
+
+        # Level 6: Edit gate — file must be previously discovered
+        if _is_path_granted(ctx.gate_state, normalized):
+            return GateDecision(allowed=True, level="edit_gate")
+
+        return GateDecision(
+            allowed=False,
+            level="edit_gate",
+            reason=_gate_msg("edit_gate_blocked", path=normalized),
+        )
+
+    # ── Level 2+3+4: Write path checks (new file creation) ──
+
+    @staticmethod
+    def check_write(
+        ctx: GateContext,
+        path: str,
+        *,
+        config_edit_mode: str | None = None,
+        has_intent: bool = False,
+    ) -> GateDecision:
+        """Check if a file write/create is allowed."""
+        from .config import GATE_HARD_PROTECTED_PATTERNS
+        from .hard_protected_paths import hard_protected_reason
+
+        normalized = _normalize_path(path)
+
+        # Tier 0: global host bootstrap files (e.g. ~/.claude/CLAUDE.md).
+        # NEVER agent-writable — not via dev_mode, not via user-intent,
+        # not via gate_enforce=False. Only the AIDOCS installer touches
+        # these, and it runs outside the agent gate entirely.
+        if _is_global_bootstrap(normalized):
+            return GateDecision(
+                allowed=False,
+                level="global_bootstrap_tier0",
+                reason=(
+                    f"Global host bootstrap file is never agent-writable: "
+                    f"{normalized}. Edit manually in your editor; only "
+                    f"the AIDOCS installer mutates this path."
+                ),
+            )
+
+        # Tier 0b: Hard-protected project-internal DATA files — sqlite DBs,
+        # AIDOCS index, gate-state JSON. A structural fence ABOVE the
+        # dev_mode/infrastructure tier and immune to gate_enforce=False.
+        #   * sqlite → ALWAYS denied. The only write path is config_set
+        #     (canonical ConfigStore service), which never routes through
+        #     check_write. No flag/role unlocks a direct file-write.
+        #   * other data → denied unless allow_hard_protected_edit (the
+        #     RBAC-resolved unlock: role check + escalate, set upstream).
+        if _is_hard_protected_data(normalized):
+            if _is_sqlite_data(normalized):
+                return GateDecision(
+                    allowed=False,
+                    level="hard_protected_data",
+                    reason=(
+                        f"'{normalized}' is a project sqlite database. It is "
+                        f"writable ONLY via config_set (the canonical store) — "
+                        f"never by a direct file edit. No override unlocks this."
+                    ),
+                )
+            if ctx.allow_hard_protected_edit:
+                return GateDecision(allowed=True, level="hard_protected_data")
+            return GateDecision(
+                allowed=False,
+                level="hard_protected_data",
+                reason=(
+                    hard_protected_reason(normalized, extra_patterns=GATE_HARD_PROTECTED_PATTERNS)
+                    or f"'{normalized}' is a hard-protected project data file."
+                ),
+            )
+
+        # Level 3: Sensitive file protection
+        if _is_sensitive(normalized):
+            return GateDecision(
+                allowed=False,
+                level="sensitive_file_protection",
+                reason=_gate_msg("sensitive_file_blocked", path=normalized),
+            )
+
+        # Level 2a: Config files — blocked unless allow_config_edit
+        if _is_protected_config(normalized):
+            if ctx.allow_config_edit:
+                return GateDecision(allowed=True, level="infrastructure_protection")
+            return GateDecision(
+                allowed=False,
+                level="infrastructure_protection",
+                reason=_gate_msg("infrastructure_config_blocked", path=normalized),
+            )
+
+        # Level 2b: Infrastructure paths — blocked unless dev_mode
+        if _is_infrastructure(normalized) and not ctx.dev_mode:
+            return GateDecision(
+                allowed=False,
+                level="infrastructure_protection",
+                reason=_gate_msg("infrastructure_source_blocked", path=normalized),
+            )
+
+        # Level 4: .MEMORY/ writes — workflow/security rules ALWAYS need user intent
+        # (gate_enforce=False bypasses other gates but NOT workflow/security rules)
+        if _is_memory_path(normalized):
+            if _is_protected_memory_path(normalized):
+                # Always intent-gated — these files control execution behavior
+                if has_intent:
+                    return GateDecision(allowed=True, level="memory_write_intent_gate")
+                return GateDecision(
+                    allowed=False,
+                    level="memory_write_intent_gate",
+                    reason=_gate_msg("memory_write_blocked", path=normalized),
+                )
+            # Non-protected memory paths (session files, journals, domains) — freely writable
+            return GateDecision(allowed=True, level="memory_path_exemption")
+
+        return GateDecision(allowed=True, level="allowed")
+
+    # ── Discovery grants ──
+
+    @staticmethod
+    def grant_discovery(
+        store: QueryGateStore,
+        project_root: Path,
+        session_id: str,
+        tool_name: str,
+        paths: list[str],
+    ) -> None:
+        """Grant per-file read access for discovered paths."""
+        safe_paths = [_normalize_path(p) for p in paths if _is_safe_grantable_path(p)]
+        if not safe_paths:
+            return
+
+        state = store.get(project_root, session_id)
+        existing = [
+            str(item) for item in state.get("known_exact_paths", []) if isinstance(item, str)
+        ]
+        merged = list(dict.fromkeys(existing + safe_paths))
+
+        # #474 tranche 2 (War Y): mirror the grant into the per-SESSION
+        # surfaced-files ledger so discovery survives the per-task
+        # known_exact_paths wipe (task_begin/task_complete). Lane-context
+        # grants are NOT mirrored — lane discovery must never become
+        # durable session-wide discovery (attempt-32 grant-split
+        # precedent, extended). Best-effort: ledger failure never fails
+        # the grant (the ledger is a widening fallback, losing a record
+        # only restores today's stricter behavior).
+        if not state.get("current_lane_id"):
+            try:
+                from .session_response_ledger import record_surfaced_files
+
+                record_surfaced_files(project_root, session_id, safe_paths)
+            except Exception:
+                pass
+
+        store.set(
+            project_root,
+            session_id,
+            last_tool=f"discovery:{tool_name}",
+            known_exact_paths=merged,
+        )

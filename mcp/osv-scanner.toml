@@ -1,0 +1,173 @@
+# osv-scanner VEX exceptions for the AIDOCS deploy gate (Gate 1e).
+#
+# Doctrine: an entry here is a DOCUMENTED, AUDITABLE risk-acceptance — NOT a
+# silent waiver. Add an entry ONLY for a vulnerability proven not-exploitable in
+# THIS deployment (VEX "not affected"), with the evidence written in `reason`.
+#
+# THE PREMISE IS THE EXPIRY, NOT A DATE (operator ruling 2026-08-31: "it's
+# deliberate and forever, as long as it's safe, it's safe").
+#
+# These entries carried `ignoreUntil` review dates, and on 2026-08-31 all four
+# lapsed at once and blocked a deploy — while the reasoning behind them was
+# still, on re-verification, exactly as true as the day it was written. That is
+# what a calendar measures: elapsed time, not risk. It fires when nothing has
+# changed, and stays silent when something has.
+#
+# So an acceptance here does not expire on a date. It expires THE MOMENT ITS
+# PREMISE STOPS HOLDING, and that is enforced mechanically by
+# tests/security/test_chromadb_stays_embedded_only.py, which scans for the exact
+# indicators each `reason` names and fails — naming the voided entries — if any
+# appears. Each entry already said "a single hit VOIDS this waiver; it must then
+# be removed, not re-dated"; the test is that sentence made executable.
+#
+# `ignoreUntil` remains available and is still right for a genuinely TEMPORARY
+# acceptance — one waiting on an upstream release, say. It is wrong for a
+# structural "not affected", where the honest trigger is the structure changing.
+
+[[IgnoredVulns]]
+id = "GHSA-f4j7-r4q5-qw2c"           # CVE-2026-45829 — chromadb pre-auth RCE
+# NO REVIEW DATE — the PREMISE is the expiry (operator ruling 2026-08-31:
+# "it's deliberate and forever, as long as it's safe, it's safe"). Enforced by
+# tests/security/test_chromadb_stays_embedded_only.py, not by a calendar.
+reason = """
+VEX: NOT AFFECTED (vulnerable code not in execute path). CVE-2026-45829 /
+GHSA-f4j7-r4q5-qw2c is a pre-authentication code-injection (CWE-94, CVSS:4.0
+AV:N) in ChromaDB's HTTP SERVER — it requires an attacker to reach the
+network endpoint /api/v2/tenants/{tenant}/databases/{db}/collections with a
+malicious model repository + trust_remote_code=true. AIDOCS/mempalace use
+chromadb EMBEDDED ONLY (PersistentClient/EphemeralClient over a local SQLite
+file): there is NO chromadb HTTP server, no /api/v2 endpoint, no network
+listener, and no attacker-supplied model-repo path anywhere in the tree
+(verified by source scan). The network attack surface does not exist here.
+No fixed chromadb version exists (every release >=1.0.0 is flagged; 1.5.9 is
+the latest on PyPI), so a version bump cannot clear it. Revisit on the review
+date or when chromadb ships a patched release (then bump + remove this entry).
+"""
+
+[[IgnoredVulns]]
+id = "GHSA-2wm9-hf6c-p5cr"           # chromadb cross-tenant authorization bypass
+# NO REVIEW DATE — see the entry above; the premise guard is the expiry.
+reason = """
+VEX: NOT AFFECTED (the vulnerable surface does not exist in this deployment).
+GHSA-2wm9-hf6c-p5cr is an AUTHORIZATION BYPASS (CWE-639 / CWE-266) in ChromaDB's
+MULTI-TENANT HTTP API: "ChromaDB allows any authenticated users to arbitrarily
+read, write, update, or delete data in any tenant's collection" due to "a lack of
+authorization validation in version 0.4.17 or later". Exploitation requires an
+AUTHENTICATED caller reaching the NETWORK-EXPOSED ChromaDB API endpoints; the
+bypass is of the tenant boundary those endpoints enforce.
+
+AIDOCS/mempalace use chromadb EMBEDDED ONLY (PersistentClient / EphemeralClient
+over a local SQLite file). There is no chromadb HTTP server, no network listener,
+no authentication layer and NO TENANT BOUNDARY AT ALL — so there is nothing to
+bypass. chromadb is reached only through AIDOCS' own tool surface (e.g.
+ai_palace_search, which the gate executes for the dashboard route); it is never
+exposed as a service, and no caller speaks to chromadb directly.
+
+VERIFIED BY SOURCE SCAN 2026-08-24 across server/, third_party/ and core/:
+  22 files construct PersistentClient / EphemeralClient (embedded)
+   0 network-mode indicators of ANY kind — searched HttpClient, AsyncHttpClient,
+     chroma_server_* , CHROMA_SERVER* , chroma_api_impl, a chroma server
+     bootstrap (uvicorn/FastAPI), and tenant/database plumbing.
+Re-run that scan to re-check this entry; if it ever returns a network-mode hit,
+this waiver is void and must be removed rather than re-dated.
+
+No fixed chromadb release exists: the advisory affects 0.4.17 through 1.5.9 and
+1.5.9 is the latest on PyPI, so a version bump cannot clear it — the same
+situation as GHSA-f4j7-r4q5-qw2c above, and for the same underlying reason (both
+are server-side defects in a component we run embedded).
+
+The review date is deliberately aligned with the sibling chromadb entry so BOTH
+acceptances resurface together and are judged as one decision rather than drifting
+apart.
+"""
+
+[[IgnoredVulns]]
+id = "GHSA-36p7-vc44-83pf"           # chromadb HTTP-API code injection (CWE-94)
+# NO REVIEW DATE — see the entry above; the premise guard is the expiry.
+reason = """
+VEX: NOT AFFECTED (the vulnerable endpoint does not exist in this deployment).
+Verbatim: "A code injection vulnerability in version 0.4.17 or later of the
+ChromaDB Python project allows an authenticated attacker to run arbitrary code on
+the server by sending a malicious model repository and trust_remote_code set to
+true in the /api/v2/tenants/default_tenant/databases/default_database/collections/
+{collection_id} if they have the UPDATE_COLLECTION permission." CWE-94.
+
+EVERY precondition is a SERVER precondition: a network endpoint, an authenticated
+principal, an UPDATE_COLLECTION permission, and a caller-supplied
+trust_remote_code flag. AIDOCS runs chromadb EMBEDDED ONLY (PersistentClient /
+EphemeralClient over local SQLite): there is no HTTP server, no /api/v2 route, no
+permission model, and no path by which any caller supplies trust_remote_code.
+chromadb is reached only through AIDOCS' own tool surface, never as a service.
+
+This is materially the same defect as GHSA-f4j7-r4q5-qw2c above (same endpoint,
+same trust_remote_code precondition, same CWE); it is waived separately because
+osv-scanner matches on advisory id, not on defect.
+
+THE ENDPOINT ARGUMENT IS NOT THE STRONGEST ONE, so it is not the one this entry
+rests on. chromadb IS heavily used here — it is the memory surface for mempalace —
+and a reviewer is right to ask whether the MODEL-LOADING code the injection lives
+in is shared between server and embedded modes. It may well be. The waiver holds
+anyway, because NOTHING A CALLER SUPPLIES EVER REACHES THE VULNERABLE ARGUMENT:
+
+  * mempalace/backends/chroma.py builds the embedding function INTERNALLY
+    (`from ..embedding import get_embedding_function` -> `get_embedding_function()`,
+    chroma.py:1935-1937). Callers pass a palace path, a collection name and
+    DOCUMENTS. They cannot pass an embedding function, a model name or a repo.
+  * mempalace/embedding.py offers exactly TWO embedders, chosen by the
+    MEMPALACE_EMBEDDING_MODEL env SELECTOR — not an arbitrary repo string:
+      - a subclass of chromadb's own ONNXMiniLM_L6_V2 (local ONNX graph), and
+      - EmbeddinggemmaONNX, whose repo is a MODULE CONSTANT
+        (_EMBEDDINGGEMMA_REPO = "onnx-community/embeddinggemma-300m-ONNX") fetched
+        with a hardcoded filename.
+  * `trust_remote_code` appears ZERO times in mempalace/embedding.py, ZERO times
+    in mempalace/backends/chroma.py, and ZERO times anywhere in server/,
+    third_party/ or core/. The advisory requires it TRUE.
+
+So the attacker-controlled inputs the advisory names — a malicious model
+repository and trust_remote_code=true — are not merely unreachable over the
+network; they are not reachable AT ALL, because the model is CONFIGURATION fixed
+in source and memory content is DATA. A memory payload is a document, never a
+model spec. That separation is what this waiver actually rests on, and it is the
+thing to re-check: if a caller ever gains control of the embedding function, the
+model name, or the repo, THIS WAIVER IS VOID regardless of transport.
+
+VERIFIED BY SOURCE SCAN 2026-08-25 across server/, third_party/ and core/:
+  0 hits for trust_remote_code, UPDATE_COLLECTION, chroma_server_auth,
+    CHROMA_SERVER_AUTH, AuthorizationProvider or any auth/authz provider
+  0 network-mode indicators (HttpClient, chroma_server_*, chroma_api_impl,
+    uvicorn/FastAPI chroma bootstrap, tenant/database plumbing)
+ 22 files construct PersistentClient / EphemeralClient
+A single hit for any of the above VOIDS this waiver; it must then be removed, not
+re-dated.
+
+No fixed release exists: affected 0.4.17-1.5.9, and 1.5.9 is still the latest on
+PyPI (checked 2026-08-25). A version bump cannot clear it.
+"""
+
+[[IgnoredVulns]]
+id = "GHSA-xph7-9rjv-w5fr"           # chromadb SimpleRBACAuthorizationProvider (CWE-863)
+# NO REVIEW DATE — see the entry above; the premise guard is the expiry. The
+# 1.6.0 bump instruction below still stands and is still the preferred exit.
+reason = """
+VEX: NOT AFFECTED (the vulnerable component is never constructed here).
+Verbatim: "The SimpleRBACAuthorizationProvider authorization provider in versions
+0.5.0 or later of the ChromaDB Python project evaluates whether a user holds a
+given permission but never checks which tenant, database, or collection that
+permission applies to allowing users to perform cross tenant actions." CWE-863.
+
+The defect is IN AN AUTHORIZATION PROVIDER THAT ONLY EXISTS TO GUARD REMOTE
+ACCESS. Embedded chromadb constructs no authorization provider, has no users, no
+permissions, no tenants and no databases to cross - so there is no boundary to
+bypass and nothing to grant. Exploitation additionally requires valid credentials
+and a reachable network endpoint; neither exists.
+
+VERIFIED BY SOURCE SCAN 2026-08-25: 0 hits for SimpleRBACAuthorizationProvider,
+AuthorizationProvider, auth_provider, authz_provider, chroma_server_auth or
+CHROMA_SERVER_AUTH anywhere in server/, third_party/ or core/. Same voiding rule
+as the entries above.
+
+NOTE ON THE FIX: this advisory references a fix landing in 1.6.0. NO SUCH RELEASE
+EXISTS - PyPI's latest is still 1.5.9 (checked 2026-08-25), so the reference is to
+an unreleased/merged PR. REMOVE THIS ENTRY AND BUMP THE MOMENT 1.6.0 SHIPS; that
+is the preferred resolution and this waiver is only a bridge to it.
+"""

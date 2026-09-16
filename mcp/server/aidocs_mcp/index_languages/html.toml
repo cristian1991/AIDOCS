@@ -1,0 +1,3 @@
+name = "html"
+extensions = [".html", ".htm"]
+embedded_semantics = ["css_inline", "js_inline"]

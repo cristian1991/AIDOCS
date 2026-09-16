@@ -1,0 +1,5 @@
+name = "shell"
+extensions = [".sh", ".bash"]
+
+# All shell files are scripts
+role_hint = "script"

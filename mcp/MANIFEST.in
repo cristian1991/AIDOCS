@@ -1,0 +1,12 @@
+recursive-exclude tests *
+recursive-exclude .MEMORY *
+exclude ROADMAP.md
+exclude ROADMAP_*.md
+exclude INDEXING_*.md
+exclude RELEASE_SUMMARY_*.md
+exclude BENCHMARKS.md
+exclude DOCS_SITE_STRUCTURE.md
+prune tests
+prune benchmarks
+prune .MEMORY
+prune docs

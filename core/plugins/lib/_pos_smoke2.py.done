@@ -1,0 +1,19 @@
+from aidocs_mcp.intent_grant_detector import detect_grant, _clear_alias_pos_cache
+_clear_alias_pos_cache()
+cases = [
+    ("the edit was approved", "no ai_replace/edit"),
+    ("edit the config file", "ai_replace + edit"),
+    ("grep the logs for error", "grep"),
+    ("extract text from the pdf report", "ai_read_pdf"),
+    ("begin a new task for this work", "ai_task"),
+    ("I usually read the logs daily", "read"),
+    ("commit and push to main", "git_ops"),
+    ("refactor the duplicate code", "ai_slop"),
+    ("refactor il codice duplicato", "ai_slop (it)"),
+]
+for prompt, want in cases:
+    r = detect_grant(prompt)
+    sup = [x for x in r.reasons if "suppress" in x]
+    print("PROMPT:", prompt, "WANT:", want)
+    print("  granted:", sorted(r.granted_tools))
+    if sup: print("  suppressed:", sup)

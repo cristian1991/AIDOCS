@@ -1,0 +1,64 @@
+# AIDOCS local MCP config (contains absolute paths)
+.mcp.json
+
+# Build / cache / runtime trash — never source, never shipped. Keep the tree
+# clean so the deploy gate's committed-tree scan stays lean + deterministic
+# (these were the bloat behind the 2026-06-01 trufflehog scan-abort).
+.ruff_cache/
+.basedpyright/
+.pytest_cache/
+.pytest-tmp/
+.pytest-aidocs-global-config/
+.pytest-out-*.log
+dist/
+__pycache__/
+*.pyc
+# transient license-patch scratch (applied; not part of the package)
+PYPROJECT_LICENSE_SNIPPET.toml
+pyproject.toml.license.patch
+
+# mcp/scratch — 612 MiB of working artefacts that NOTHING was ignoring (#912).
+#
+# WHY THE ROOT RULES DID NOT COVER THIS. The repo-root .gitignore carries
+# `/scratch/_*` and `/scratch/probe_*`, but a LEADING SLASH anchors a pattern to
+# the directory holding the .gitignore — so those rules cover the repo-root
+# `scratch/` tree and have never reached `mcp/scratch/`. Two scratch trees, one
+# set of rules, and the gap was invisible because both are called scratch.
+# Measured 2026-08-25: `git check-ignore` matched exactly ONE rule anywhere in
+# this tree (`__pycache__/`), leaving 337 of 388 files untracked-but-not-ignored,
+# among them a 581 MB mutation_coverage_map.json.
+#
+# THIS HAS ALREADY FIRED ONCE. mcp/scratch/COMMITMSG_lint_isc.txt:42-43 records
+# an earlier `git add -A mcp/scratch` that swept 317 files / 577k insertions and
+# had to be reset. One `git add -A` from any agent or any human repeats it, and
+# the blast radius has only grown since.
+#
+# IGNORING IS SAFE FOR THE LOAD-BEARING FILES, and this is the part worth being
+# explicit about rather than trusting to memory. Five artefacts here ARE
+# load-bearing — mutation_pilot.py:842-850 and scripts/deploy_aidocs_gate.sh:
+# 4850-4857 name them literally, the gate scp's them back from the VPS, and
+# `--report` reads them. `.mutation_inflight/` additionally holds UN-MUTATED
+# PRODUCTION SOURCE while a mutation run is in flight (mutation_pilot.py:858-871).
+# None of that is harmed here: every one of those paths is read FROM DISK, never
+# from git, and a .gitignore rule has NO EFFECT on a file that is already
+# tracked. So this stops accidental mass-staging without touching what the
+# mutation lane and the deploy gate actually consume.
+#
+# It is also a blind spot by COMBINATION rather than by bug:
+# runtime_provisioner.py:157 deliberately excludes mcp/scratch from source-drift
+# detection (correct — it is a scratch dir), and git was ignoring none of it. A
+# directory that is neither watched nor ignored is exactly where 581 MB
+# accumulates unnoticed.
+# EXCEPT the gate proofs (#1022, 2026-09-04). A proof harness whose result is
+# only ever agent-reported from a temp path is not evidence anyone can check;
+# these two files are small, hand-written and meant to be re-run by a reader.
+#
+# THE PATTERN IS `scratch/*`, NOT `scratch/`, AND THAT DIFFERENCE IS THE WHOLE
+# TRICK. git does not descend into an EXCLUDED DIRECTORY, so under a bare
+# `scratch/` no `!` rule beneath it can ever re-include anything -- measured
+# here: `git check-ignore -v` still reported `scratch/` for both files. Matching
+# the ENTRIES instead leaves the directory itself considered, so the negation
+# below is reachable. Everything else under scratch/ stays ignored exactly as
+# before (an ignored directory's contents are ignored recursively).
+scratch/*
+!scratch/gate-proofs/

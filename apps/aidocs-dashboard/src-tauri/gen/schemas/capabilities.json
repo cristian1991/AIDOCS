@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default desktop capability for the AIDOCS Dashboard window.","local":true,"windows":["main"],"permissions":["core:default",{"identifier":"http:default","allow":[{"url":"https://mcp.codenexus.cloud/*"},{"url":"https://codenexus.cloud/*"}]}]}}

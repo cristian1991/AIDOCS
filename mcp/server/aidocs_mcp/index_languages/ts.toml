@@ -1,0 +1,79 @@
+name = "typescript"
+extensions = [".ts"]
+extractor_family = "typescript_ast"
+module_hints = ["components", "features", "hooks", "services", "workers", "middleware", "api", "server", "runtime", "scripts", "models", "types"]
+
+# Entry-point files
+entry_points = ["index.ts", "server.ts", "app.ts"]
+
+# ── Role from glob patterns ──
+role_patterns = [
+  { glob = "**/hooks/**/*.ts", role = "hook-module" },
+  { glob = "**/components/**/index.ts", role = "barrel-module" },
+  { glob = "**/components/**/*.ts", role = "component" },
+  { glob = "**/features/**/index.ts", role = "barrel-module" },
+  { glob = "**/services/**/*.ts", role = "service" },
+  { glob = "**/api/**/*.ts", role = "route-handler" },
+  { glob = "server/*.ts", role = "server-module" },
+  { glob = "**/server/**/*.ts", role = "server-module" },
+  { glob = "runtime/*.ts", role = "server-module" },
+  { glob = "**/runtime/**/*.ts", role = "server-module" },
+  { glob = "**/middleware*.ts", role = "middleware" },
+  { glob = "**/workers/**/*.ts", role = "worker" },
+  { glob = "**/scripts/**/*.ts", role = "script" },
+  { glob = "**/models/**/*.ts", role = "data-model" },
+  { glob = "**/types/**/*.ts", role = "data-model" },
+  { glob = "**/lib/**/*.ts", role = "utility-module" },
+  { glob = "**/utils/**/*.ts", role = "utility-module" },
+  { glob = "**/helpers/**/*.ts", role = "utility-module" },
+  { glob = "**/prisma/**/*.ts", role = "data-access" },
+  { glob = "**/db/**/*.ts", role = "data-access" },
+  { glob = "**/database/**/*.ts", role = "data-access" },
+  { glob = "**/framework-generators/**/*.ts", role = "framework-generator" },
+  { glob = "**/core/**/*.ts", role = "core-module" },
+]
+
+# ── Role from exact file name ──
+role_exact_names = [
+  { name = "types", role = "utility-module" },
+  { name = "type", role = "utility-module" },
+  { name = "storage", role = "utility-module" },
+  { name = "registry", role = "utility-module" },
+  { name = "constants", role = "utility-module" },
+  { name = "vite", role = "config-module" },
+  { name = "vitest", role = "config-module" },
+  { name = "jest", role = "config-module" },
+  { name = "tsconfig", role = "config-module" },
+  { name = "next-env", role = "config-module" },
+  { name = "sst-env", role = "config-module" },
+  { name = "env", role = "config-module" },
+  { name = "happydom", role = "config-module" },
+  { name = "sidebars", role = "config-module" },
+]
+
+# ── Role from file suffix patterns ──
+role_suffix_patterns = [
+  { suffix = ".config.ts", role = "config-module" },
+  { suffix = ".d.ts", role = "config-module" },
+  { suffix = "-env.d.ts", role = "config-module" },
+]
+
+# ── Role from path token presence ──
+role_path_tokens = [
+  { token = "schemas", role = "config-module" },
+  { token = "schema", role = "config-module" },
+]
+
+line_patterns = [
+  { match = "function_call", function = "fetch", args_starts_with = "/api/", kind = "api_call" },
+  { match = "route_navigation", kind = "route_ref" },
+  { match = "function_call", function = "t", kind = "translation_key" },
+]
+
+# ── Layer inference tokens ──
+[layer_tokens]
+data = ["model", "schema", "store", "type", "types"]
+api = ["api", "route", "endpoint", "server"]
+logic = ["service", "handler", "middleware", "worker"]
+ui = ["component", "page", "view", "form", "dialog", "screen"]
+

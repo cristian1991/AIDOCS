@@ -1,0 +1,5 @@
+# Build artifacts (never committed)
+dist/
+dist-web/
+node_modules/
+src-tauri/target/

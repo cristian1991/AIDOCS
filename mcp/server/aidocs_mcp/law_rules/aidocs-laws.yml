@@ -1,0 +1,79 @@
+# AIDOCS castle-law Semgrep rules — the "write your own Ruff for our laws" pack.
+# REPORT-FIRST: every rule is INFO/WARNING, never an error/CI-block until proven
+# low-false-positive (see scratch/CROWN_GATE_DOCTRINE.md). Findings are surfaced
+# with AIDOCS evidence labels by the crown_gate runner; semgrep output is NEVER
+# authority on its own. Local/offline: run with `--metrics=off`.
+#
+# Run:  semgrep --config core/semgrep/aidocs-laws.yml mcp/server/aidocs_mcp --metrics=off
+rules:
+  - id: aidocs-verify-package-integrity-no-home
+    languages: [python]
+    severity: WARNING
+    message: >
+      verify_package_integrity() called WITHOUT home= — cannot consult the
+      canonical trust DB, so remote trust can never be granted and (for a
+      non-editable install) the full package hash is computed then discarded.
+      Pass home= on any real trust/remote path. (security-law risk)
+    patterns:
+      - pattern: verify_package_integrity()
+
+  - id: aidocs-subprocess-shell-true
+    languages: [python]
+    severity: WARNING
+    message: >
+      subprocess with shell=True — shell egress must pass the destructive-primitive
+      floor via code_runner._run_process (shell=False, [bash,-c,cmd]). Direct
+      shell=True bypasses the floor. (security-law risk)
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(..., shell=True, ...)
+          - pattern: subprocess.Popen(..., shell=True, ...)
+          - pattern: subprocess.call(..., shell=True, ...)
+          - pattern: subprocess.check_output(..., shell=True, ...)
+
+  - id: aidocs-swallowed-exception-pass
+    languages: [python]
+    severity: INFO
+    message: >
+      Exception swallowed with `except ...: pass`. In law paths (audit,
+      checkpoint, freeze, trust, gate) this can hide a failure that must fail
+      closed or be reported. Confirm the swallow is a deliberate best-effort
+      (telemetry/cleanup), else fail closed. (NOISY: best-effort handlers are
+      common — scope to law modules before promoting.) (security-law risk / noise)
+    patterns:
+      - pattern: |
+          try:
+              ...
+          except $E:
+              pass
+
+  - id: aidocs-runtime-json-as-authority
+    languages: [python]
+    severity: WARNING
+    message: >
+      remote_trustworthy / blessed decided directly from runtime.json — the file
+      is a PROJECTION; only the runtime_trust SQLite DB may grant remote trust.
+      Resolve via verify_package_integrity (DB-first). (security-law risk)
+    patterns:
+      - pattern-either:
+          - pattern: $M.get("package_remote_trustworthy")
+          - pattern: $M["package_remote_trustworthy"]
+    paths:
+      exclude:
+        - "**/package_integrity.py"   # the one legitimate projection writer
+
+  - id: aidocs-record-event-result-discarded-in-law
+    languages: [python]
+    severity: INFO
+    message: >
+      Audit record_event(...) wrapped in a bare try/except that drops the result.
+      Audit must be unavoidable on guarded paths — confirm fail-closed
+      (audit_or_refuse) rather than silent best-effort. (security-law risk / noise)
+    patterns:
+      - pattern: |
+          try:
+              ...
+              $HUB.execution.record_event(...)
+              ...
+          except $E:
+              pass

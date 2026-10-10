@@ -1,0 +1,3 @@
+name = "xlsx"
+extensions = [".xlsx", ".xls", ".xlsm"]
+# Presence-only descriptor. Agents reach via ai_read_excel.

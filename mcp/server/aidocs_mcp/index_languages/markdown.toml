@@ -1,0 +1,4 @@
+name = "markdown"
+extensions = [".md", ".mdx", ".markdown"]
+# Markdown is already indexed as text through most outline-free paths;
+# explicit descriptor makes it surface in ai_find consistently.

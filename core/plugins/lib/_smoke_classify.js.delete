@@ -1,0 +1,10 @@
+// One-shot smoke test for Phase 6 opencode-plugin sqlite integration.
+// Delete after verifying.
+const { loadActionTokens } = require("./classify");
+
+const result = loadActionTokens();
+console.log("action_kinds loaded:", result.length);
+const map = new Map(result);
+console.log("git_commit_and_push:", map.get("git_commit_and_push"));
+console.log("edit (first 5):", (map.get("edit") || []).slice(0, 5));
+console.log("ai_slop?:", map.has("ai_slop"));

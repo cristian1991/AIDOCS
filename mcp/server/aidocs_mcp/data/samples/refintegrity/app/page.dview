@@ -1,0 +1,6 @@
+# Page template — i18n via @lang.t
+<h1>@lang.t("greeting.hello")</h1>
+<p>@lang.t("nav.home")</p>
+
+# This key is NOT defined in keys.dview — expect broken reference
+<footer>@lang.t("footer.copyright")</footer>

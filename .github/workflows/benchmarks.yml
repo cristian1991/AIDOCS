@@ -1,0 +1,91 @@
+name: Benchmarks
+
+# OPT-IN GATE (2026-05-26): same quota-protection pattern as
+# sync-to-public.yml. Benchmarks are heavy and don't need to run on
+# every commit. The job fires only when the commit message contains
+# "[bench]" / "[benchmark]" (case-insensitive) OR via manual dispatch.
+# Default on every other push: zero runner minutes consumed.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: [self-hosted, linux, aidocs-vps]
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || contains(github.event.head_commit.message, '[bench]')
+      || contains(github.event.head_commit.message, '[benchmark]')
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify system Python (self-hosted runner uses VPS-installed python3.13)
+        run: |
+          python --version
+          which python pip
+
+      - name: Install MCP package (in venv — Debian 13 PEP 668)
+        run: |
+          python -m venv .ci-venv
+          . .ci-venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install -e ./mcp
+          # All subsequent steps run inside this venv automatically.
+          echo "$PWD/.ci-venv/bin" >> "$GITHUB_PATH" 
+
+      # The checked-out AIDOCS repo ships a committed .MEMORY/.aidocs marker, so
+      # it IS a commissioned AIDOCS project. Initializing a benchmark project
+      # INSIDE it would (correctly) be refused by nested-init law. So the
+      # throwaway toy project is created OUTSIDE the repo, under $RUNNER_TEMP —
+      # we move the benchmark project, we do NOT weaken nested-init refusal.
+      - name: Public smoke benchmark (toy project OUTSIDE the repo)
+        id: public
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          BENCH_DIR="$RUNNER_TEMP/aidocs-bench-sample"
+          mkdir -p "$BENCH_DIR/src"
+          cat > "$BENCH_DIR/src/app.py" <<'EOF'
+          def hello():
+              return "hello"
+
+          def add(a, b):
+              return a + b
+          EOF
+          aidocs init "$BENCH_DIR" --json > results/public-init.json
+          aidocs status "$BENCH_DIR" --json > results/public-status.json
+          aidocs sync "$BENCH_DIR" --json > results/public-sync.json
+          # Public set runs against the toy project that contains its concepts.
+          aidocs benchmark "$BENCH_DIR" --json --iterations 5 \
+            --scenario-set public --out results/public-benchmark.json \
+            > results/public-benchmark.stdout.json
+
+      # The AIDOCS-internal retrieval set asks for real AIDOCS concepts
+      # (RuntimeService, session, init, aidocs entry flow), so it is scored
+      # against the AIDOCS source itself — the already-commissioned checkout.
+      # No init here (the repo is already a project); benchmark only syncs the
+      # index and runs scenarios, which is not a nested init.
+      - name: AIDOCS internal retrieval benchmark (against the repo)
+        id: aidocs
+        run: |
+          set -euo pipefail
+          aidocs status . --json > results/aidocs-status.json
+          aidocs benchmark . --json --iterations 5 \
+            --scenario-set aidocs --out results/aidocs-benchmark.json \
+            > results/aidocs-benchmark.stdout.json
+
+      # Always upload diagnostics — including on a failing (regression/mismatch)
+      # run — so a red benchmark can be explained from the JSON, not guessed.
+      - name: Upload benchmark diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aidocs-benchmarks
+          path: results/
+          if-no-files-found: warn

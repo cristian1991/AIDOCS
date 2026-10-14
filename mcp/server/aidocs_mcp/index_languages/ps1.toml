@@ -1,0 +1,5 @@
+name = "powershell"
+extensions = [".ps1"]
+
+# All powershell files are scripts
+role_hint = "script"

@@ -1,0 +1,107 @@
+project_update:
+  - atualizar projeto
+  - sincronizar projeto
+  - atualizar aidocs
+  - recarregar aidocs
+
+archive:
+  - arquivar
+  - arquivo
+  - notas de versao
+  - changelog
+
+write_memory:
+  - lembra
+  - lembre
+  - salvar esta regra
+  - memorizar
+  - salvar na memoria
+  - adicionar a memoria
+  - guarda isso
+
+git_commit_and_push:
+  - commit e push
+  - fazer commit e push
+
+git_status_check:
+  - verificar git status
+  - checar git status
+
+github_workflow_check:
+  - verificar github actions
+  - verificar github workflow
+  - verificar github workflow status
+  - verificar workflow status
+  - verificar actions status
+  - verificar ci status
+
+deploy_health_check:
+  - verificar deploy status
+  - verificar deployment status
+  - verificar deployment health
+  - verificar deploy health
+  - verificar vps status
+  - verificar vps deploy status
+
+git_push:
+  - push
+
+git_commit:
+  - commit
+
+ai_bundle:
+  - recuperar contexto
+  - obter contexto
+  - bundle de codigo
+  - codigo da sessao
+  - mostrar codigo
+
+read_error:
+  - erro
+  - stack trace
+  - traceback
+  - excecao
+  - crash
+  - falhou
+  - nao funciona
+  - quebrou
+  - travou
+
+edit:
+  - corrigir
+  - arruma
+  - modificar
+  - alterar
+  - atualizar
+  - implementar
+  - refatorar
+  - renomear
+  - adicionar
+  - remover
+  - criar
+  - deletar
+  - mover
+  - arrumar
+  - consertar
+
+trace:
+  - rastrear
+  - onde e usado
+  - por que e usado
+  - buscar uso
+  - buscar referencias
+  - como funciona
+  - quem chama
+  - o que usa
+  - de onde vem
+
+understand:
+  - entender
+  - explicar
+  - explica
+  - inspecionar
+  - analisar
+  - investigar
+  - me mostra
+  - o que e
+  - me diz

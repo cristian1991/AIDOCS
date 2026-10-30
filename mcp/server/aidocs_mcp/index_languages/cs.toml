@@ -1,0 +1,114 @@
+name = "csharp"
+extensions = [".cs"]
+suffixes = [".cshtml.cs"]
+extractor_family = "csharp_rich"
+module_hints = [
+  "DTOs",
+  "Entities",
+  "Enums",
+  "Interfaces",
+  "Services",
+  "ViewComponents",
+  "Authorization",
+  "Hubs",
+  "Reports",
+  "Properties",
+]
+
+# Entry-point files that hint at a module boundary
+entry_points = ["Program.cs", "Startup.cs"]
+
+# ── Role from glob patterns ──
+role_patterns = [
+  { glob = "**/DTOs/**/*.cs", role = "data-model" },
+  { glob = "**/Entities/**/*.cs", role = "data-model" },
+  { glob = "**/Enums/**/*.cs", role = "data-model" },
+  { glob = "**/Interfaces/**/*.cs", role = "abstraction" },
+  { glob = "**/*Controller.cs", role = "controller" },
+  { glob = "**/Services/**/*.cs", role = "service" },
+  { glob = "**/*Service.cs", role = "service" },
+  { glob = "**/*ViewComponent.cs", role = "component" },
+  { glob = "**/ViewComponents/**/*.cs", role = "component" },
+  { glob = "**/*Hub.cs", role = "hub" },
+  { glob = "**/Hubs/**/*.cs", role = "hub" },
+  { glob = "**/Authorization/**/*.cs", role = "policy" },
+  { glob = "**/*Handler.cs", role = "policy" },
+  { glob = "**/*Requirement.cs", role = "policy" },
+  { glob = "**/*Policy.cs", role = "policy" },
+  { glob = "**/Reports/**/*.cs", role = "report" },
+  { glob = "**/Properties/**/*.cs", role = "configuration" },
+  { glob = "**/Seeding/**/*.cs", role = "script" },
+  { glob = "**/Configurations/**/*.cs", role = "configuration" },
+  { glob = "**/Mapping/**/*.cs", role = "configuration" },
+  { glob = "**/Workers/**/*.cs", role = "worker" },
+  { glob = "**/Jobs/**/*.cs", role = "worker" },
+  { glob = "**/Background/**/*.cs", role = "worker" },
+  { glob = "**/Helpers/**/*.cs", role = "utility" },
+  { glob = "**/Utils/**/*.cs", role = "utility" },
+  { glob = "**/Extensions/**/*.cs", role = "utility" },
+  { glob = "**/Database/**/*.cs", role = "data-access" },
+  { glob = "**/Data/**/*.cs", role = "data-access" },
+  { glob = "**/DAL/**/*.cs", role = "data-access" },
+  { glob = "**/Persistence/**/*.cs", role = "data-access" },
+  { glob = "**/Areas/**/*.cs", role = "controller" },
+]
+
+# ── Role from file name suffix (stem ends with) ──
+# Python: if file_stem.lower().endswith(suffix) → role
+role_name_suffixes = [
+  { suffix = "controller", role = "controller" },
+  { suffix = "service", role = "service" },
+  { suffix = "repository", role = "repository" },
+  { suffix = "store", role = "repository" },
+  { suffix = "dbcontext", role = "data-access" },
+  { suffix = "middleware", role = "middleware" },
+  { suffix = "filter", role = "middleware" },
+  { suffix = "validator", role = "validator" },
+  { suffix = "validation", role = "validator" },
+  { suffix = "configuration", role = "configuration" },
+  { suffix = "config", role = "configuration" },
+  { suffix = "converter", role = "configuration" },
+  { suffix = "binder", role = "configuration" },
+  { suffix = "helper", role = "utility" },
+  { suffix = "utilities", role = "utility" },
+  { suffix = "utility", role = "utility" },
+  { suffix = "extensions", role = "utility" },
+  { suffix = "dto", role = "data-model" },
+  { suffix = "model", role = "data-model" },
+  { suffix = "viewmodel", role = "data-model" },
+  { suffix = "entity", role = "data-model" },
+  { suffix = "job", role = "worker" },
+  { suffix = "worker", role = "worker" },
+  { suffix = "task", role = "worker" },
+  { suffix = "resources", role = "utility" },
+  { suffix = "map", role = "utility" },
+  { suffix = "ids", role = "utility" },
+]
+
+# ── Role from exact file name ──
+# Python: if file_stem.lower() == name → role
+role_exact_names = [
+  { name = "program", role = "initializer-module" },
+  { name = "dependencyinjection", role = "initializer-module" },
+]
+
+# ── Role from file suffix pattern (path ends with) ──
+role_suffix_patterns = [
+  { suffix = ".cshtml.cs", role = "page-model" },
+]
+
+# ── Role from path token presence ──
+# Python: if token in path_parts → role
+role_path_tokens = [
+  { token = "pages", contains_suffix = "model", role = "page-model" },
+  { token = "pages", contains_suffix = "pagebase", role = "page-model" },
+  { token = "seeding", role = "script" },
+]
+
+# ── Layer inference tokens ──
+# Python: if any token in lowercase_path → layer
+[layer_tokens]
+data = ["dto", "viewmodel", "model", "entity", "entities", "enums"]
+api = ["controller", "api", "endpoint"]
+logic = ["service", "handler", "manager", "provider", "infrastructure"]
+ui = ["component", "viewcomponent", "page", "view"]

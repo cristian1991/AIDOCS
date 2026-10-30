@@ -1,0 +1,19 @@
+from aidocs_mcp.intent_guard import classify_action
+
+cases = [
+    ("i need you PIECE OF SHIT FUCK TO RIGHT NOW, before anything else, even before you sync, to refactor that shit", "edit (refactor)"),
+    ("refactor the duplicate code", "edit (refactor)"),
+    ("after the commit, push to main", "git_push"),
+    ("let me commit and push", "[] first-person — should be 'understand'"),
+    ("i want you to fix the bug", "edit (fix)"),
+    ("the edit was approved", "understand (edit is noun)"),
+    ("could you please commit and push", "git_commit_and_push"),
+    ("i need to commit my own code", "understand (first-person)"),
+    ("commit and push", "git_commit_and_push"),
+    ("investigate this issue", "investigate (prefix)"),
+]
+for prompt, want in cases:
+    r = classify_action(prompt)
+    print("PROMPT:", prompt[:60] + ("..." if len(prompt) > 60 else ""))
+    print("  want:", want)
+    print("  got: ", r)

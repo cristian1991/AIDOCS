@@ -1,0 +1,6 @@
+name = "pdf"
+extensions = [".pdf"]
+# Assets are indexed as "present + discoverable" only. No outline
+# extraction, no AST parsing. ai_find surfaces the file so the
+# agent can reach it via ai_read_pdf (per-page text + tables + page
+# images for visual feedback — use both for rich context).

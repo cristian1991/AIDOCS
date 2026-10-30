@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AIDOCS Dashboard",
+  "version": "2.0.0",
+  "identifier": "cloud.codenexus.aidocs.dashboard",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "AIDOCS Dashboard",
+        "width": 1440,
+        "height": 960,
+        "minWidth": 1180,
+        "minHeight": 900,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: data: https://img.shields.io; style-src 'self' 'unsafe-inline'; connect-src 'self' https://codenexus.cloud"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico", "icons/icon.png"],
+    "shortDescription": "Secure local operator dashboard for AIDOCS",
+    "category": "DeveloperTool"
+  }
+}

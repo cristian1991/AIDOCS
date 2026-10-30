@@ -1,0 +1,6 @@
+name = "image"
+extensions = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".bmp", ".tiff", ".heic"]
+# Presence-only descriptor. Claude Code's Read tool renders image
+# bytes as multimodal input — never gate an image read. Agents can
+# use both raw Read (image content) and ai_read_raw if a text
+# alternative is wanted.

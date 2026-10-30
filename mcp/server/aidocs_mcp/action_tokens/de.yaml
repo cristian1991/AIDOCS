@@ -1,0 +1,79 @@
+project_update:
+  - projekt aktualisieren
+  - projekt synchronisieren
+  - aidocs aktualisieren
+  - aidocs neu laden
+
+archive:
+  - archivieren
+  - archiv
+  - release notes
+  - changelog
+  - versionshinweise
+
+write_memory:
+  - merke dir
+  - merk dir
+  - speichere diese regel
+  - in erinnerung behalten
+  - speichern
+  - zum speicher hinzufuegen
+  - vergiss nicht
+
+ai_bundle:
+  - kontext abrufen
+  - kontext holen
+  - code bundle
+  - sitzungscode
+  - code zeigen
+
+read_error:
+  - fehler
+  - stack trace
+  - traceback
+  - ausnahme
+  - absturz
+  - fehlgeschlagen
+  - funktioniert nicht
+  - geht nicht
+  - kaputt
+
+edit:
+  - korrigieren
+  - beheben
+  - aendern
+  - bearbeiten
+  - aktualisieren
+  - implementieren
+  - refaktorisieren
+  - umbenennen
+  - hinzufuegen
+  - entfernen
+  - erstellen
+  - loeschen
+  - verschieben
+  - reparieren
+  - fixen
+
+trace:
+  - verfolgen
+  - wo wird verwendet
+  - warum wird verwendet
+  - verwendung finden
+  - referenzen finden
+  - wie funktioniert
+  - wer ruft auf
+  - was verwendet
+  - woher kommt
+
+understand:
+  - verstehen
+  - erklaeren
+  - erklaer mir
+  - inspizieren
+  - analysieren
+  - untersuchen
+  - zeig mir
+  - was ist
+  - was bedeutet
+  - sag mir

@@ -1,0 +1,31 @@
+name = "css"
+extensions = [".css"]
+extractor_family = "css_rich"
+embedded_semantics = ["responsive", "selectors", "theme"]
+
+# Default role
+role_hint = "asset-style"
+
+# ── Role from file name tokens ──
+role_name_suffixes = [
+  { suffix = "input", role = "asset-style-source" },
+  { suffix = "tailwind", role = "asset-style-source" },
+]
+
+# ── Line patterns ──
+line_patterns = [
+  { match = "css_at_rule_block", rule = "theme", kind = "theme_block" },
+  { match = "css_at_rule", rule = "media", capture = "block", kind = "media_query" },
+  { match = "css_media_feature", kind = "media_feature" },
+  { match = "css_variable", kind = "css_variable" },
+  { match = "css_at_rule", rule = "keyframes", kind = "keyframes" },
+  { match = "css_at_rule", rule = "layer", kind = "css_layer" },
+  { match = "css_at_rule", rule = "variant", kind = "css_variant" },
+  # Complex regex — keep raw
+  { pattern = "(?<=\\.|#|\\)|[A-Za-z0-9_-]):([A-Za-z][A-Za-z0-9_-]*)", kind = "pseudo_selector" },
+  { pattern = "\\s([>+~])\\s", kind = "css_combinator" },
+]
+
+# ── Layer inference tokens ──
+[layer_tokens]
+ui = ["style", "css", "theme"]

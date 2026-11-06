@@ -1,0 +1,50 @@
+name = "python"
+extensions = [".py"]
+extractor_family = "python_ast"
+module_hints = ["scripts", "bin", "cli", "tools", "utils", "helpers", "api", "services", "models", "views", "core", "workers"]
+
+# Entry-point files
+entry_points = ["main.py", "__init__.py", "app.py"]
+
+# ── Role from glob patterns ──
+role_patterns = [
+  { glob = "**/models/**/*.py", role = "data-model" },
+  { glob = "**/schemas/**/*.py", role = "data-model" },
+  { glob = "**/api/**/*.py", role = "route-handler" },
+  { glob = "**/views/**/*.py", role = "route-handler" },
+  { glob = "**/services/**/*.py", role = "service" },
+  { glob = "**/workers/**/*.py", role = "worker" },
+  { glob = "**/tasks/**/*.py", role = "worker" },
+  { glob = "**/utils/**/*.py", role = "utility" },
+  { glob = "**/helpers/**/*.py", role = "utility" },
+  { glob = "**/middleware/**/*.py", role = "middleware" },
+  { glob = "**/tests/**/*.py", role = "test" },
+  { glob = "**/cli/**/*.py", role = "script" },
+  { glob = "**/scripts/**/*.py", role = "script" },
+  { glob = "**/core/**/*.py", role = "core-module" },
+  { glob = "**/config/**/*.py", role = "configuration" },
+]
+
+# ── Role from exact file name ──
+role_exact_names = [
+  { name = "conftest", role = "configuration" },
+  { name = "settings", role = "configuration" },
+  { name = "config", role = "configuration" },
+  { name = "manage", role = "script" },
+  { name = "setup", role = "script" },
+  { name = "wsgi", role = "initializer-module" },
+  { name = "asgi", role = "initializer-module" },
+]
+
+line_patterns = [
+  { match = "decorator_route", decorator = "@app", kind = "route" },
+  { match = "decorator_route", function = "path", kind = "route" },
+]
+
+# ── Layer inference tokens ──
+[layer_tokens]
+data = ["model", "schema", "entity", "orm"]
+api = ["api", "view", "route", "endpoint"]
+logic = ["service", "handler", "manager", "provider", "worker"]
+ui = ["template", "form", "component"]
+

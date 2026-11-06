@@ -1,0 +1,17 @@
+name = "dentalview"
+extensions = [".dview"]
+tier = "heuristic"
+
+# Extract i18n_key definitions from "key = \"...\"" lines
+outline_patterns = [
+  { pattern = '^key\s*=\s*"([^"]+)"', kind = "i18n_key", capture = 1 },
+]
+
+# Extract references from @lang.t("...") calls
+reference_patterns = [
+  { pattern = '@lang\.t\("([^"]+)"\)', kind = "i18n_key", capture = 1 },
+]
+
+# Resolve those references against code_outlines of kind i18n_key
+[definition_source.i18n_key]
+symbol_kind = "i18n_key"

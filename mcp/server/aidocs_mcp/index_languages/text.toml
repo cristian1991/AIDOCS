@@ -1,0 +1,4 @@
+name = "text"
+extensions = [".txt", ".log", ".csv", ".tsv"]
+# Presence-only descriptor. Agents reach via ai_read_raw for bytes
+# or ai_get_lines for line-based reads.

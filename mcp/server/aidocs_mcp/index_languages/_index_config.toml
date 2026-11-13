@@ -1,0 +1,81 @@
+# ─── AIDOCS Index Configuration ───
+# Global indexing settings shared across all language descriptors.
+# Language-specific overrides go in their respective .toml files.
+
+# ── Path Weight Tokens ──
+# Used by _path_weight() to score file relevance.
+# Positive tokens boost score; negative tokens reduce it.
+[path_weights]
+positive = [
+  "/src/", "/app/", "/web/", "/components/", "/services/",
+  "/controllers/", "/models/", "/domain/", "/infrastructure/",
+  "/application/",
+]
+negative = [
+  "/test/", "/tests/", "/fixture/", "/fixtures/",
+  "/mock/", "/mocks/", "/example/", "/examples/",
+  "/template/", "/templates/", "/generated/",
+  "/snapshot/", "/assets/", "/pwaassets/",
+  "/wwwroot/lib/", "/static/",
+]
+positive_score = 20
+negative_score = -35
+
+# ── Module Detection ──
+[module_detection]
+# Directories that are never treated as modules.
+skip_dirs = [
+  "node_modules", "dist", "build", "coverage", "obj", "bin",
+  "__pycache__", ".venv", "venv", ".git", ".MEMORY", ".opencode",
+  ".claude", ".github", ".next", ".docusaurus", "vendor", "vendors",
+  "tmp", "temp", ".BACKUP", ".backups", "compiled", "target",
+]
+
+# Well-known top-level directories that strongly suggest a module boundary.
+hint_dirs = [
+  "app", "cli", "core", "lib", "server", "web", "website", "api",
+  "frontend", "backend", "services", "packages", "plugins", "analyzer",
+  "worker", "workers", "gateway", "proxy", "admin", "dashboard",
+  "mobile", "desktop", "console", "docs", "sdk", "engine",
+]
+
+# Manifest files that indicate a directory is a self-contained module.
+[module_manifests]
+"package.json" = "javascript"
+"Cargo.toml" = "rust"
+"pyproject.toml" = "python"
+"setup.py" = "python"
+"go.mod" = "go"
+"pom.xml" = "java"
+"build.gradle" = "java"
+"build.gradle.kts" = "kotlin"
+"mix.exs" = "elixir"
+"Gemfile" = "ruby"
+"composer.json" = "php"
+
+# ── Default Layer Tokens ──
+# Fallback path-token → layer mapping when language descriptor doesn't define layer_tokens.
+# Python checks if any token appears in the lowercase file path.
+[default_layer_tokens]
+data = ["dto", "viewmodel", "model", "entity"]
+api = ["controller", "api", "endpoint", "route"]
+logic = ["service", "handler", "manager", "provider"]
+ui = ["component", "page", "view", "form", "dialog", "screen"]
+
+# ── Role Relevance ──
+# Scoring weights for file roles (used by _role_relevance_boost).
+[role_relevance]
+service = 25
+controller = 20
+page-model = 18
+page-view = 15
+data-model = 15
+policy = 15
+partial-view = 12
+abstraction = 10
+configuration = 8
+utility = 5
+script = 3
+resource = 2
+asset-style = 1
+asset-style-source = 1

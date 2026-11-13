@@ -1,0 +1,3 @@
+name = "jsonl"
+extensions = [".jsonl", ".ndjson"]
+# Presence-only descriptor. Agents reach via ai_read_jsonl.

@@ -1,0 +1,11 @@
+AIDOCS
+Copyright 2026 Nazare Andrei-Cristian, operating as CodeNexus
+
+Originally created and maintained by Nazare Andrei-Cristian (`cristian1991`).
+
+This project is source-available under the Business Source License 1.1.
+See `LICENSE` for the binding terms and `COMMERCIAL.md` for the plain-language commercial boundary.
+
+AIDOCS uses a number of third-party, vendored, and bundled tools for standard
+jobs, each under its own license. See `ACKNOWLEDGMENTS.md` for the attribution
+and special thanks.

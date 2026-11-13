@@ -1,0 +1,2 @@
+name = "kotlin"
+extensions = [".kt", ".kts"]

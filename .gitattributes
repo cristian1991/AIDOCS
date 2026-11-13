@@ -1,0 +1,37 @@
+*.aidocs linguist-language=Markdown
+*.sh text eol=lf
+*.bash text eol=lf
+install.sh text eol=lf
+
+# PYTHON SOURCES ARE LF EVERYWHERE (2026-07-25; rationale corrected 2026-07-26).
+#
+# CORRECTION — READ THIS BEFORE TRUSTING THE ORIGINAL CLAIM. The commit that
+# added these rules (ea3383c3) asserted that CRLF caused the advertised TOOL
+# SURFACE to differ between platforms, via griffelib failing to match "Args:\r".
+# THAT WAS WRONG and is disproven: .py is LF everywhere now and Windows still
+# emitted the same surface it did before. The real cause was never line endings —
+# every tool's description is overridden at registration from gate_message_strings
+# in ~/.aidocs/empire.sqlite3, and when that machine-local database is absent the
+# raw source docstring stands instead (#533, fixed in dc7369483).
+#
+# THESE RULES STAY, on their own merits rather than the retracted one:
+#   * Reproducibility. Everything listed below is parsed as TEXT by tooling
+#     (ruff, basedpyright, semgrep, vulture, the AST fingerprint registry, the
+#     golden pins). A file whose bytes differ per checkout is a file whose
+#     tool verdicts can differ per checkout, and a BLOCKING gate must not depend
+#     on who cloned the repo.
+#   * The deploy ships LF regardless: the ship stage is `git archive HEAD`, so
+#     dev matching that is one less axis of divergence.
+#   * It matches the pre-existing *.sh / *.bash rules rather than leaving Python
+#     as the odd exception.
+#
+# Kept as a worked example of a real trap: six hypotheses were wrong before #533
+# was found (encoding, mcp SDK version, griffelib version, the 3.12->3.13
+# docstring dedent gh-81283, editable-install source resolution, and CRLF). Each
+# looked plausible; each was already identical across both environments.
+*.py text eol=lf
+*.pyi text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf

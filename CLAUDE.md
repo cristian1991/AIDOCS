@@ -1,0 +1,7 @@
+<!-- AIDOCS:BEGIN -->
+# CLAUDE
+
+AIDOCS-managed project.
+<!-- AIDOCS:END -->
+
+AIDOCS project. Routing is in-code (SQL `memory_routes`); durable memory is canonical in the sqlite `memory_index`. `/.MEMORY/.aidocs/index.aidocs` is an inert commissioning marker — its content is never read.
